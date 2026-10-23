@@ -13,8 +13,21 @@ import { compareBaseline } from '../domain/baseline'
 import { DEFAULT_STOCKS } from '../domain/defaults'
 import { applyEdits, type EditableKey } from '../domain/edit'
 import { applyOrder, normalizeStocks } from '../domain/stocks'
+import { filterByAccount } from '../domain/accounts'
 import { buildManualRecord, MANUAL_ROW_BASE, type ManualInput } from '../domain/manual'
-import type { AuditLog, CheckResult, Ledger, RawRecord, RebuyExecution, RebuyOrder, StockConfig } from '../domain/types'
+import { DEFAULT_ACCOUNT_ID } from '../domain/types'
+import type {
+  Account,
+  AuditLog,
+  CheckResult,
+  ExtraTarget,
+  Ledger,
+  RawRecord,
+  RebuyExecution,
+  RebuyOrder,
+  StockConfig,
+  TradePlan,
+} from '../domain/types'
 import type { ParseResult } from '../io/parseWorkbook'
 
 export interface ImportOutcome {
@@ -29,6 +42,8 @@ interface AppContextValue {
   records: RawRecord[]
   audits: AuditLog[]
   executions: RebuyExecution[]
+  plans: TradePlan[]
+  extraTargets: ExtraTarget[]
   ledger: Ledger
   baseline: CheckResult[]
   deriveSellPrice: boolean
@@ -46,6 +61,10 @@ interface AppContextValue {
   setStockEnabled: (id: string, enabled: boolean) => Promise<void>
   recordRebuy: (order: RebuyOrder, qty: number, priceCents: number, rewardQty: number, note?: string) => Promise<void>
   removeRebuy: (id: string) => Promise<void>
+  setPlan: (kind: 'buy' | 'sell', refId: string, priceCents: number, qty: number) => Promise<void>
+  clearPlan: (refId: string) => Promise<void>
+  addExtraTarget: (lotId: string, priceCents: number, qty: number) => Promise<void>
+  removeExtraTarget: (id: string) => Promise<void>
   historyOf: (sourceRow: number) => AuditLog[]
   updateStock: (s: StockConfig) => Promise<void>
   addStock: (s: StockConfig) => Promise<void>
@@ -55,9 +74,27 @@ interface AppContextValue {
   restoreBackup: (json: string) => Promise<void>
   basename: string
   lastBackupAt: number | null
+  /** 当前账户筛选：'all' 或 accountId */
+  activeAccountId: string
+  accounts: Account[]
+  scopedRecords: RawRecord[]
+  setActiveAccount: (id: string) => Promise<void>
+  addAccount: (name: string) => Promise<void>
+  systemFont: boolean
+  setSystemFont: (v: boolean) => Promise<void>
 }
 
 const AppContext = createContext<AppContextValue | null>(null)
+
+const SYSTEM_FONT_STACK =
+  'system-ui, -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif'
+
+/** 系统字体开关：把库的字体变量换掉，浏览器就不再下载那三份中文字体 */
+export function applySystemFont(on: boolean): void {
+  const root = document.documentElement
+  if (on) root.style.setProperty('--animal-font-family', SYSTEM_FONT_STACK)
+  else root.style.removeProperty('--animal-font-family')
+}
 
 function audit(entityId: string, field: string, oldValue: string, newValue: string, source: string): AuditLog {
   return { entity: 'record', entityId, field, oldValue, newValue, at: Date.now(), source }
@@ -69,21 +106,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [records, setRecords] = useState<RawRecord[]>([])
   const [audits, setAudits] = useState<AuditLog[]>([])
   const [executions, setExecutions] = useState<RebuyExecution[]>([])
+  const [plans, setPlans] = useState<TradePlan[]>([])
+  const [extraTargets, setExtraTargets] = useState<ExtraTarget[]>([])
   const [batches, setBatches] = useState<ImportBatch[]>([])
   const [deriveSellPrice, setDeriveSellPrice] = useState(false)
   const [preview, setPreview] = useState<ParseResult | null>(null)
   const [basename, setBasename] = useState('—')
   const [lastBackupAt, setLastBackupAt] = useState<number | null>(null)
+  const [accounts, setAccounts] = useState<Account[]>([])
+  const [activeAccountId, setActiveAccountId] = useState('all')
+  const [systemFont, setSystemFontState] = useState(false)
 
   const reloadRecords = useCallback(async () => {
-    const [r, a, x] = await Promise.all([
+    const [r, a, x, pl, et] = await Promise.all([
       db.records.toArray(),
       db.auditLogs.toArray(),
       db.rebuyExecutions.toArray(),
+      db.plans.toArray(),
+      db.extraTargets.toArray(),
     ])
     setRecords(r)
     setAudits(a)
     setExecutions(x)
+    setPlans(pl)
+    setExtraTargets(et)
   }, [])
 
   useEffect(() => {
@@ -93,13 +139,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if ((await db.stocks.count()) === 0) {
         await db.stocks.bulkPut(DEFAULT_STOCKS)
       }
-      const [sRaw, r, a, b, x, backupMeta] = await Promise.all([
+      // 默认账户兜底
+      if ((await db.accounts.count()) === 0) {
+        await db.accounts.put({ id: DEFAULT_ACCOUNT_ID, name: '默认账户', createdAt: Date.now() })
+      }
+      const [sRaw, r, a, b, x, backupMeta, pl, et, accs, accMeta, fontMeta] = await Promise.all([
         db.stocks.toArray(),
         db.records.toArray(),
         db.auditLogs.toArray(),
         db.batches.orderBy('importedAt').reverse().toArray(),
         db.rebuyExecutions.toArray(),
         db.meta.get('lastBackupAt'),
+        db.plans.toArray(),
+        db.extraTargets.toArray(),
+        db.accounts.toArray(),
+        db.meta.get('activeAccountId'),
+        db.meta.get('useSystemFont'),
       ])
       if (!alive) return
       // 老库补齐 order / enabled 并压平序号
@@ -110,9 +165,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setRecords(r)
       setAudits(a)
       setExecutions(x)
+      setPlans(pl)
+      setExtraTargets(et)
       setBatches(b)
       setBasename(b[0]?.fileName ?? '—')
       setLastBackupAt(backupMeta ? Number(backupMeta.value) : null)
+      setAccounts(accs)
+      setActiveAccountId(accMeta?.value ?? 'all')
+      const fontOn = fontMeta?.value === '1'
+      setSystemFontState(fontOn)
+      if (fontOn) applySystemFont(true)
       setReady(true)
     })()
     return () => {
@@ -120,9 +182,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  // 账户筛选只影响展示与清单；不影响原始数据
+  const scopedRecords = useMemo(() => filterByAccount(records, activeAccountId), [records, activeAccountId])
+
   const ledger = useMemo(
-    () => buildLedger(records, stocks, { deriveSellPrice, executions }),
-    [records, stocks, deriveSellPrice, executions],
+    () => buildLedger(scopedRecords, stocks, { deriveSellPrice, executions, plans, extraTargets }),
+    [scopedRecords, stocks, deriveSellPrice, executions, plans, extraTargets],
   )
 
   const baseline = useMemo(() => compareBaseline(ledger), [ledger])
@@ -133,7 +198,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const batchId = `batch:${Date.now()}`
       const fresh = p.records
         .filter((r) => !existing.has(r.importKey))
-        .map((r) => ({ ...r, origin: 'excel' as const, batchId }))
+        .map((r) => ({
+          ...r,
+          origin: 'excel' as const,
+          batchId,
+          accountId: activeAccountId === 'all' ? DEFAULT_ACCOUNT_ID : activeAccountId,
+        }))
       const duplicated = p.records.length - fresh.length
       const batch: ImportBatch = {
         id: batchId,
@@ -157,7 +227,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setBasename(fileName)
       return { added: fresh.length, duplicated, batch }
     },
-    [reloadRecords],
+    [reloadRecords, activeAccountId],
   )
 
   const rollbackBatch = useCallback(
@@ -331,6 +401,60 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [reloadRecords],
   )
 
+  const setPlan = useCallback(
+    async (kind: 'buy' | 'sell', refId: string, priceCents: number, qty: number) => {
+      if (!Number.isInteger(priceCents) || priceCents <= 0) throw new Error('计划价不合法')
+      if (!Number.isInteger(qty) || qty <= 0) throw new Error('计划量不合法')
+      await db.plans.put({ id: `plan:${refId}`, kind, refId, priceCents, qty, at: Date.now() })
+      setPlans(await db.plans.toArray())
+    },
+    [],
+  )
+
+  const clearPlan = useCallback(async (refId: string) => {
+    await db.plans.delete(`plan:${refId}`)
+    setPlans(await db.plans.toArray())
+  }, [])
+
+  const addExtraTarget = useCallback(
+    async (lotId: string, priceCents: number, qty: number) => {
+      if (!Number.isInteger(priceCents) || priceCents <= 0) throw new Error('目标价不合法')
+      if (!Number.isInteger(qty) || qty <= 0) throw new Error('目标股数不合法')
+      await db.extraTargets.put({
+        id: `et:${lotId}:${Date.now()}`,
+        lotId,
+        priceCents,
+        qty,
+        at: Date.now(),
+      })
+      setExtraTargets(await db.extraTargets.toArray())
+    },
+    [],
+  )
+
+  const removeExtraTarget = useCallback(async (id: string) => {
+    await db.extraTargets.delete(id)
+    setExtraTargets(await db.extraTargets.toArray())
+  }, [])
+
+  const setActiveAccount = useCallback(async (id: string) => {
+    await db.meta.put({ key: 'activeAccountId', value: id })
+    setActiveAccountId(id)
+  }, [])
+
+  const addAccount = useCallback(async (name: string) => {
+    const trimmed = name.trim()
+    if (!trimmed) throw new Error('账户名不能为空')
+    await db.accounts.put({ id: `acc:${Date.now()}`, name: trimmed, createdAt: Date.now() })
+    setAccounts(await db.accounts.toArray())
+  }, [])
+
+  const setSystemFont = useCallback(async (v: boolean) => {
+    await db.meta.put({ key: 'useSystemFont', value: v ? '1' : '0' })
+    setSystemFontState(v)
+    applySystemFont(v)
+  }, [])
+
   const updateStock = useCallback(async (s: StockConfig) => {
     await db.stocks.put(s)
     setStocks(normalizeStocks(await db.stocks.toArray()))
@@ -353,35 +477,45 @@ export function AppProvider({ children }: { children: ReactNode }) {
       db.batches.clear(),
       db.auditLogs.clear(),
       db.rebuyExecutions.clear(),
+      db.plans.clear(),
+      db.extraTargets.clear(),
     ])
     setRecords([])
     setBatches([])
     setAudits([])
     setExecutions([])
+    setPlans([])
+    setExtraTargets([])
     setBasename('—')
     setPreview(null)
   }, [])
 
   const exportBackup = useCallback(async () => {
-    const [s, r, b, a, x] = await Promise.all([
+    const [s, r, b, a, x, pl, et, accs] = await Promise.all([
       db.stocks.toArray(),
       db.records.toArray(),
       db.batches.toArray(),
       db.auditLogs.toArray(),
       db.rebuyExecutions.toArray(),
+      db.plans.toArray(),
+      db.extraTargets.toArray(),
+      db.accounts.toArray(),
     ])
     const stamp = String(Date.now())
     await db.meta.put({ key: 'lastBackupAt', value: stamp })
     setLastBackupAt(Number(stamp))
     return JSON.stringify(
       {
-        schemaVersion: 3,
+        schemaVersion: 5,
         exportedAt: new Date().toISOString(),
         stocks: s,
         records: r,
         batches: b,
         auditLogs: a,
         rebuyExecutions: x,
+        plans: pl,
+        extraTargets: et,
+        accounts: accs,
       },
       null,
       2,
@@ -397,10 +531,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
         batches?: ImportBatch[]
         auditLogs?: AuditLog[]
         rebuyExecutions?: RebuyExecution[]
+        plans?: TradePlan[]
+        extraTargets?: ExtraTarget[]
+        accounts?: Account[]
       }
       const version = data.schemaVersion ?? 1
-      if (version > 3) throw new Error('备份版本高于当前程序，拒绝导入（P11）')
-      await db.transaction('rw', db.stocks, db.records, db.batches, db.auditLogs, db.rebuyExecutions, async () => {
+      if (version > 5) throw new Error('备份版本高于当前程序，拒绝导入（P11）')
+      await db.transaction(
+        'rw',
+        [db.stocks, db.records, db.batches, db.auditLogs, db.rebuyExecutions, db.plans, db.extraTargets, db.accounts],
+        async () => {
         if (data.stocks) {
           await db.stocks.clear()
           await db.stocks.bulkPut(data.stocks)
@@ -413,6 +553,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
           await db.batches.clear()
           await db.batches.bulkPut(data.batches)
         }
+        if (data.accounts) {
+          await db.accounts.clear()
+          await db.accounts.bulkPut(data.accounts)
+        }
+        await db.plans.clear()
+        if (data.plans) await db.plans.bulkPut(data.plans)
+        await db.extraTargets.clear()
+        if (data.extraTargets) await db.extraTargets.bulkPut(data.extraTargets)
         await db.auditLogs.clear()
         if (data.auditLogs) {
           // 去掉自增 id，让 Dexie 重新分配
@@ -428,8 +576,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
             })),
           )
         }
-      })
+        },
+      )
       setStocks(await db.stocks.toArray())
+      setAccounts(await db.accounts.toArray())
       setBatches(await db.batches.toArray())
       await reloadRecords()
     },
@@ -459,6 +609,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setStockEnabled,
     recordRebuy,
     removeRebuy,
+    setPlan,
+    clearPlan,
+    addExtraTarget,
+    removeExtraTarget,
+    plans,
+    extraTargets,
     historyOf,
     updateStock,
     addStock,
@@ -468,6 +624,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     restoreBackup,
     basename,
     lastBackupAt,
+    activeAccountId,
+    accounts,
+    scopedRecords,
+    setActiveAccount,
+    addAccount,
+    systemFont,
+    setSystemFont,
   }
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>

@@ -16,16 +16,20 @@ export interface ParseResult {
   missingColumns: string[]
 }
 
+/**
+ * 列名别名：中文原表 + 常见券商/英文导出（V7 模板兼容）。
+ * 匹配时先找第一行（表头），命中第一个别名即用。
+ */
 const COL = {
-  stock: ['股票'],
-  buyDate: ['日期', '买入日期'],
-  buyPrice: ['买入价'],
-  buyQty: ['买入份额'],
-  target: ['目标售价'],
-  soldQty: ['实现份数'],
-  profit: ['实现盈利'],
-  sellDate: ['卖出日期'],
-  earlyBuy: ['提前卖的买价', '回补价', '提前买价'],
+  stock: ['股票', '证券名称', '证券代码', 'stock', 'symbol', 'ticker', 'security'],
+  buyDate: ['日期', '买入日期', 'date', 'buy date', 'buyDate', 'trade date'],
+  buyPrice: ['买入价', '买入价格', 'buy price', 'buyprice', 'cost', 'avg price'],
+  buyQty: ['买入份额', '份额', '数量', 'shares', 'qty', 'quantity', 'buy qty'],
+  target: ['目标售价', '目标价', 'target', 'target price', 'sell price'],
+  soldQty: ['实现份数', '卖出数量', 'sold', 'sold qty', 'sold shares'],
+  profit: ['实现盈利', '盈亏', 'profit', 'realized', 'realized pnl'],
+  sellDate: ['卖出日期', 'sell date', 'sold date', 'close date'],
+  earlyBuy: ['提前卖的买价', '回补价', '提前买价', 'rebuy', 'rebuy price', 'early buy price'],
 } as const
 
 type ColKey = keyof typeof COL

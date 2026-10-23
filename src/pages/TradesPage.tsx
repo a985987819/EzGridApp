@@ -6,6 +6,7 @@ import { EDITABLE, fieldText, type EditableKey } from '../domain/edit'
 import { activeStocks } from '../domain/stocks'
 import type { ManualInput } from '../domain/manual'
 import { isoDate, money, price, qty, signedMoney, tone } from '../ui/format'
+import { toCents } from '../domain/money'
 import { downloadText, toCsv } from '../ui/csv'
 import type { Lot, RawRecord, SellExecution } from '../domain/types'
 
@@ -48,7 +49,19 @@ export function TradesPage({
   focus: { stock: string; priceCents: number } | null
   onClearFocus: () => void
 }) {
-  const { ledger, records, stocks, editRecord, softDelete, restore, addManualRecord, historyOf } = useApp()
+  const {
+    ledger,
+    scopedRecords,
+    records,
+    stocks,
+    editRecord,
+    softDelete,
+    restore,
+    addManualRecord,
+    historyOf,
+    addExtraTarget,
+    removeExtraTarget,
+  } = useApp()
   const [stockFilter, setStockFilter] = useState(focus?.stock ?? 'all')
   const [status, setStatus] = useState<StatusFilter>('all')
   const [keyword, setKeyword] = useState('')
@@ -59,6 +72,8 @@ export function TradesPage({
   const [draft, setDraft] = useState<Record<EditableKey, string>>(BLANK_DRAFT)
   const [adding, setAdding] = useState(false)
   const [form, setForm] = useState<ManualInput>(BLANK_FORM)
+  const [tpPrice, setTpPrice] = useState('')
+  const [tpQty, setTpQty] = useState('')
 
   // 股票顺序 / 启停都来自「管理 · 股票」
   const stockList = useMemo(() => activeStocks(stocks), [stocks])
@@ -72,10 +87,10 @@ export function TradesPage({
   const rows = useMemo<Row[]>(() => {
     const lotMap = new Map(ledger.lots.map((l) => [l.sourceRow, l]))
     const sellMap = new Map(ledger.sells.map((s) => [s.sourceRow, s]))
-    return records
+    return scopedRecords
       .map((rec) => ({ rec, lot: lotMap.get(rec.sourceRow) ?? null, sell: sellMap.get(rec.sourceRow) ?? null }))
       .sort((a, b) => b.rec.sourceRow - a.rec.sourceRow)
-  }, [records, ledger])
+  }, [scopedRecords, ledger])
 
   const filtered = useMemo(
     () =>
@@ -185,69 +200,72 @@ export function TradesPage({
 
   return (
     <div className="stack">
-      <div className="page-title">
-        <h2>明细</h2>
-        <p>{filtered.length} / {rows.length} 行</p>
+      <div className="page-sticky" data-sticky="trades">
+        <div className="page-title">
+          <h2>明细</h2>
+          <p>{filtered.length} / {rows.length} 行</p>
+        </div>
+
+        <div className="stock-tabs" style={{ marginBottom: 8 }}>
+          <Tag
+            size="medium"
+            variant={stockFilter === 'all' ? 'solid' : 'soft'}
+            color={stockFilter === 'all' ? 'app-teal' : 'default'}
+            onClick={() => setStockFilter('all')}
+          >
+            全部
+          </Tag>
+          {stockNames.map((n) => (
+            <Tag
+              key={n}
+              size="medium"
+              variant={stockFilter === n ? 'solid' : 'soft'}
+              color={stockFilter === n ? 'app-teal' : 'default'}
+              onClick={() => setStockFilter(n)}
+            >
+              {n}
+            </Tag>
+          ))}
+        </div>
+
+        <div className="row nowrap">
+          <Select
+            options={STATUS_OPTIONS.map((o) => ({ key: o.key, label: o.label }))}
+            value={status}
+            onChange={(v) => setStatus(v as StatusFilter)}
+            aria-label="按状态筛选"
+          />
+          <Input
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+            placeholder="搜股票名 / 行号"
+            allowClear
+            onClear={() => setKeyword('')}
+            aria-label="搜索"
+          />
+        </div>
       </div>
 
       <Card>
-        <div className="stack tight">
-          <div className="stock-tabs">
-            <Tag
-              size="medium"
-              variant={stockFilter === 'all' ? 'solid' : 'soft'}
-              color={stockFilter === 'all' ? 'app-teal' : 'default'}
-              onClick={() => setStockFilter('all')}
-            >
-              全部
-            </Tag>
-            {stockNames.map((n) => (
-              <Tag
-                key={n}
-                size="medium"
-                variant={stockFilter === n ? 'solid' : 'soft'}
-                color={stockFilter === n ? 'app-teal' : 'default'}
-                onClick={() => setStockFilter(n)}
-              >
-                {n}
-              </Tag>
-            ))}
-          </div>
-          <div className="row nowrap">
-            <Select
-              options={STATUS_OPTIONS.map((o) => ({ key: o.key, label: o.label }))}
-              value={status}
-              onChange={(v) => setStatus(v as StatusFilter)}
-              aria-label="按状态筛选"
-            />
-            <Input
-              value={keyword}
-              onChange={(e) => setKeyword(e.target.value)}
-              placeholder="搜股票名 / 行号"
-              allowClear
-              onClear={() => setKeyword('')}
-              aria-label="搜索"
-            />
-          </div>
-          <div className="row">
-            <label className="row" style={{ gap: 6, fontSize: 12 }}>
-              <Switch size="small" checked={showDeleted} onChange={setShowDeleted} aria-label="显示已删除" />
-              显示已删除
-            </label>
-            <div className="spacer" />
-            <Button size="small" onClick={exportCsv}>导出 CSV</Button>
-          </div>
-          <Button
-            block
-            type="primary"
-            onClick={() => {
-              setForm({ ...BLANK_FORM, stockName: stockFilter === 'all' ? stockNames[0] ?? '' : stockFilter })
-              setAdding(true)
-            }}
-          >
-            新增一笔
-          </Button>
+        <div className="row">
+          <label className="row" style={{ gap: 6, fontSize: 12 }}>
+            <Switch size="small" checked={showDeleted} onChange={setShowDeleted} aria-label="显示已删除" />
+            显示已删除
+          </label>
+          <div className="spacer" />
+          <Button size="small" onClick={exportCsv}>导出 CSV</Button>
         </div>
+        <Button
+          block
+          type="primary"
+          style={{ marginTop: 8 }}
+          onClick={() => {
+            setForm({ ...BLANK_FORM, stockName: stockFilter === 'all' ? stockNames[0] ?? '' : stockFilter })
+            setAdding(true)
+          }}
+        >
+          新增一笔
+        </Button>
       </Card>
 
       {priceFilter !== null && (
@@ -417,6 +435,85 @@ export function TradesPage({
                   {current.sell && current.sell.priceCents === null && <Tag size="small" variant="soft" color="app-red">缺价格</Tag>}
                   {current.rec.deletedAt && <Tag size="small" variant="soft" color="app-red">已删除</Tag>}
                 </div>
+
+                {current.lot && current.lot.remainingQty > 0 && (
+                  <div>
+                    <div className="row" style={{ marginBottom: 6 }}>
+                      <strong style={{ fontSize: 13 }}>卖出目标</strong>
+                      <div className="spacer" />
+                      <span className="tiny muted">
+                        批次剩余 {qty(current.lot.remainingQty)} 股
+                      </span>
+                    </div>
+                    {ledger.targets
+                      .filter((t) => t.lotId === current.lot!.id)
+                      .map((t) => (
+                        <div key={t.id} className="line">
+                          <div className="left">
+                            <div className="t1 num">
+                              {price(t.priceCents)} × {qty(t.qty)}
+                            </div>
+                            <div className="t2">
+                              {t.autoGenerated ? '自动（E 列）' : '手动拆分'}
+                              {` · 预期 ${signedMoney(t.expectProfitCents)}`}
+                            </div>
+                          </div>
+                          {!t.autoGenerated && (
+                            <Button
+                              size="small"
+                              danger
+                              onClick={() => void removeExtraTarget(t.id.replace('target:', ''))}
+                            >
+                              删除
+                            </Button>
+                          )}
+                        </div>
+                      ))}
+                    {ledger.targets.filter((t) => t.lotId === current.lot!.id).length === 0 && (
+                      <p className="tiny muted" style={{ margin: '0 0 6px' }}>
+                        还没有目标（缺目标售价）
+                      </p>
+                    )}
+                    <div className="row nowrap" style={{ gap: 6, marginTop: 6 }}>
+                      <Input
+                        className="grow"
+                        value={tpPrice}
+                        onChange={(e) => setTpPrice(e.target.value)}
+                        placeholder="拆分价，如 9.20"
+                        aria-label="拆分目标价"
+                      />
+                      <Input
+                        className="grow"
+                        value={tpQty}
+                        onChange={(e) => setTpQty(e.target.value)}
+                        placeholder="股数"
+                        aria-label="拆分股数"
+                      />
+                      <Button
+                        size="small"
+                        onClick={() => {
+                          if (!current.lot) return
+                          const p = toCents(tpPrice)
+                          const qn = Number(tpQty)
+                          if (p === null || !Number.isFinite(qn) || qn <= 0) {
+                            notificationOpen({ message: '拆分价和股数都要填', type: 'warning' })
+                            return
+                          }
+                          void addExtraTarget(current.lot.id, p, qn).then(() => {
+                            setTpPrice('')
+                            setTpQty('')
+                            notificationOpen({ message: '已拆分目标', description: '自动目标按剩余量缩减', type: 'success' })
+                          })
+                        }}
+                      >
+                        拆分
+                      </Button>
+                    </div>
+                    <p className="tiny muted" style={{ margin: '6px 0 0' }}>
+                      分批止盈：手动目标先占份额，剩下的仍挂在 E 列价上；合计超过批次剩余会被截断并标红。
+                    </p>
+                  </div>
+                )}
 
                 <div>
                   <div className="row" style={{ marginBottom: 6 }}>

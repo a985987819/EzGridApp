@@ -1,5 +1,5 @@
 import Dexie, { type Table } from 'dexie'
-import type { AuditLog, RawRecord, RebuyExecution, StockConfig } from '../domain/types'
+import type { Account, AuditLog, ExtraTarget, RawRecord, RebuyExecution, StockConfig, TradePlan } from '../domain/types'
 
 export interface MetaRow {
   key: string
@@ -22,6 +22,9 @@ class GridTradingDB extends Dexie {
   batches!: Table<ImportBatch, string>
   auditLogs!: Table<AuditLog, number>
   rebuyExecutions!: Table<RebuyExecution, string>
+  plans!: Table<TradePlan, string>
+  extraTargets!: Table<ExtraTarget, string>
+  accounts!: Table<Account, string>
 
   constructor() {
     super('grid-trading')
@@ -38,6 +41,15 @@ class GridTradingDB extends Dexie {
     // V5：回补成交（S6/S8 的「记成交」）
     this.version(3).stores({
       rebuyExecutions: 'id, orderId, sellExecId, at',
+    })
+    // V6：计划价 + 批次拆多目标
+    this.version(4).stores({
+      plans: 'id, refId, kind',
+      extraTargets: 'id, lotId',
+    })
+    // V7：账户维度
+    this.version(5).stores({
+      accounts: 'id, name',
     })
   }
 }

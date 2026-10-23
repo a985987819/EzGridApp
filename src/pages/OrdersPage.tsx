@@ -9,7 +9,7 @@ import { money, price, qty, signedMoney } from '../ui/format'
 import type { RebuyOrder } from '../domain/types'
 
 export function OrdersPage() {
-  const { ledger, stocks, executions, recordRebuy, removeRebuy } = useApp()
+  const { ledger, stocks, executions, recordRebuy, removeRebuy, setPlan, clearPlan } = useApp()
   // 顺序与启停都跟随「管理 · 股票」
   const stockNames = useMemo(() => activeStocks(stocks).map((s) => s.name), [stocks])
   const [stockName, setStockName] = useState(stockNames[0] ?? '')
@@ -54,10 +54,41 @@ export function OrdersPage() {
     .reduce((a, g) => a + g.availableCents, 0)
 
   // 记成交
+  const [planRef, setPlanRef] = useState<{
+    kind: 'buy' | 'sell'
+    refId: string
+    title: string
+    suggestPrice: number
+  } | null>(null)
+  const [planPrice, setPlanPrice] = useState('')
+  const [planQty, setPlanQty] = useState('')
+
+  // 记成交
   const [execOrder, setExecOrder] = useState<RebuyOrder | null>(null)
   const [execQty, setExecQty] = useState('')
   const [execPrice, setExecPrice] = useState('')
   const [execReward, setExecReward] = useState('')
+
+  function openPlan(kind: 'buy' | 'sell', refId: string, title: string, suggestPrice: number, planPriceCents?: number | null, planQtyValue?: number | null) {
+    setPlanRef({ kind, refId, title, suggestPrice })
+    setPlanPrice((planPriceCents ?? suggestPrice) === 0 ? '' : ((planPriceCents ?? suggestPrice) / 100).toFixed(2))
+    setPlanQty(planQtyValue ? String(planQtyValue) : '')
+  }
+
+  async function savePlan() {
+    if (!planRef) return
+    try {
+      const p = toCents(planPrice)
+      const q = Number(planQty)
+      if (p === null) throw new Error('计划价不合法')
+      if (!Number.isFinite(q) || q <= 0) throw new Error('计划量要填正整数')
+      await setPlan(planRef.kind, planRef.refId, p, q)
+      setPlanRef(null)
+      notificationOpen({ message: '计划已保存', description: '只影响显示与导出，不动真实成交', type: 'success' })
+    } catch (e) {
+      notificationOpen({ message: '保存失败', description: e instanceof Error ? e.message : String(e), type: 'error' })
+    }
+  }
 
   function openExec(o: RebuyOrder) {
     setExecOrder(o)
@@ -119,13 +150,13 @@ export function OrdersPage() {
     if (buyToday.length) {
       lines.push('【今日可挂买】')
       for (const o of buyToday) {
-        lines.push(`  行${o.sourceRow}  ${price(o.rebuyPriceCents)} × ${o.remainingQty} 股`)
+        lines.push(`  行${o.sourceRow}  ${price(o.planPriceCents ?? o.rebuyPriceCents)} × ${o.planQty ?? o.remainingQty} 股`)
       }
     }
     if (sellToday.length) {
       lines.push('【今日可挂卖】')
       for (const t of sellToday) {
-        lines.push(`  批次${t.lotId.replace('lot:', '')}  ${price(t.priceCents)} × ${t.qty} 股`)
+        lines.push(`  批次${t.lotId.replace('lot:', '')}  ${price(t.planPriceCents ?? t.priceCents)} × ${t.planQty ?? t.qty} 股`)
       }
     }
     if (!range) {
@@ -140,10 +171,14 @@ export function OrdersPage() {
   function exportCsv() {
     const rows: (string | number)[][] = [['类型', '来源行', '价格', '股数', '金额', '区间']]
     for (const o of orders) {
-      rows.push(['待买', o.sourceRow, price(o.rebuyPriceCents), o.remainingQty, ((o.rebuyPriceCents * o.remainingQty) / 100).toFixed(2), zone(o.rebuyPriceCents)])
+      const p = o.planPriceCents ?? o.rebuyPriceCents
+      const q = o.planQty ?? o.remainingQty
+      rows.push(['待买', o.sourceRow, price(p), q, ((p * q) / 100).toFixed(2), zone(p)])
     }
     for (const t of targets) {
-      rows.push(['待卖', Number(t.lotId.replace('lot:', '')), price(t.priceCents), t.qty, (t.amountCents / 100).toFixed(2), zone(t.priceCents)])
+      const p = t.planPriceCents ?? t.priceCents
+      const q = t.planQty ?? t.qty
+      rows.push(['待卖', Number(t.lotId.replace('lot:', '')), price(p), q, ((p * q) / 100).toFixed(2), zone(p)])
     }
     downloadText(`${effectiveStock}-挂单清单.csv`, toCsv(rows), 'text/csv;charset=utf-8')
   }
@@ -172,6 +207,7 @@ export function OrdersPage() {
 
   return (
     <div className="stack">
+      <div className="page-sticky" data-sticky="orders">
       <div className="page-title">
         <h2>挂单</h2>
         <div className="row" style={{ gap: 6 }}>
@@ -228,6 +264,7 @@ export function OrdersPage() {
           </div>
         </div>
       </Card>
+      </div>
 
       {/* 2. 今日挂单 */}
       <Card>
@@ -281,9 +318,22 @@ export function OrdersPage() {
                         {o.rewardQty > 0 && ` · 含奖励 ${o.rewardQty}`}
                         {o.execQty > 0 && ` · 已回补 ${o.execQty}`}
                       </div>
+                      {o.planPriceCents != null && (
+                        <div className="tag-row" style={{ marginTop: 4 }}>
+                          <Tag size="small" variant="soft" color="purple">
+                            计划 {price(o.planPriceCents)} × {qty(o.planQty ?? o.remainingQty)}
+                          </Tag>
+                        </div>
+                      )}
                     </div>
                     <div className="right row" style={{ gap: 6 }}>
                       <span className="num">{money(o.rebuyPriceCents * o.remainingQty)}</span>
+                      <Button
+                        size="small"
+                        onClick={() => openPlan('buy', o.id, `买 ${o.stockName}`, o.rebuyPriceCents, o.planPriceCents, o.planQty)}
+                      >
+                        计划
+                      </Button>
                       <Button size="small" onClick={() => openExec(o)}>记成交</Button>
                     </div>
                   </div>
@@ -293,8 +343,20 @@ export function OrdersPage() {
                     <div className="left">
                       <div className="t1 num">卖 {price(t.priceCents)} × {qty(t.qty)}</div>
                       <div className="t2">批次 {t.lotId.replace('lot:', '')} · 预期 {signedMoney(t.expectProfitCents)}</div>
+                      {t.planPriceCents != null && (
+                        <div className="tag-row" style={{ marginTop: 4 }}>
+                          <Tag size="small" variant="soft" color="purple">
+                            计划 {price(t.planPriceCents)} × {qty(t.planQty ?? t.qty)}
+                          </Tag>
+                        </div>
+                      )}
                     </div>
-                    <div className="right num">{money(t.amountCents)}</div>
+                    <div className="right row" style={{ gap: 6 }}>
+                      <span className="num">{money(t.amountCents)}</span>
+                      <Button size="small" onClick={() => openPlan('sell', t.id, `卖 ${t.stockName}`, t.priceCents, t.planPriceCents, t.planQty)}>
+                        计划
+                      </Button>
+                    </div>
                   </div>
                 ))}
               </>
@@ -420,6 +482,50 @@ export function OrdersPage() {
           </p>
         </Card>
       )}
+
+      <Modal
+        open={planRef !== null}
+        title="挂单计划"
+        typewriter={false}
+        onClose={() => setPlanRef(null)}
+        footer={
+          <div className="row nowrap" style={{ gap: 8 }}>
+            <Button type="primary" style={{ flex: 1 }} onClick={() => void savePlan()}>保存</Button>
+            <Button onClick={() => setPlanRef(null)}>取消</Button>
+          </div>
+        }
+      >
+        {planRef && (
+          <div className="stack tight">
+            <p className="hint-block" style={{ margin: 0 }}>
+              {planRef.title} · 建议 {price(planRef.suggestPrice)}。计划价只用于显示和导出，
+              <b>不参与盈亏、清单与守恒式的任何计算</b>（P8）。
+            </p>
+            <div className="form-grid">
+              <label>
+                <span>计划价</span>
+                <Input value={planPrice} onChange={(e) => setPlanPrice(e.target.value)} data-field="planPrice" />
+              </label>
+              <label>
+                <span>计划量（股）</span>
+                <Input value={planQty} onChange={(e) => setPlanQty(e.target.value)} data-field="planQty" />
+              </label>
+            </div>
+            <Button
+              size="small"
+              onClick={() => {
+                if (!planRef) return
+                void clearPlan(planRef.refId).then(() => {
+                  setPlanRef(null)
+                  notificationOpen({ message: '已清除计划', type: 'info' })
+                })
+              }}
+            >
+              清除这个计划
+            </Button>
+          </div>
+        )}
+      </Modal>
 
       <Modal
         open={execOrder !== null}

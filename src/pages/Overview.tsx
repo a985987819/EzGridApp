@@ -51,10 +51,11 @@ export function Overview({
 
   return (
     <div className="stack">
-      <div className="page-title">
-        <h2>概览</h2>
-        <p>{basename}</p>
-      </div>
+      <div className="page-sticky" data-sticky="overview">
+        <div className="page-title">
+          <h2>概览</h2>
+          <p>{basename}</p>
+        </div>
 
       <Card>
         <div className="metrics">
@@ -75,6 +76,9 @@ export function Overview({
           </div>
         </div>
         <div className="row" style={{ marginTop: 10, gap: 6 }}>
+          <Tag size="small" variant="soft" color={failed ? 'app-red' : 'app-green'}>
+            {failed ? `基准 ${baseline.length - failed}/${baseline.length}` : '基准全中'}
+          </Tag>
           <Tag size="small" variant="soft" color="app-blue">已实现 {signedMoney(t.profitCents)}</Tag>
           <Tag size="small" variant="soft" color="app-orange">待卖 {money(t.targetAmountCents)}</Tag>
           {t.exposureQty > 0 && (
@@ -87,6 +91,7 @@ export function Overview({
           )}
         </div>
       </Card>
+      </div>
 
       <Card>
         <div className="row" style={{ marginBottom: 8 }}>

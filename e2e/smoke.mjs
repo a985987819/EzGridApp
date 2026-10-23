@@ -244,6 +244,28 @@ try {
   console.log('  概览药丸:', pills)
   check('药丸顺序跟随股票排序（三一重工在前）', JSON.parse(pills)[0] === '三一重工')
 
+  const stickyOf = (key) =>
+    evaluate(`(() => {
+      const el = document.querySelector('[data-sticky="${key}"]')
+      if (!el) return 'missing'
+      return getComputedStyle(el).position
+    })()`)
+  check('概览顶部吸顶', (await stickyOf('overview')) === 'sticky')
+  // 滚动后吸顶块应停在顶栏下方
+  await evaluate(`window.scrollTo(0, 600)`)
+  await sleep(400)
+  const stickyTop = await evaluate(`(() => {
+    const el = document.querySelector('[data-sticky="overview"]')
+    const header = document.querySelector('.app-header')
+    if (!el || !header) return null
+    return JSON.stringify({ el: Math.round(el.getBoundingClientRect().top), header: Math.round(header.getBoundingClientRect().bottom) })
+  })()`)
+  console.log('  吸顶位置:', stickyTop)
+  const st = JSON.parse(stickyTop)
+  check('滚动后吸顶块贴在顶栏下沿', Math.abs(st.el - st.header) <= 8, stickyTop)
+  await evaluate(`window.scrollTo(0, 0)`)
+  await sleep(300)
+
   console.log('\n[5] 价格网格列序')
   await clickByText('.stock-tabs > *', '柳工')
   await sleep(400)
@@ -258,6 +280,7 @@ try {
 
   console.log('\n[6] 明细：股票 tab + 抽屉编辑')
   check('切到明细', await nav('trades'))
+  check('明细顶部吸顶', (await stickyOf('trades')) === 'sticky')
   const tradePills = await evaluate(`JSON.stringify([...document.querySelectorAll('.stock-tabs > *')].map(e => e.textContent.trim()))`)
   check('明细也有股票药丸（含「全部」）', JSON.parse(tradePills)[0] === '全部' && JSON.parse(tradePills).length === 5, tradePills)
   check(
@@ -280,6 +303,25 @@ try {
   await closeDrawer()
   await nav('overview')
   check('编辑后盈利 ¥9,990', (await bodyText()).includes('9,990'))
+
+  console.log('\n[6.5] 拆分卖出目标（分批止盈）')
+  await nav('trades')
+  await evaluate(`document.querySelector('[data-row="16"]')?.click()`)
+  await sleep(600)
+  check('抽屉里有「卖出目标」', (await bodyText()).includes('卖出目标'))
+  await setInput('input[aria-label="拆分目标价"]', '10.00')
+  await setInput('input[aria-label="拆分股数"]', '100')
+  await sleep(200)
+  check('点拆分', await clickByText('button', '拆分'))
+  await sleep(900)
+  text = await bodyText()
+  check('出现手动拆分目标', text.includes('手动拆分') && text.includes('10.00'))
+  check('自动目标缩到 100', text.includes('自动（E 列）'))
+  // 清理：删掉刚拆的手动目标，回到 29 条待卖
+  check('删掉拆分目标', await clickByText('button', '删除'))
+  await sleep(700)
+  check('拆分目标已移除', !(await bodyText()).includes('手动拆分'))
+  await closeDrawer()
 
   console.log('\n[7] 删除 → 恢复 → 改回')
   await nav('trades')
@@ -325,13 +367,14 @@ try {
 
   console.log('\n[8] 挂单：确认昨收 → 涨停/跌停 → 今日挂单')
   check('切到挂单', await nav('orders'))
+  check('挂单顶部吸顶', (await stickyOf('orders')) === 'sticky')
   text = await bodyText()
   check('页面显示「涨跌幅 10%」', text.includes('涨跌幅 10%'))
   check('没有涨跌幅选择器', !text.includes('创业板 20%'))
   check('未确认时提示要确认', text.includes('才算涨停/跌停'))
 
   // 选柳工（待卖价多落在区间内）
-  await evaluate(`document.querySelectorAll('[role="combobox"]')[0]?.click()`)
+  await evaluate(`document.querySelector('.app-main [role="combobox"]')?.click()`)
   await sleep(400)
   check('选柳工', await clickByText('[role="option"]', '柳工'))
   await sleep(500)
@@ -349,6 +392,18 @@ try {
   check('今日挂单有可挂买', /可挂买\s*[1-9]/.test(text))
   check('今日挂单里有「记成交」', text.includes('记成交'))
 
+  console.log('\n[8.2] 挂单计划价')
+  check('点第一个「计划」', await clickByText('button', '计划'))
+  await sleep(500)
+  check('计划弹窗出现', (await bodyText()).includes('计划价只用于显示和导出'))
+  await setInput('input[data-field="planPrice"]', '7.95')
+  await setInput('input[data-field="planQty"]', '300')
+  await sleep(200)
+  check('保存计划', await clickByText('button', '保存'))
+  await sleep(800)
+  text = await bodyText()
+  check('列表出现「计划 7.95 × 300」', text.includes('计划 7.95') && text.includes('300'))
+  await sleep(600)
   const orderShot = await send('Page.captureScreenshot', { format: 'png' })
   writeFileSync(join(OUT, 'mobile-orders-confirmed.png'), Buffer.from(orderShot.data, 'base64'))
 
@@ -364,7 +419,7 @@ try {
   check('回补 500 股后待补 1,500', text.includes('1,500'))
   check('回补后净持仓 13,700', text.includes('13,700'))
   await nav('orders')
-  await evaluate(`document.querySelectorAll('[role="combobox"]')[0]?.click()`)
+  await evaluate(`document.querySelector('.app-main [role="combobox"]')?.click()`)
   await sleep(300)
   await clickByText('[role="option"]', '柳工')
   await sleep(400)
@@ -444,12 +499,28 @@ try {
   check('回到净持仓 13,200', text.includes('13,200'))
   check('基准重新全中', text.includes('基准全中'))
 
+  console.log('\n[11.2] 账户')
+  await nav('manage')
+  check('切到账户 tab', await clickByText('[role="tab"]', '账户'))
+  await sleep(500)
+  text = await bodyText()
+  check('默认账户存在', text.includes('默认账户'))
+  await setInput('input[aria-label="账户名"]', '2027 年')
+  await sleep(200)
+  check('点添加', await clickByText('button', '添加'))
+  await sleep(900)
+  text = await bodyText()
+  check('新账户出现在列表', text.includes('2027 年'))
+  check('顶部账户选择器存在', (await evaluate(`Boolean(document.querySelector('[aria-label="切换账户"]'))`)) === true)
+
   console.log('\n[11.5] 下拉浮层不被卡片裁掉')
   await nav('manage')
+  await clickByText('[role="tab"]', '股票')
+  await sleep(500)
   check('打开涨跌幅下拉', await evaluate(`(() => {
-    const boxes = [...document.querySelectorAll('[role="combobox"]')]
-    const box = boxes[boxes.length - 1]
+    const box = document.querySelector('.app-main [role="combobox"]')
     if (!box) return false
+    box.scrollIntoView({ block: 'center' })
     box.click(); return true
   })()`))
   await sleep(500)
@@ -457,11 +528,14 @@ try {
     const d = document.querySelector('[class*="animal-dropdown"]')
     if (!d) return null
     const r = d.getBoundingClientRect()
-    const hit = document.elementFromPoint(r.left + r.width / 2, r.top + Math.min(24, r.height / 2))
+    const y = Math.min(Math.max(r.top + 24, 2), innerHeight - 2)
+    const hit = document.elementFromPoint(r.left + r.width / 2, y)
     return JSON.stringify({
       inViewport: r.right <= innerWidth + 1 && r.left >= -1,
       hitIsOption: Boolean(hit && hit.closest('[class*="animal-dropdown"]')),
       height: Math.round(r.height),
+      top: Math.round(r.top),
+      hitClass: hit ? String(hit.className).slice(0, 40) : 'null',
     })
   })()`)
   console.log('  下拉检测:', dd)

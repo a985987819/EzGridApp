@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import 'animal-island-ui/style'
-import { Tag } from 'animal-island-ui'
+import { Select } from 'animal-island-ui'
 import { AppProvider, useApp } from './store/useApp'
 import { Overview } from './pages/Overview'
 import { TradesPage } from './pages/TradesPage'
@@ -23,10 +23,13 @@ const TABS: { key: Tab; label: string; Icon: typeof IconGrid }[] = [
 function Shell() {
   const [tab, setTab] = useState<Tab>('overview')
   const [focus, setFocus] = useState<{ stock: string; priceCents: number } | null>(null)
-  const { ready, ledger, records, baseline } = useApp()
+  const { ready, ledger, activeAccountId, accounts, setActiveAccount } = useApp()
 
-  const failed = baseline.filter((c) => !c.ok).length
   const pendingOrders = ledger.orders.length
+  const accountOptions = [
+    { key: 'all', label: '全部账户' },
+    ...accounts.map((a) => ({ key: a.id, label: a.name })),
+  ]
 
   return (
     <div className="app">
@@ -34,15 +37,20 @@ function Shell() {
         <div className="brand-block">
           <strong>网格交易</strong>
           <span>
-            {records.length ? `${records.filter((r) => !r.deletedAt).length} 行 · 净持仓 ${ledger.totals.netQty.toLocaleString('zh-CN')} 股` : '还没有数据'}
+            {ledger.totals.rows
+              ? `${ledger.totals.rows} 行 · 净持仓 ${ledger.totals.netQty.toLocaleString('zh-CN')} 股`
+              : '还没有数据'}
           </span>
         </div>
         <div className="spacer" />
-        {records.length > 0 && (
-          <Tag size="small" variant="soft" color={failed ? 'app-red' : 'app-green'}>
-            {failed ? `基准 ${baseline.length - failed}/${baseline.length}` : '基准全中'}
-          </Tag>
-        )}
+        <div className="account-select">
+          <Select
+            options={accountOptions}
+            value={activeAccountId}
+            onChange={(v) => void setActiveAccount(v)}
+            aria-label="切换账户"
+          />
+        </div>
       </header>
 
       <main className="app-main">

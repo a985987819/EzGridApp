@@ -5,7 +5,19 @@ import { downloadText } from '../../ui/csv'
 import { IconDownload, IconUpload } from '../../ui/icons'
 
 export function ManageBackup() {
-  const { exportBackup, restoreBackup, resetAll, records, audits, basename, deriveSellPrice, setDeriveSellPrice, lastBackupAt } = useApp()
+  const {
+    exportBackup,
+    restoreBackup,
+    resetAll,
+    records,
+    audits,
+    basename,
+    deriveSellPrice,
+    setDeriveSellPrice,
+    lastBackupAt,
+    systemFont,
+    setSystemFont,
+  } = useApp()
   const fileRef = useRef<HTMLInputElement>(null)
 
   return (
@@ -92,8 +104,21 @@ export function ManageBackup() {
       </Card>
 
       <Card>
+        <div className="row">
+          <div style={{ flex: 1 }}>
+            <strong style={{ fontSize: 14 }}>使用系统字体</strong>
+            <p className="hint-block" style={{ margin: '4px 0 0' }}>
+              组件库自带三档中文字体（各约 1.1MB）。打开后改用系统字体，浏览器不再下载这些字体文件，
+              手机上首屏更轻；代价是少一点岛民手写感。
+            </p>
+          </div>
+          <Switch checked={systemFont} onChange={(v) => void setSystemFont(v)} aria-label="使用系统字体" />
+        </div>
+      </Card>
+
+      <Card>
         <Collapse
-          question="版本说明（V3）"
+          question="版本说明（V7）"
           answer={
             <div className="hint-block">
               <p style={{ marginTop: 0 }}>
@@ -101,7 +126,7 @@ export function ManageBackup() {
                 概览三格 + 价格网格、明细行内编辑 + 变更审计 + 软删除、挂单清单、月度统计、备份恢复。
               </p>
               <p style={{ marginBottom: 0 }}>
-                未实现：回补成交录入（V4）、一批次拆多目标、挂单计划价编辑。
+                已实现：回补成交、批次拆多目标、挂单计划价、多账户、导入英文表头兼容。
               </p>
             </div>
           }

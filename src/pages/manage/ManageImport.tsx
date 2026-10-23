@@ -17,7 +17,19 @@ const ANOMALY_LABEL: Record<string, string> = {
 }
 
 export function ManageImport() {
-  const { stocks, records, preview, setPreview, commitImport, deriveSellPrice, setDeriveSellPrice, batches, rollbackBatch } = useApp()
+  const {
+    stocks,
+    records,
+    preview,
+    setPreview,
+    commitImport,
+    deriveSellPrice,
+    setDeriveSellPrice,
+    batches,
+    rollbackBatch,
+    activeAccountId,
+    accounts,
+  } = useApp()
   const [busy, setBusy] = useState(false)
   const [lastFile, setLastFile] = useState('导入文件.xlsx')
 
@@ -108,7 +120,12 @@ export function ManageImport() {
             载入内置示例
           </Button>
           <div className="spacer" />
-          <span className="tiny muted">本地已有 {records.filter((r) => !r.deletedAt).length} 行</span>
+          <span className="tiny muted">
+            本地已有 {records.filter((r) => !r.deletedAt).length} 行 · 写入账户：
+            {activeAccountId === 'all'
+              ? '默认账户'
+              : accounts.find((a) => a.id === activeAccountId)?.name ?? '默认账户'}
+          </span>
         </div>
         <label className="row" style={{ gap: 8, marginTop: 10, fontSize: 12 }}>
           <input
