@@ -257,3 +257,38 @@ button { font-family: inherit; }
 }
 .stock-tabs::-webkit-scrollbar { display: none; }
 .stock-tabs > * { flex: 0 0 auto; }
+
+/* ---------- 股票排序 ---------- */
+.drag-handle {
+  border: none;
+  background: transparent;
+  color: var(--animal-text-color-secondary, #9f927d);
+  padding: 2px 0;
+  display: inline-flex;
+  align-items: center;
+  touch-action: none;
+  cursor: grab;
+  border-radius: 8px;
+}
+.drag-handle:active { cursor: grabbing; background: var(--animal-bg-color-secondary, #f0e8d8); }
+.order-chip {
+  min-width: 18px;
+  height: 18px;
+  border-radius: 9px;
+  background: var(--animal-bg-color-secondary, #f0e8d8);
+  color: var(--animal-text-color-secondary, #9f927d);
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+}
+.stock-card.off { opacity: 0.55; }
+.stock-card.dragging {
+  pointer-events: none;
+  transform: scale(1.02);
+  box-shadow: 0 10px 24px rgba(61, 52, 40, 0.18);
+  border-color: var(--animal-primary-color, #19c8b9);
+}
+.type-toggle { display: flex; gap: 6px; }
+.type-toggle > * { flex: 1; justify-content: center; }
+
+.grow { flex: 1; min-width: 0; }

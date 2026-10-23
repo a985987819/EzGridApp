@@ -10,10 +10,10 @@ export function stockIdOf(name: string): string {
 
 /** 26 年网格记录里出现的 4 只票，默认间隔来自 S0 勘察 */
 export const DEFAULT_STOCKS: StockConfig[] = [
-  { id: stockIdOf('柳工'), name: '柳工', intervalCents: 57, priceLimitType: 'main_10' },
-  { id: stockIdOf('三一重工'), name: '三一重工', intervalCents: 107, priceLimitType: 'main_10' },
-  { id: stockIdOf('奥佳华'), name: '奥佳华', intervalCents: 37, priceLimitType: 'main_10' },
-  { id: stockIdOf('安道麦'), name: '安道麦', intervalCents: 37, priceLimitType: 'main_10' },
+  { id: stockIdOf('柳工'), name: '柳工', intervalCents: 57, priceLimitType: 'main_10', order: 0, enabled: true },
+  { id: stockIdOf('三一重工'), name: '三一重工', intervalCents: 107, priceLimitType: 'main_10', order: 1, enabled: true },
+  { id: stockIdOf('奥佳华'), name: '奥佳华', intervalCents: 37, priceLimitType: 'main_10', order: 2, enabled: true },
+  { id: stockIdOf('安道麦'), name: '安道麦', intervalCents: 37, priceLimitType: 'main_10', order: 3, enabled: true },
 ]
 
 /** 文档 §03 的 8 个基准数（仅对 26 年数据集适用，用作回归红线） */

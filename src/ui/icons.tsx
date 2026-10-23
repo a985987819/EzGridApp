@@ -91,3 +91,9 @@ export const IconChevron = (p: SVGProps<SVGSVGElement>) => (
     <path d="M9 5.5 15.5 12 9 18.5" />
   </svg>
 )
+
+export const IconGrip = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)} width={18} height={18}>
+    <path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01" strokeWidth={2.6} />
+  </svg>
+)

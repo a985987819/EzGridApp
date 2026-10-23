@@ -1,5 +1,7 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Button, Card, Collapse, Tag } from 'animal-island-ui'
+import { activeStockNames } from '../domain/stocks'
+import type { StockSummary } from '../domain/types'
 import { useApp } from '../store/useApp'
 import { CheckList } from '../components/CheckGrid'
 import { PriceGrid } from '../components/PriceGrid'
@@ -12,12 +14,23 @@ export function Overview({
   onPick: (stock: string, priceCents: number) => void
   goManage: () => void
 }) {
-  const { ledger, baseline, records, basename } = useApp()
+  const { ledger, baseline, records, basename, stocks } = useApp()
   const [active, setActive] = useState('')
   const t = ledger.totals
   const failed = baseline.filter((c) => !c.ok).length
 
-  if (records.filter((r) => !r.deletedAt).length === 0) {
+  const enabledNames = useMemo(() => activeStockNames(stocks), [stocks])
+  const withRows = useMemo<StockSummary[]>(() => {
+    const byName = new Map(ledger.byStock.map((s) => [s.stockName, s]))
+    const out: StockSummary[] = []
+    for (const name of enabledNames) {
+      const s = byName.get(name)
+      if (s && s.rows > 0) out.push(s)
+    }
+    return out
+  }, [ledger.byStock, enabledNames])
+  const hasData = records.some((r) => !r.deletedAt)
+  if (!hasData) {
     return (
       <Card>
         <div className="empty-box">
@@ -31,7 +44,7 @@ export function Overview({
     )
   }
 
-  const withRows = ledger.byStock.filter((s) => s.rows > 0)
+  const hiddenCount = ledger.byStock.filter((s) => s.rows > 0 && !enabledNames.includes(s.stockName)).length
   const current = withRows.find((s) => s.stockName === active) ?? withRows[0]
 
   return (
@@ -128,6 +141,7 @@ export function Overview({
       </Card>
 
       <p className="tiny muted" style={{ textAlign: 'center', margin: '0 0 4px' }}>
+        {hiddenCount > 0 && `已隐藏 ${hiddenCount} 只停用股票（数据仍计入上方合计） · `}
         数据只存在本机浏览器 · 每周记得去「管理 · 备份」导一份
       </p>
     </div>

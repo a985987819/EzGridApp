@@ -1,10 +1,17 @@
 import { Card, Tag } from 'animal-island-ui'
 import { useApp } from '../store/useApp'
+import { activeStocks } from '../domain/stocks'
 import { money, qty, signedMoney, tone } from '../ui/format'
 
 export function StatsPage() {
-  const { ledger } = useApp()
+  const { ledger, stocks } = useApp()
   const t = ledger.totals
+  const active = activeStocks(stocks)
+  const enabledNames = new Set(active.map((s) => s.name))
+  const enabledIds = new Set(active.map((s) => s.id))
+  const byStock = ledger.byStock.filter((s) => enabledNames.has(s.stockName))
+  const groups = ledger.groups.filter((g) => enabledIds.has(g.stockId))
+  const hiddenCount = ledger.byStock.length - byStock.length
 
   return (
     <div className="stack">
@@ -68,7 +75,7 @@ export function StatsPage() {
         <div className="row" style={{ marginBottom: 4 }}>
           <strong style={{ fontSize: 14 }}>按股票</strong>
         </div>
-        {ledger.byStock.map((s) => (
+        {byStock.map((s) => (
           <div key={s.stockName} className="line">
             <div className="left" style={{ flex: 1 }}>
               <div className="t1">
@@ -103,7 +110,10 @@ export function StatsPage() {
           </div>
         ))}
         <div className="line">
-          <div className="left t1">合计</div>
+          <div className="left t1">
+            合计
+            {hiddenCount > 0 && <span className="tiny muted" style={{ fontWeight: 400 }}> · 另有 {hiddenCount} 只停用股票计入合计</span>}
+          </div>
           <div className={`right num ${tone(t.profitCents)}`} style={{ fontWeight: 700 }}>{signedMoney(t.profitCents)}</div>
         </div>
       </Card>
@@ -114,10 +124,10 @@ export function StatsPage() {
           <div className="spacer" />
           <span className="tiny muted">R4 全部卖出入池</span>
         </div>
-        {ledger.groups.length === 0 ? (
+        {groups.length === 0 ? (
           <div className="empty-box">没有可分配的组池</div>
         ) : (
-          ledger.groups.map((g) => (
+          groups.map((g) => (
             <div key={g.groupKey} className="line">
               <div className="left">
                 <div className="t1 mono" style={{ fontSize: 12.5 }}>{g.groupKey.replace('stock:', '')}</div>

@@ -1,4 +1,4 @@
-# 网格交易管理（V3）
+# 网格交易管理（V4）
 
 把 `26年网格记录.xlsx` 里「交易记录」这张手工表，变成一套**能自动生成待买 / 待卖清单、能算奖励、能自证数据没错**的本地网页工具。
 
@@ -12,7 +12,7 @@
 cd E:\projects\grid-trading
 npm install
 npm run dev       # http://127.0.0.1:5173
-npm run test      # 52 条单元测试，含真实文件 dry-run
+npm run test      # 66 条单元测试，含真实文件 dry-run
 npm run build     # tsc --noEmit + vite build
 node e2e/smoke.mjs http://127.0.0.1:5173   # 无头浏览器走一遍主链路
 ```
@@ -90,7 +90,9 @@ src/
   components/          CheckList / PriceGrid
   pages/
     Overview / TradesPage / OrdersPage / StatsPage / ManagePage
-    manage/            导入 / 股票 / 备份 三个子页（挂在「管理」tab）
+    manage/            股票 / 导入 / 备份 三个子页（挂在「管理」tab）
+  domain/stocks.ts     排序与启停：normalizeStocks / activeStocks / applyOrder
+  domain/manual.ts     手动新增买入 / 卖出 → RawRecord
   ui/                  icons / format / csv
 e2e/smoke.mjs          本机 Chrome 走一遍主链路（移动端 390×844 视口）
 tests/fixtures/        26年网格记录.xlsx（测试与内置示例都用它）
@@ -103,6 +105,22 @@ tests/fixtures/        26年网格记录.xlsx（测试与内置示例都用它�
 2. **UI 全部走 `animal-island-ui`**（Card / Button / Tabs / Tag / Input / Select / Drawer / Modal /
    Switch / Upload / Collapse / Notification），只有价格网格用原生 `<table>`——它是个二维矩阵，
    不是数据表格，用 Table 反而更绕。配色、圆角、字体全部继承库的 `--animal-*` token。
+
+## V4 做了什么（本次）
+
+1. **管理页把「股票」提到第一个 tab**（股票 / 导入 / 备份）。
+2. **股票拖动排序**：卡片左侧手柄按住上下拖，`StockConfig.order` 落库；
+   **概览药丸、明细 tab、挂单选股、统计按股票列表全部跟随这个顺序**。
+3. **启用开关**：停用的股票只在管理页可见，其他页面全部隐藏（数据仍计入合计与守恒式，
+   因为停用是展示偏好，不是删数据）。
+4. **涨跌幅只属于股票配置**：挂单页删掉涨跌幅选择器，直接用该股 `priceLimitType` / `customLimitPct` 算区间。
+5. **明细也按股票分 tab**：`全部 + 每只票` 的可横滑药丸，替代原来的下拉。
+6. **所有弹窗关闭打字机**（`Modal typewriter={false}`），打开即全文可见。
+7. **新增一笔支持买入 / 卖出**：
+   - 买入：日期 / 买入价 / 份额 / 目标售价（可空，空则按「买入价 + 间隔」派生）；
+   - 卖出：卖出日期 / 卖出数量 / 成交价 / 回补价 P（可空）；买入信息可以留空 = 先卖后买，
+     之后在明细里补买入价与份额，系统会自动生成该批次。
+8. 完整版本规划见 [`ROADMAP.md`](./ROADMAP.md)（V1–V7）。
 
 ## V3 做了什么
 
@@ -154,7 +172,7 @@ V1 只做到「算得对、看得见」，V2 补上「改得动、改得住」�
 ## 还没做的
 
 - **回补成交录入**：`RebuyOrder.status` 恒为 `open`，组池 `used` 恒为 0，P4 的 `groupKeyAtExecution` 还没接。
-  这块要动「回补算不算新批次」的建模（会影响三条守恒式），留到下一个版本单独做。
+  这块要动「回补算不算新批次」的建模（会影响三条守恒式），排在 V5，见 ROADMAP。
 - **一个批次拆多个卖出目标**：`SellTarget` 类型支持多条，生成逻辑仍是「一批次一目标」。
 - **挂单计划价**：`planPriceCents / planQty` 字段预留，页面还没做可编辑的挂单计划。
 - **包体积**：组件库自带 Noto Sans SC 的中文字体（三档字重各约 1.1MB），首屏 gzip 后 JS 235KB + CSS 27KB，

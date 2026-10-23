@@ -3,6 +3,8 @@ import { Button, Card, Drawer, Input, Modal, Select, Switch, Tag, notificationOp
 import { useApp } from '../store/useApp'
 import { serialToIso } from '../domain/defaults'
 import { EDITABLE, fieldText, type EditableKey } from '../domain/edit'
+import { activeStocks } from '../domain/stocks'
+import type { ManualInput } from '../domain/manual'
 import { isoDate, money, price, qty, signedMoney, tone } from '../ui/format'
 import { downloadText, toCsv } from '../ui/csv'
 import type { Lot, RawRecord, SellExecution } from '../domain/types'
@@ -26,6 +28,19 @@ const STATUS_OPTIONS: { key: StatusFilter; label: string }[] = [
 
 const BLANK_DRAFT = Object.fromEntries(EDITABLE.map((f) => [f.key, ''])) as Record<EditableKey, string>
 
+const BLANK_FORM: ManualInput = {
+  kind: 'buy',
+  stockName: '',
+  date: '',
+  price: '',
+  qty: '',
+  targetPrice: '',
+  rebuyPrice: '',
+  buyPrice: '',
+  buyQty: '',
+  buyDate: '',
+}
+
 export function TradesPage({
   focus,
   onClearFocus,
@@ -43,9 +58,16 @@ export function TradesPage({
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState<Record<EditableKey, string>>(BLANK_DRAFT)
   const [adding, setAdding] = useState(false)
-  const [form, setForm] = useState({ stockName: '', buyDate: '', buyPrice: '', buyQty: '', targetPrice: '' })
+  const [form, setForm] = useState<ManualInput>(BLANK_FORM)
 
-  const stockNames = useMemo(() => [...new Set(records.map((r) => r.stockName))], [records])
+  // 股票顺序 / 启停都来自「管理 · 股票」
+  const stockList = useMemo(() => activeStocks(stocks), [stocks])
+  const stockNames = useMemo(() => stockList.map((s) => s.name), [stockList])
+  const enabledSet = useMemo(() => new Set(stockNames), [stockNames])
+  const hiddenStockCount = useMemo(
+    () => new Set(records.map((r) => r.stockName).filter((n) => !enabledSet.has(n))).size,
+    [records, enabledSet],
+  )
 
   const rows = useMemo<Row[]>(() => {
     const lotMap = new Map(ledger.lots.map((l) => [l.sourceRow, l]))
@@ -59,7 +81,10 @@ export function TradesPage({
     () =>
       rows.filter((r) => {
         if (!showDeleted && r.rec.deletedAt) return false
-        if (stockFilter !== 'all' && r.rec.stockName !== stockFilter) return false
+        if (stockFilter === 'all') {
+          // 停用的股票不出现在明细里
+          if (!enabledSet.has(r.rec.stockName)) return false
+        } else if (r.rec.stockName !== stockFilter) return false
         if (keyword && !String(r.rec.sourceRow).includes(keyword) && !r.rec.stockName.includes(keyword)) return false
         if (priceFilter !== null) {
           const prices = [r.rec.targetPriceCents, r.rec.buyPriceCents, r.sell?.priceCents ?? null, r.rec.earlyBuyPriceCents]
@@ -80,7 +105,7 @@ export function TradesPage({
             return true
         }
       }),
-    [rows, stockFilter, keyword, priceFilter, status, showDeleted],
+    [rows, stockFilter, keyword, priceFilter, status, showDeleted, enabledSet],
   )
 
   const current = filtered.find((r) => r.rec.sourceRow === openRow) ?? null
@@ -124,8 +149,12 @@ export function TradesPage({
     try {
       const row = await addManualRecord(form)
       setAdding(false)
-      setForm({ stockName: '', buyDate: '', buyPrice: '', buyQty: '', targetPrice: '' })
-      notificationOpen({ message: `已新增第 ${row} 行`, type: 'success' })
+      setForm(BLANK_FORM)
+      notificationOpen({
+        message: `已新增第 ${row} 行`,
+        description: form.kind === 'sell' && !form.buyPrice ? '先卖后买：之后可在明细里补买入信息' : undefined,
+        type: 'success',
+      })
     } catch (e) {
       notificationOpen({ message: '新增失败', description: e instanceof Error ? e.message : String(e), type: 'error' })
     }
@@ -163,21 +192,34 @@ export function TradesPage({
 
       <Card>
         <div className="stack tight">
+          <div className="stock-tabs">
+            <Tag
+              size="medium"
+              variant={stockFilter === 'all' ? 'solid' : 'soft'}
+              color={stockFilter === 'all' ? 'app-teal' : 'default'}
+              onClick={() => setStockFilter('all')}
+            >
+              全部
+            </Tag>
+            {stockNames.map((n) => (
+              <Tag
+                key={n}
+                size="medium"
+                variant={stockFilter === n ? 'solid' : 'soft'}
+                color={stockFilter === n ? 'app-teal' : 'default'}
+                onClick={() => setStockFilter(n)}
+              >
+                {n}
+              </Tag>
+            ))}
+          </div>
           <div className="row nowrap">
-            <Select
-              options={[{ key: 'all', label: '全部股票' }, ...stockNames.map((s) => ({ key: s, label: s }))]}
-              value={stockFilter}
-              onChange={setStockFilter}
-              aria-label="按股票筛选"
-            />
             <Select
               options={STATUS_OPTIONS.map((o) => ({ key: o.key, label: o.label }))}
               value={status}
               onChange={(v) => setStatus(v as StatusFilter)}
               aria-label="按状态筛选"
             />
-          </div>
-          <div className="row nowrap">
             <Input
               value={keyword}
               onChange={(e) => setKeyword(e.target.value)}
@@ -186,17 +228,6 @@ export function TradesPage({
               onClear={() => setKeyword('')}
               aria-label="搜索"
             />
-            {priceFilter !== null && (
-              <Button
-                size="small"
-                onClick={() => {
-                  setPriceFilter(null)
-                  onClearFocus()
-                }}
-              >
-                {(priceFilter / 100).toFixed(2)} ×
-              </Button>
-            )}
           </div>
           <div className="row">
             <label className="row" style={{ gap: 6, fontSize: 12 }}>
@@ -206,9 +237,36 @@ export function TradesPage({
             <div className="spacer" />
             <Button size="small" onClick={exportCsv}>导出 CSV</Button>
           </div>
-          <Button block type="primary" onClick={() => setAdding(true)}>新增一笔</Button>
+          <Button
+            block
+            type="primary"
+            onClick={() => {
+              setForm({ ...BLANK_FORM, stockName: stockFilter === 'all' ? stockNames[0] ?? '' : stockFilter })
+              setAdding(true)
+            }}
+          >
+            新增一笔
+          </Button>
         </div>
       </Card>
+
+      {priceFilter !== null && (
+        <div className="row" style={{ margin: '-4px 2px 0' }}>
+          <Tag size="small" variant="soft" color="app-blue">
+            价格 {(priceFilter / 100).toFixed(2)}
+          </Tag>
+          <Button
+            size="small"
+            type="text"
+            onClick={() => {
+              setPriceFilter(null)
+              onClearFocus()
+            }}
+          >
+            清除
+          </Button>
+        </div>
+      )}
 
       {filtered.length === 0 ? (
         <Card>
@@ -259,6 +317,7 @@ export function TradesPage({
 
       <p className="tiny muted" style={{ textAlign: 'center' }}>
         共 {filtered.length} 行 · 合计盈利 {money(filtered.reduce((a, r) => a + (r.sell?.profitCents ?? 0), 0))}
+        {hiddenStockCount > 0 && stockFilter === 'all' && ` · 已隐藏 ${hiddenStockCount} 只停用股票`}
       </p>
 
       <Drawer
@@ -396,6 +455,7 @@ export function TradesPage({
       <Modal
         open={adding}
         title="新增一笔"
+        typewriter={false}
         onClose={() => setAdding(false)}
         footer={
           <div className="row nowrap" style={{ gap: 8 }}>
@@ -404,36 +464,120 @@ export function TradesPage({
           </div>
         }
       >
-        <div className="form-grid">
-          <label>
-            <span>股票</span>
-            <Select
-              options={[{ key: '', label: '选择…' }, ...stocks.map((s) => ({ key: s.name, label: s.name }))]}
-              value={form.stockName}
-              onChange={(v) => setForm({ ...form, stockName: v })}
-              placeholder="选择股票"
-              aria-label="股票"
-            />
-          </label>
-          <label>
-            <span>买入日期</span>
-            <Input value={form.buyDate} placeholder="2026-10-23" onChange={(e) => setForm({ ...form, buyDate: e.target.value })} />
-          </label>
-          <label>
-            <span>买入价</span>
-            <Input value={form.buyPrice} placeholder="8.01" onChange={(e) => setForm({ ...form, buyPrice: e.target.value })} />
-          </label>
-          <label>
-            <span>买入份额</span>
-            <Input value={form.buyQty} placeholder="700" onChange={(e) => setForm({ ...form, buyQty: e.target.value })} />
-          </label>
-          <label>
-            <span>目标售价</span>
-            <Input value={form.targetPrice} placeholder="8.58" onChange={(e) => setForm({ ...form, targetPrice: e.target.value })} />
-          </label>
-          <p className="tiny muted" style={{ margin: 0 }}>
-            手动新增的行号从 100000 起，不打乱 Excel 行号回溯。
-          </p>
+        <div className="stack tight">
+          <div className="type-toggle">
+            <Button
+              type={form.kind === 'buy' ? 'primary' : 'default'}
+              onClick={() => setForm({ ...form, kind: 'buy' })}
+            >
+              买入
+            </Button>
+            <Button
+              type={form.kind === 'sell' ? 'primary' : 'default'}
+              onClick={() => setForm({ ...form, kind: 'sell' })}
+            >
+              卖出
+            </Button>
+          </div>
+
+          <div className="form-grid">
+            <label>
+              <span>股票</span>
+              <Select
+                options={[{ key: '', label: '选择…' }, ...stockNames.map((n) => ({ key: n, label: n }))]}
+                value={form.stockName}
+                onChange={(v) => setForm({ ...form, stockName: v })}
+                placeholder="选择股票"
+                aria-label="股票"
+              />
+            </label>
+            <label>
+              <span>{form.kind === 'buy' ? '买入日期' : '卖出日期'}</span>
+              <Input
+                value={form.date}
+                placeholder="2026-10-23"
+                onChange={(e) => setForm({ ...form, date: e.target.value })}
+                data-field="date"
+              />
+            </label>
+            <label>
+              <span>{form.kind === 'buy' ? '买入价' : '成交价'}</span>
+              <Input
+                value={form.price}
+                placeholder={form.kind === 'buy' ? '8.01' : '8.58'}
+                onChange={(e) => setForm({ ...form, price: e.target.value })}
+                data-field="price"
+              />
+            </label>
+            <label>
+              <span>{form.kind === 'buy' ? '买入份额' : '卖出数量'}</span>
+              <Input
+                value={form.qty}
+                placeholder="700"
+                onChange={(e) => setForm({ ...form, qty: e.target.value })}
+                data-field="qty"
+              />
+            </label>
+
+            {form.kind === 'buy' ? (
+              <label>
+                <span>目标售价（可空，空则按「买入价 + 间隔」派生）</span>
+                <Input
+                  value={form.targetPrice ?? ''}
+                  placeholder="8.58"
+                  onChange={(e) => setForm({ ...form, targetPrice: e.target.value })}
+                  data-field="targetPrice"
+                />
+              </label>
+            ) : (
+              <>
+                <label>
+                  <span>回补价 P（可空，空则视为已回补）</span>
+                  <Input
+                    value={form.rebuyPrice ?? ''}
+                    placeholder="7.90"
+                    onChange={(e) => setForm({ ...form, rebuyPrice: e.target.value })}
+                    data-field="rebuyPrice"
+                  />
+                </label>
+                <p className="tiny muted" style={{ margin: 0 }}>
+                  先卖后买：买入信息可以现在填，也可以留空——之后在明细里补买入价和份额，会自动生成待卖。
+                </p>
+                <div className="row nowrap">
+                  <label style={{ flex: 1 }}>
+                    <span>买入价（选填）</span>
+                    <Input
+                      value={form.buyPrice ?? ''}
+                      placeholder="8.30"
+                      onChange={(e) => setForm({ ...form, buyPrice: e.target.value })}
+                      data-field="buyPrice"
+                    />
+                  </label>
+                  <label style={{ flex: 1 }}>
+                    <span>买入份额（选填）</span>
+                    <Input
+                      value={form.buyQty ?? ''}
+                      placeholder="700"
+                      onChange={(e) => setForm({ ...form, buyQty: e.target.value })}
+                      data-field="buyQty"
+                    />
+                  </label>
+                </div>
+                <label>
+                  <span>买入日期（选填）</span>
+                  <Input
+                    value={form.buyDate ?? ''}
+                    placeholder="2026-10-22"
+                    onChange={(e) => setForm({ ...form, buyDate: e.target.value })}
+                    data-field="buyDate"
+                  />
+                </label>
+              </>
+            )}
+            <p className="tiny muted" style={{ margin: 0 }}>
+              手动新增的行号从 100000 起，不打乱 Excel 行号回溯。
+            </p>
+          </div>
         </div>
       </Modal>
     </div>

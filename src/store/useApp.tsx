@@ -12,6 +12,8 @@ import { buildLedger } from '../domain/ledger'
 import { compareBaseline } from '../domain/baseline'
 import { DEFAULT_STOCKS } from '../domain/defaults'
 import { applyEdits, type EditableKey } from '../domain/edit'
+import { applyOrder, normalizeStocks } from '../domain/stocks'
+import { buildManualRecord, MANUAL_ROW_BASE, type ManualInput } from '../domain/manual'
 import type { AuditLog, CheckResult, Ledger, RawRecord, StockConfig } from '../domain/types'
 import type { ParseResult } from '../io/parseWorkbook'
 
@@ -19,14 +21,6 @@ export interface ImportOutcome {
   added: number
   duplicated: number
   batch: ImportBatch
-}
-
-export interface ManualInput {
-  stockName: string
-  buyDate: string
-  buyPrice: string
-  buyQty: string
-  targetPrice: string
 }
 
 interface AppContextValue {
@@ -47,6 +41,8 @@ interface AppContextValue {
   softDelete: (sourceRow: number) => Promise<void>
   restore: (sourceRow: number) => Promise<void>
   addManualRecord: (input: ManualInput) => Promise<number>
+  reorderStocks: (orderedIds: string[]) => Promise<void>
+  setStockEnabled: (id: string, enabled: boolean) => Promise<void>
   historyOf: (sourceRow: number) => AuditLog[]
   updateStock: (s: StockConfig) => Promise<void>
   addStock: (s: StockConfig) => Promise<void>
@@ -58,8 +54,6 @@ interface AppContextValue {
 }
 
 const AppContext = createContext<AppContextValue | null>(null)
-
-const MANUAL_ROW_BASE = 100000
 
 function audit(entityId: string, field: string, oldValue: string, newValue: string, source: string): AuditLog {
   return { entity: 'record', entityId, field, oldValue, newValue, at: Date.now(), source }
@@ -88,14 +82,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if ((await db.stocks.count()) === 0) {
         await db.stocks.bulkPut(DEFAULT_STOCKS)
       }
-      const [s, r, a, b] = await Promise.all([
+      const [sRaw, r, a, b] = await Promise.all([
         db.stocks.toArray(),
         db.records.toArray(),
         db.auditLogs.toArray(),
         db.batches.orderBy('importedAt').reverse().toArray(),
       ])
       if (!alive) return
-      setStocks(s.length ? s : DEFAULT_STOCKS)
+      // 老库补齐 order / enabled 并压平序号
+      const s = normalizeStocks(sRaw.length ? sRaw : DEFAULT_STOCKS)
+      const dirty = sRaw.some((x) => typeof x.order !== 'number' || typeof x.enabled !== 'boolean')
+      if (dirty) await db.stocks.bulkPut(s)
+      setStocks(s)
       setRecords(r)
       setAudits(a)
       setBatches(b)
@@ -219,34 +217,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const all = await db.records.toArray()
       const maxRow = all.reduce((a, r) => Math.max(a, r.sourceRow), MANUAL_ROW_BASE - 1)
       const sourceRow = Math.max(maxRow + 1, MANUAL_ROW_BASE)
-      const base: RawRecord = {
-        sourceRow,
-        stockName: input.stockName.trim(),
-        buyDateSerial: null,
-        buyPriceCents: null,
-        buyQtyRaw: null,
-        qtyNeedsDerive: false,
-        targetPriceCents: null,
-        targetNeedsDerive: false,
-        soldQty: null,
-        sellDateSerial: null,
-        earlyBuyPriceCents: null,
-        rawProfitCents: null,
-        importKey: `manual:${sourceRow}:${Date.now()}`,
-        origin: 'manual',
-        batchId: null,
-      }
-      const { record, errors } = applyEdits(base, {
-        buyDate: input.buyDate,
-        buyPrice: input.buyPrice,
-        buyQty: input.buyQty,
-        targetPrice: input.targetPrice,
-      })
+      const { record, errors } = buildManualRecord(input, sourceRow)
       if (errors.length) throw new Error(errors.join('；'))
       await db.transaction('rw', db.records, db.auditLogs, async () => {
         await db.records.put(record)
         await db.auditLogs.add(
-          audit(`record:${sourceRow}`, '新增', '', `${record.stockName} ${record.buyPriceCents ?? ''}`, 'create'),
+          audit(
+            `record:${sourceRow}`,
+            input.kind === 'buy' ? '新增买入' : '新增卖出',
+            '',
+            `${record.stockName} ${record.buyPriceCents ?? record.targetPriceCents ?? ''}`,
+            'create',
+          ),
         )
       })
       await reloadRecords()
@@ -254,6 +236,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
     },
     [reloadRecords],
   )
+
+  const reorderStocks = useCallback(async (orderedIds: string[]) => {
+    const current = await db.stocks.toArray()
+    const next = applyOrder(normalizeStocks(current), orderedIds)
+    await db.stocks.bulkPut(next)
+    setStocks(next)
+  }, [])
+
+  const setStockEnabled = useCallback(async (id: string, enabled: boolean) => {
+    const current = await db.stocks.get(id)
+    if (!current) return
+    await db.stocks.put({ ...current, enabled })
+    setStocks(normalizeStocks(await db.stocks.toArray()))
+  }, [])
 
   const historyOf = useCallback(
     (sourceRow: number) =>
@@ -265,17 +261,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const updateStock = useCallback(async (s: StockConfig) => {
     await db.stocks.put(s)
-    setStocks(await db.stocks.toArray())
+    setStocks(normalizeStocks(await db.stocks.toArray()))
   }, [])
 
   const addStock = useCallback(async (s: StockConfig) => {
-    await db.stocks.put(s)
-    setStocks(await db.stocks.toArray())
+    const current = normalizeStocks(await db.stocks.toArray())
+    await db.stocks.put({ ...s, order: current.length, enabled: s.enabled !== false })
+    setStocks(normalizeStocks(await db.stocks.toArray()))
   }, [])
 
   const removeStock = useCallback(async (id: string) => {
     await db.stocks.delete(id)
-    setStocks(await db.stocks.toArray())
+    setStocks(normalizeStocks(await db.stocks.toArray()))
   }, [])
 
   const resetAll = useCallback(async () => {
@@ -366,6 +363,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     softDelete,
     restore,
     addManualRecord,
+    reorderStocks,
+    setStockEnabled,
     historyOf,
     updateStock,
     addStock,

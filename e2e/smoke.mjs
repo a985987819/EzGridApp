@@ -1,6 +1,6 @@
 /**
- * 项目自带 E2E 冒烟：用本机 Chrome/Edge（CDP）走一遍「导入 → 校验 → 挂单 → 明细编辑 → 删除恢复」主链路。
- * 移动端视口 390×844。
+ * 项目自带 E2E 冒烟（移动端 390×844 视口）：
+ * 股票排序 → 导入 → 基准校验 → 分股 tab → 明细编辑/删除/恢复 → 挂单区间 → 启用开关 → 手动卖出
  *
  *   node e2e/smoke.mjs http://127.0.0.1:5183
  */
@@ -112,19 +112,13 @@ try {
   await send('Runtime.enable')
   await send('Log.enable')
   await send('Page.enable')
-  await send('Emulation.setDeviceMetricsOverride', {
-    width: 390,
-    height: 844,
-    deviceScaleFactor: 2,
-    mobile: true,
-  })
+  await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true })
 
   const evaluate = async (expression) => {
     const r = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true })
     if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails))
     return r.result.value
   }
-
   const settle = async (budget = 6000) => {
     let prev = -1
     let stable = 0
@@ -136,7 +130,6 @@ try {
       prev = len
     }
   }
-
   const bodyText = () => evaluate(`document.body.innerText`)
   const clickByText = (sel, text) =>
     evaluate(`(() => {
@@ -144,7 +137,6 @@ try {
       if (!el) return false
       el.click(); return true
     })()`)
-
   const nav = async (key) => {
     const done = await evaluate(`(() => {
       const b = document.querySelector('button[data-nav="${key}"]')
@@ -154,13 +146,25 @@ try {
     await settle(2500)
     return done
   }
-
   const closeDrawer = async () => {
     await evaluate(`document.querySelector('[aria-label="关闭"]')?.click()`)
     await sleep(500)
   }
+  const setInput = (selector, value) =>
+    evaluate(`(() => {
+      const el = document.querySelector(${JSON.stringify(selector)})
+      if (!el) return false
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+      setter.call(el, ${JSON.stringify(value)})
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+      return true
+    })()`)
+  const stockOrder = () =>
+    evaluate(
+      `JSON.stringify([...document.querySelectorAll('[data-stock-row]')].map(e => e.getAttribute('data-stock-row').replace('stock:','')))`,
+    )
 
-  console.log(`\n[1] 首屏（移动端 390×844）${BASE}`)
+  console.log(`\n[1] 首屏（390×844）${BASE}`)
   let text = ''
   for (let attempt = 0; attempt < 3; attempt += 1) {
     await send('Page.navigate', { url: `${BASE}/` })
@@ -172,15 +176,52 @@ try {
   check('渲染出头部', text.includes('网格交易'))
   check('底部导航 5 项', (await evaluate(`document.querySelectorAll('button[data-nav]').length`)) === 5)
   check('空态引导', text.includes('还没有导入数据') || text.includes('去导入'))
-  check(
-    '没有横向溢出',
-    (await evaluate(`document.documentElement.scrollWidth <= window.innerWidth + 2`)) === true,
-    `scrollWidth=${await evaluate('document.documentElement.scrollWidth')}`,
-  )
+  check('没有横向溢出', (await evaluate(`document.documentElement.scrollWidth <= window.innerWidth + 2`)) === true)
 
-  console.log('\n[2] 管理 · 导入 → 载入内置示例')
+  console.log('\n[2] 管理 · 股票（第一个 tab）+ 拖动排序')
   check('切到管理页', await nav('manage'))
-  check('导入 tab 默认展开', (await bodyText()).includes('载入内置示例'))
+  text = await bodyText()
+  check('股票 tab 默认展示', text.includes('默认间隔') && text.includes('涨跌幅规则'))
+  const order0 = JSON.parse(await stockOrder())
+  console.log('  初始顺序:', order0)
+  check('初始顺序 柳工→三一重工→奥佳华→安道麦', order0.join('>') === '柳工>三一重工>奥佳华>安道麦')
+
+  const from = JSON.parse(
+    await evaluate(`(() => {
+      const h = document.querySelector('[data-stock-row="stock:三一重工"] .drag-handle')
+      const r = h.getBoundingClientRect()
+      return JSON.stringify({ x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) })
+    })()`),
+  )
+  const to = JSON.parse(
+    await evaluate(`(() => {
+      const h = document.querySelector('[data-stock-row="stock:柳工"]')
+      const r = h.getBoundingClientRect()
+      return JSON.stringify({ x: Math.round(r.x + r.width / 2), y: Math.round(r.y + 12) })
+    })()`),
+  )
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: from.x, y: from.y, button: 'none', clickCount: 0 })
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: from.x, y: from.y, button: 'left', clickCount: 1 })
+  await sleep(120)
+  for (let i = 1; i <= 6; i += 1) {
+    await send('Input.dispatchMouseEvent', {
+      type: 'mouseMoved',
+      x: Math.round(from.x + ((to.x - from.x) * i) / 6),
+      y: Math.round(from.y + ((to.y - from.y) * i) / 6),
+      button: 'left',
+      buttons: 1,
+    })
+    await sleep(80)
+  }
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: to.x, y: to.y, button: 'left', clickCount: 1 })
+  await sleep(900)
+  const orderAfter = JSON.parse(await stockOrder())
+  console.log('  拖动后顺序:', orderAfter)
+  check('拖动后三一重工排第一', orderAfter[0] === '三一重工')
+
+  console.log('\n[3] 管理 · 导入 → 载入示例 → 写入本地')
+  check('切到导入 tab', await clickByText('[role="tab"]', '导入'))
+  await sleep(400)
   check('点到「载入内置示例」', await clickByText('button', '载入内置示例'))
   await sleep(2500)
   await settle()
@@ -188,39 +229,39 @@ try {
   check('dry-run 出现股票名', text.includes('柳工'))
   check('基准 16 项全中', text.includes('16 项全中'))
   check('dry-run 命中 15,200', text.includes('15,200'))
-
-  console.log('\n[3] 写入本地 → 概览')
   check('点到「写入本地」', await clickByText('button', '写入本地'))
-  await sleep(1500)
+  await sleep(1600)
   await settle()
+
+  console.log('\n[4] 概览：三格 + 顺序跟随')
   check('回到概览', await nav('overview'))
   text = await bodyText()
-  check('三格：可卖 15,200', text.includes('15,200'))
-  check('三格：待补 2,000', text.includes('2,000'))
-  check('三格：净持仓 13,200', text.includes('13,200'))
-  check('头部基准全中', text.includes('基准全中'))
+  check('可卖 15,200', text.includes('15,200'))
+  check('待补 2,000', text.includes('2,000'))
+  check('净持仓 13,200', text.includes('13,200'))
+  check('基准全中', text.includes('基准全中'))
+  const pills = await evaluate(`JSON.stringify([...document.querySelectorAll('.stock-tabs > *')].map(e => e.textContent.trim()))`)
+  console.log('  概览药丸:', pills)
+  check('药丸顺序跟随股票排序（三一重工在前）', JSON.parse(pills)[0] === '三一重工')
 
-  console.log('\n[4] 概览按股票 tab + 价格网格列序')
-  check('切到三一重工', await clickByText('.stock-tabs > *', '三一重工'))
-  await sleep(500)
-  text = await bodyText()
-  check('三一可卖 3,800', text.includes('3,800'))
+  console.log('\n[5] 价格网格列序')
   await clickByText('.stock-tabs > *', '柳工')
   await sleep(400)
   const gridDump = await evaluate(`JSON.stringify(
     [...document.querySelectorAll('table.pricegrid')[0].querySelectorAll('tbody tr')]
-      .slice(0, 6).map(tr => [...tr.children].map(td => td.textContent.trim()))
+      .slice(0, 5).map(tr => [...tr.children].map(td => td.textContent.trim()))
   )`)
-  console.log('  网格前 6 行:', gridDump)
   const cells = JSON.parse(gridDump)
-  check('网格 4 列且第 2 列是价格', cells.every((c) => c.length === 4 && /^\d+\.\d{2}$/.test(c[1])))
-  check('第 3 列是待卖股数', cells.some((c) => /股$/.test(c[2])))
-  check('第 4 列是已卖出笔数', cells.some((c) => /笔/.test(c[3])))
+  console.log('  网格前 5 行:', gridDump)
+  check('4 列且第 2 列价格', cells.every((c) => c.length === 4 && /^\d+\.\d{2}$/.test(c[1])))
+  check('第 3 列待卖 / 第 4 列已卖出', cells.some((c) => /股$/.test(c[2])) && cells.some((c) => /笔/.test(c[3])))
 
-  console.log('\n[5] 明细：卡片 → 抽屉 → 编辑 → 保存')
+  console.log('\n[6] 明细：股票 tab + 抽屉编辑')
   check('切到明细', await nav('trades'))
+  const tradePills = await evaluate(`JSON.stringify([...document.querySelectorAll('.stock-tabs > *')].map(e => e.textContent.trim()))`)
+  check('明细也有股票药丸（含「全部」）', JSON.parse(tradePills)[0] === '全部' && JSON.parse(tradePills).length === 5, tradePills)
   check(
-    '点到第 63 行卡片',
+    '点开第 63 行',
     await evaluate(`(() => {
       const el = document.querySelector('[data-row="63"]')
       if (!el) return false
@@ -228,27 +269,19 @@ try {
     })()`),
   )
   await sleep(700)
-  check('抽屉打开且有「变更历史」', (await bodyText()).includes('变更历史'))
+  check('抽屉出现变更历史', (await bodyText()).includes('变更历史'))
   check('点编辑', await clickByText('button', '编辑'))
   await sleep(400)
-  await evaluate(`(() => {
-    const input = document.querySelector('input[data-field="targetPrice"]')
-    if (!input) return false
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
-    setter.call(input, '9.00')
-    input.dispatchEvent(new Event('input', { bubbles: true }))
-    return true
-  })()`)
+  await setInput('input[data-field="targetPrice"]', '9.00')
   await sleep(300)
   check('点保存', await clickByText('button', '保存'))
   await sleep(1000)
-  check('抽屉里能看到改成 9.00', (await bodyText()).includes('9.00'))
+  check('能读到 9.00', (await bodyText()).includes('9.00'))
   await closeDrawer()
   await nav('overview')
-  text = await bodyText()
-  check('编辑后盈利重算为 ¥9,990', text.includes('9,990'))
+  check('编辑后盈利 ¥9,990', (await bodyText()).includes('9,990'))
 
-  console.log('\n[6] 删除 → 恢复')
+  console.log('\n[7] 删除 → 恢复 → 改回')
   await nav('trades')
   await evaluate(`document.querySelector('[data-row="63"]')?.click()`)
   await sleep(600)
@@ -276,86 +309,134 @@ try {
   await sleep(800)
   await closeDrawer()
 
-  // 把第 63 行改回 8.68，让最终截图回到「基准全中」
   await nav('trades')
   await evaluate(`document.querySelector('[data-row="63"]')?.click()`)
   await sleep(600)
   await clickByText('button', '编辑')
   await sleep(400)
-  await evaluate(`(() => {
-    const input = document.querySelector('input[data-field="targetPrice"]')
-    if (!input) return false
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
-    setter.call(input, '8.68')
-    input.dispatchEvent(new Event('input', { bubbles: true }))
-    return true
-  })()`)
+  await setInput('input[data-field="targetPrice"]', '8.68')
   await sleep(300)
   await clickByText('button', '保存')
   await sleep(900)
   await closeDrawer()
   await nav('overview')
   text = await bodyText()
-  check('改回 8.68 后盈利回到 ¥9,830', text.includes('9,830') && !text.includes('9,990'))
-  check('改回后基准全中', text.includes('基准全中'))
+  check('改回后盈利 ¥9,830 且基准全中', text.includes('9,830') && text.includes('基准全中'))
 
-  console.log('\n[7] 挂单页（区间 + 待买/待卖）')
+  console.log('\n[8] 挂单：涨跌幅来自股票配置')
   check('切到挂单', await nav('orders'))
-  await evaluate(`(() => {
-    const input = document.querySelector('input[aria-label="昨收价"]')
-    if (!input) return false
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
-    setter.call(input, '8.10')
-    input.dispatchEvent(new Event('input', { bubbles: true }))
-    return true
-  })()`)
-  await sleep(700)
   text = await bodyText()
-  check('昨收 8.10 → 区间 7.29~8.91', text.includes('7.29') && text.includes('8.91'))
-  check('待买标注空头敞口', text.includes('空头敞口'))
-  check('有「待卖」tab', text.includes('待卖'))
+  check('页面显示「涨跌幅 10%」', text.includes('涨跌幅 10%'))
+  check('没有涨跌幅选择器', !text.includes('创业板 20%'))
+  check('默认股票是三一重工（排序第一）', text.includes('三一重工'))
+  await evaluate(`(() => {
+    const sels = [...document.querySelectorAll('div,button')].find(e => e.getAttribute('role') === 'combobox')
+    return Boolean(sels)
+  })()`)
+  check('读入昨收 8.10', await setInput('input[aria-label="昨收价"]', '8.10'))
+  await sleep(600)
+  text = await bodyText()
+  check('区间随股票配置算出（三一 10% → 7.29/8.91）', text.includes('7.29') && text.includes('8.91'))
 
-  console.log('\n[8] 其余页面渲染')
-  for (const [key, expect] of [
-    ['stats', '月度成交'],
-    ['manage', '导入批次'],
-  ]) {
-    await nav(key)
-    const t = await bodyText()
-    check(`${key} 渲染`, t.includes(expect), `text=${t.length}`)
-  }
+  console.log('\n[9] 停用开关：其他页面不再出现该股')
+  await nav('manage')
+  check(
+    '关掉奥佳华',
+    await evaluate(`(() => {
+      const sw = document.querySelector('[aria-label="启用 奥佳华"]')
+      if (!sw) return false
+      sw.click(); return true
+    })()`),
+  )
+  await sleep(800)
+  await nav('overview')
+  const pillsAfter = await evaluate(`JSON.stringify([...document.querySelectorAll('.stock-tabs > *')].map(e => e.textContent.trim()))`)
+  check('概览不再有奥佳华', !pillsAfter.includes('奥佳华'), pillsAfter)
+  await nav('trades')
+  const tradePillsAfter = await evaluate(`JSON.stringify([...document.querySelectorAll('.stock-tabs > *')].map(e => e.textContent.trim()))`)
+  check('明细不再有奥佳华', !tradePillsAfter.includes('奥佳华'), tradePillsAfter)
+  await nav('stats')
+  check('统计不再有奥佳华', !(await bodyText()).includes('奥佳华'))
+  await nav('manage')
+  await evaluate(`document.querySelector('[aria-label="启用 奥佳华"]')?.click()`)
+  await sleep(700)
+  await nav('overview')
+  check('重新启用后回到概览', (await bodyText()).includes('奥佳华'))
 
-  console.log('\n[9] 截图')
+  console.log('\n[10] 新增一笔：卖出（先卖后买）')
+  await nav('trades')
+  check('点「新增一笔」', await clickByText('button', '新增一笔'))
+  await sleep(600)
+  check('弹窗立即可见（无打字机）', (await bodyText()).includes('买入份额') || (await bodyText()).includes('卖出数量'))
+  check('切到卖出', await clickByText('button', '卖出'))
+  await sleep(300)
+  text = await bodyText()
+  check('卖出表单出现「成交价」「回补价」', text.includes('成交价') && text.includes('回补价'))
+  check(
+    '打开股票下拉',
+    await evaluate(`(() => {
+      const box = [...document.querySelectorAll('[role="combobox"]')].pop()
+      if (!box) return false
+      box.click(); return true
+    })()`),
+  )
+  await sleep(400)
+  check('选柳工', await clickByText('[role="option"]', '柳工'))
+  await sleep(400)
+  await setInput('input[data-field="date"]', '2026-10-21')
+  await setInput('input[data-field="price"]', '8.68')
+  await setInput('input[data-field="qty"]', '500')
+  await setInput('input[data-field="rebuyPrice"]', '8.01')
+  await sleep(300)
+  check('点保存', await clickByText('button', '保存'))
+  await sleep(1200)
+  await nav('overview')
+  text = await bodyText()
+  check('卖出后净持仓 12,700', text.includes('12,700'))
+  check('卖出后敞口 2,500', text.includes('2,500'))
+
+  console.log('\n[11] 删掉这笔手动卖出，恢复原状')
+  await nav('trades')
+  await evaluate(`document.querySelector('[data-row="100000"]')?.click()`)
+  await sleep(600)
+  await evaluate(`window.confirm = () => true`)
+  check('删除手动行', await clickByText('button', '删除'))
+  await sleep(900)
+  await nav('overview')
+  text = await bodyText()
+  check('回到净持仓 13,200', text.includes('13,200'))
+  check('基准重新全中', text.includes('基准全中'))
+
+  console.log('\n[12] 截图')
+  await sleep(4800) // 等轻提示消失，截干净的图
   for (const [key, file] of [
     ['overview', 'mobile-overview.png'],
     ['trades', 'mobile-trades.png'],
     ['orders', 'mobile-orders.png'],
-    ['manage', 'mobile-manage.png'],
+    ['stats', 'mobile-stats.png'],
   ]) {
     await nav(key)
     await sleep(500)
     const shot = await send('Page.captureScreenshot', { format: 'png' })
     writeFileSync(join(OUT, file), Buffer.from(shot.data, 'base64'))
   }
-  // 抽屉截图（明细详情 + 编辑入口）
+  await nav('manage')
+  await sleep(500)
+  const manageShot = await send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync(join(OUT, 'mobile-stocks.png'), Buffer.from(manageShot.data, 'base64'))
+  await clickByText('[role="tab"]', '导入')
+  await sleep(500)
+  const importShot = await send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync(join(OUT, 'mobile-manage.png'), Buffer.from(importShot.data, 'base64'))
   await nav('trades')
   await evaluate(`document.querySelector('[data-row="63"]')?.click()`)
   await sleep(700)
   const drawerShot = await send('Page.captureScreenshot', { format: 'png' })
   writeFileSync(join(OUT, 'mobile-drawer.png'), Buffer.from(drawerShot.data, 'base64'))
-  await clickByText('button', '编辑')
-  await sleep(500)
-  const editShot = await send('Page.captureScreenshot', { format: 'png' })
-  writeFileSync(join(OUT, 'mobile-drawer-edit.png'), Buffer.from(editShot.data, 'base64'))
   await closeDrawer()
-
-  await nav('overview')
-  await sleep(500)
-  const full = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true })
-  writeFileSync(join(OUT, 'mobile-overview-full.png'), Buffer.from(full.data, 'base64'))
   console.log(`  截图已存 ${OUT}`)
 
-  console.log('\n[10] 运行时错误')
+  console.log('\n[13] 运行时错误')
   check('无未捕获异常 / console.error', problems.length === 0, problems.slice(0, 5).join(' | '))
 
   socket.close()

@@ -10,9 +10,14 @@ export interface StockConfig {
   code?: string
   /** 默认卖出间隔，整数分 */
   intervalCents: number
+  /** 涨跌幅规则只在股票配置里维护，挂单页直接读它算区间 */
   priceLimitType: PriceLimitType
   customLimitPct?: number | null
   note?: string
+  /** 排序序号，拖动调整；0 在最前 */
+  order?: number
+  /** 停用后只在管理页可见，其他列表/清单不显示（数据仍计入合计） */
+  enabled?: boolean
 }
 
 /** 从 Excel 解析出来的原始行，尚未派生任何规则字段 */

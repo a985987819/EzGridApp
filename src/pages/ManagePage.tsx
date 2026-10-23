@@ -5,20 +5,20 @@ import { ManageStocks } from './manage/ManageStocks'
 import { ManageBackup } from './manage/ManageBackup'
 
 export function ManagePage() {
-  const [tab, setTab] = useState('import')
+  const [tab, setTab] = useState('stocks')
   return (
     <div className="stack">
       <div className="page-title">
         <h2>管理</h2>
-        <p>导入 · 股票 · 备份</p>
+        <p>股票 · 导入 · 备份</p>
       </div>
       <Tabs
         activeKey={tab}
         onChange={setTab}
         aria-label="管理功能"
         items={[
-          { key: 'import', label: '导入', children: <ManageImport /> },
           { key: 'stocks', label: '股票', children: <ManageStocks /> },
+          { key: 'import', label: '导入', children: <ManageImport /> },
           { key: 'backup', label: '备份', children: <ManageBackup /> },
         ]}
       />

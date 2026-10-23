@@ -1,33 +1,33 @@
 import { useMemo, useState } from 'react'
 import { Button, Card, Input, Select, Tabs, Tag, notificationOpen } from 'animal-island-ui'
 import { useApp } from '../store/useApp'
-import { limitRange, type PriceLimitType } from '../domain/limit'
+import { activeStocks } from '../domain/stocks'
+import { LIMIT_PCT, limitRange } from '../domain/limit'
 import { toCents } from '../domain/money'
 import { downloadText, toCsv } from '../ui/csv'
 import { money, price, qty, signedMoney } from '../ui/format'
 
-const LIMIT_OPTIONS: { key: PriceLimitType; label: string }[] = [
-  { key: 'main_10', label: '主板 10%' },
-  { key: 'gem_20', label: '创业板 20%' },
-  { key: 'star_20', label: '科创板 20%' },
-  { key: 'bse_30', label: '北交所 30%' },
-  { key: 'st_5', label: 'ST 5%' },
-  { key: 'unknown', label: '未设置（阻断）' },
-]
-
 export function OrdersPage() {
   const { ledger, stocks } = useApp()
-  const stockNames = ledger.byStock.map((s) => s.stockName)
+  // 顺序与启停都跟随「管理 · 股票」
+  const stockNames = useMemo(() => activeStocks(stocks).map((s) => s.name), [stocks])
   const [stockName, setStockName] = useState(stockNames[0] ?? '')
-  const cfg = stocks.find((s) => s.name === stockName)
   const [lastClose, setLastClose] = useState('')
-  const [limitType, setLimitType] = useState<PriceLimitType>(cfg?.priceLimitType ?? 'main_10')
 
-  const effectiveStock = stockName || stockNames[0] || ''
+  const effectiveStock = stockNames.includes(stockName) ? stockName : stockNames[0] ?? ''
+  // 涨跌幅只读股票配置，挂单页不再单独选
+  const cfg = stocks.find((s) => s.name === effectiveStock)
   const range = useMemo(
-    () => limitRange(toCents(lastClose), limitType, cfg?.customLimitPct ?? null),
-    [lastClose, limitType, cfg],
+    () => limitRange(toCents(lastClose), cfg?.priceLimitType ?? 'unknown', cfg?.customLimitPct ?? null),
+    [lastClose, cfg],
   )
+  const limitLabel = !cfg
+    ? '未配置'
+    : cfg.priceLimitType === 'custom'
+      ? `自定义 ${cfg.customLimitPct ?? 0}%`
+      : cfg.priceLimitType === 'unknown'
+        ? '未设置'
+        : `${LIMIT_PCT[cfg.priceLimitType]}%`
 
   const targets = ledger.targets.filter((t) => t.stockName === effectiveStock)
   const orders = ledger.orders.filter((o) => o.stockName === effectiveStock)
@@ -74,6 +74,17 @@ export function OrdersPage() {
     downloadText(`${effectiveStock}-挂单清单.csv`, toCsv(rows), 'text/csv;charset=utf-8')
   }
 
+  if (stockNames.length === 0) {
+    return (
+      <Card>
+        <div className="empty-box">
+          <strong>没有启用的股票</strong>
+          去「管理 · 股票」打开启用开关，或先导入数据。
+        </div>
+      </Card>
+    )
+  }
+
   if (ledger.targets.length === 0 && ledger.orders.length === 0) {
     return (
       <Card>
@@ -104,18 +115,16 @@ export function OrdersPage() {
               onChange={setStockName}
               aria-label="选择股票"
             />
-            <Select
-              options={LIMIT_OPTIONS.map((o) => ({ key: o.key, label: o.label }))}
-              value={limitType}
-              onChange={(v) => setLimitType(v as PriceLimitType)}
-              aria-label="涨跌幅规则"
-            />
+            <Tag size="medium" variant="soft" color="app-blue">
+              涨跌幅 {limitLabel}
+            </Tag>
           </div>
           <div className="row nowrap">
             <Input
+              className="grow"
               value={lastClose}
               onChange={(e) => setLastClose(e.target.value)}
-              placeholder="昨收价，如 8.10"
+              placeholder="昨收价 8.10"
               allowClear
               onClear={() => setLastClose('')}
               aria-label="昨收价"
