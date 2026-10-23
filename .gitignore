@@ -1,0 +1,8 @@
+node_modules/
+dist/
+tmpcache/
+.tmp/
+e2e/out/
+*.local
+.DS_Store
+.vite/

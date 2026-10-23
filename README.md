@@ -1,0 +1,116 @@
+# 网格交易管理（V1）
+
+把 `26年网格记录.xlsx` 里「交易记录」这张手工表，变成一套**能自动生成待买 / 待卖清单、能算奖励、能自证数据没错**的本地网页工具。
+
+规则口径全部来自 `网格交易管理·规则确认与开发规划 V1.1`（D1–D7 / R1–R7 / P1–P12），本文只记录「文档 → 代码」的落点，以及两处必须说清的偏差。
+
+---
+
+## 快速开始
+
+```bash
+cd E:\projects\grid-trading
+npm install
+npm run dev       # http://127.0.0.1:5173
+npm run test      # 40 条单元测试，含真实文件 dry-run
+npm run build     # tsc --noEmit + vite build
+node e2e/smoke.mjs http://127.0.0.1:5173   # 无头浏览器走一遍主链路
+```
+
+打开后到「导入」页：
+
+- 选自己的 xlsx，或点 **载入内置示例**（就是 `public/demo/26年网格记录.xlsx`）；
+- 先出 **dry-run 报告**（8 个基准数字 + 异常清单），确认后再点 **写入本地**（对应文档 S2 门槛）。
+
+---
+
+## 与文档的对照
+
+| 文档 | 落点 |
+| --- | --- |
+| D1 目标售价 = 成交价 | `domain/ledger.ts`：`priceCents = E`，`priceSource='target'` |
+| D2 33 笔历史卖出不生成待买 | `rebuyStatus='repaid'`，只有 P 列非空才建 `RebuyOrder` |
+| D3 P 列为空是唯一判据 | `ledger.ts` 里 `r.earlyBuyPriceCents !== null` |
+| D4 允许先卖后买 | `sellBeforeBuy` 标记；**不进异常清单**（异常清单只有缺价 / 缺日期 / 负盈利三类） |
+| D5 待买按 P 列生成 | `rebuyPriceCents = P`，无批次时成本也取 P |
+| D6 E 列 = 待卖清单 | 每笔有剩余持仓的批次生成 1 个 `SellTarget` |
+| D7 只读「交易记录」 | `io/parseWorkbook.ts` 固定取 `SheetNames[0]`，其余 5 表不读 |
+| R4/R5 组池与 FIFO | `ledger.ts` 的 `computeGroups()`：全部真实卖出入池 → 按 `(stockId, 成本价)` 分组 → 手数 = floor(组池 / (价×100)) → FIFO 挂给 open 订单 |
+| R7 数量守恒 | `ledger.ts` 的 `checks[]`，概览页每次重算都跑 |
+| §7.2 精度 | `domain/money.ts`：整数分，`toCents` 走字符串通道，禁止浮点参与判定 |
+| §8.4 涨跌停 | `domain/limit.ts`：`round(昨收 × (1±pct), 2)`，`unknown` / 缺昨收 → 返回 null，不出建议 |
+
+---
+
+## 8 个基准数字（真实文件 dry-run 结果）
+
+| 指标 | 结果 |
+| --- | --- |
+| 有效行 | 62 |
+| 买入 | 31,800 股 / ¥360,320.00 |
+| 卖出 | 33 笔 / 18,600 股 / ¥190,558.00 |
+| 实现盈利 | ¥9,830.00（32 笔，未扣费用） |
+| 待卖 | 29 条 / 15,200 股 / ¥202,284.00（预期收益 ¥12,515.00） |
+| 待买 | 4 条 / 2,100 股（含奖励 100 股）/ ¥16,601.00 |
+| 净持仓 | 13,200 = 15,200 − 2,000 |
+
+### 偏差一：卖出金额 / 盈利各差 ¥1
+
+文档写 ¥190,559 / ¥9,831，本实现是 ¥190,558 / ¥9,830。
+原因只有一条：**安道麦那一行的 E 列是 6.331（三位小数）**。文档用浮点直接乘股数得 6,331.00；本实现按 §7.2「价格一律整数分」把 6.331 归到 6.33，于是金额少 1 分、盈利少 ¥1。
+基准校验对这两项给了 ±¥1 容差并在界面上标注，其余 14 项都是硬相等。
+
+### 偏差二：R44 的成交价（有一个开关）
+
+R44（三一重工 18.81 / 300 股 / 已全卖）的 E 列**有公式、没有缓存值**。文档说它「目标售价为空 → 盈利无法计算，不入组池」，但文件里的公式其实能算出 18.81 + 1.07 = 19.88。
+
+- **默认（关）**：已成交行不推定成交价 → R44 进「待补价格」，全表盈利 ¥9,830 = 文档口径。
+- **打开**：`已成交行也按「买入价+间隔」推定成交价`（导入页 / 备份页的勾选框）→ 盈利变 ¥10,152。
+
+代码里就是 `buildLedger(..., { deriveSellPrice })` 这个参数，没有藏逻辑。
+
+---
+
+## 目录
+
+```
+src/
+  domain/            纯函数，不碰 DOM、不碰 IO
+    money.ts         整数分往返 / ROUND_HALF_UP / 格式化
+    qty.ts           正整数股、整手、FLOOR(6000/价,100)
+    limit.ts         涨跌停区间
+    ledger.ts        ★ 关联引擎：批次→待卖、卖出→待买、组池奖励、守恒断言
+    baseline.ts      8 个基准快照校验
+    types.ts         实体与结果类型（对齐 §7.1）
+  io/parseWorkbook.ts  SheetJS 只读第 1 表（关键：sheetStubs）
+  store/              Dexie + React Context（数据全在本地）
+  components/         CheckGrid / PriceGrid
+  pages/              概览 / 导入 / 明细 / 挂单 / 股票 / 统计 / 备份
+e2e/smoke.mjs         本机 Chrome 走一遍导入→校验→挂单
+tests/fixtures/       26年网格记录.xlsx（测试与内置示例都用它）
+```
+
+**一条设计取舍**：批次剩余、待卖清单、待买单、组池奖励全部是**每次重算的派生数据，不落库**。落库的只有原始行、股票配置、导入批次。这样不可能出现「库里存的和算出来的不一致」，改间隔 / 改口径立刻全表重算。
+
+---
+
+## V1 边界（没做的部分，别误会）
+
+- **行内编辑与 AuditLog**：明细页目前只读（可筛选、可导出 CSV），P10 的变更历史没做。
+- **一个批次拆多个卖出目标**：`SellTarget` 类型支持多条，但生成逻辑仍是「一批次一目标」。
+- **回补成交录入**：`RebuyOrder.status` 恒为 `open`，所以组池 `used` 恒为 0；P4 的 `groupKeyAtExecution` 还没接。
+- **挂单计划价**：`planPriceCents / planQty` 字段预留，页面还没做可编辑的挂单计划。
+- **Playwright E2E**：用一个自写的 CDP 脚本代替（`e2e/smoke.mjs`），覆盖主链路 + 无 console 报错。
+- 文档 §05 那 12 条细节里，P1/P2/P5/P6/P7/P9/P11/P12 已落，P3/P4/P8/P10 部分是预留字段。
+
+---
+
+## 两个环境坑（本机实测）
+
+1. **`npm` 直接跑会被安全策略拦**（`npm` shim 会拉起 `wsl.exe`）。用 node 直跑 CLI：
+   `node "C:/Users/laoduan/.workbuddy/binaries/node/versions/22.22.2-6/node_modules/npm/bin/npm-cli.js" run dev`
+2. **vitest 默认并行会 EPERM**（多个 worker 抢写 dev server 的 SSR 缓存）。`npm run test` 已带 `--no-file-parallelism`，别去掉。
+
+## 数据与隐私
+
+数据只存在浏览器 IndexedDB（Dexie），没有任何网络请求。长期不打开会被 Safari 清理，**建议每周到「备份」页导一次 JSON**。`tests/fixtures/` 和 `public/demo/` 里是这份 26 年记录的原文件副本，如果这个仓库要外发，记得先删掉。
