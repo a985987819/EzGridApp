@@ -211,16 +211,137 @@ try {
   text = await bodyText()
   check('昨收 8.10 → 区间 7.29~8.91', text.includes('7.29') && text.includes('8.91'))
   check('待买清单有序号 63', text.includes('63'))
+  check('待买标注空头敞口', text.includes('空头敞口'))
 
-  console.log('\n[6] 截图')
+  console.log('\n[6] 概览按股票分页')
+  await clickNav('概览')
+  const tabs = await evaluate(`[...document.querySelectorAll('.tab')].map(t => t.textContent.trim())`)
+  check('4 个股票 tab', tabs.length === 4, JSON.stringify(tabs))
+  await evaluate(`(() => {
+    const t = [...document.querySelectorAll('.tab')].find(x => x.textContent.includes('三一重工'))
+    if (!t) return false
+    t.click(); return true
+  })()`)
+  await sleep(500)
+  text = await bodyText()
+  check('切到三一重工，可卖 3,800', text.includes('3,800'))
+  check('三一网格出现', text.includes('20.78') || text.includes('19.88'))
+
+  console.log('\n[7] 明细：行内编辑 → 审计 → 删除 → 恢复')
+  await clickNav('明细')
+  const opened = await evaluate(`(() => {
+    const tr = document.querySelector('tr[data-row="63"]')
+    if (!tr) return false
+    const b = [...tr.querySelectorAll('button')].find(x => x.textContent.trim() === '编辑')
+    if (!b) return false
+    b.click(); return true
+  })()`)
+  check('打开第 63 行编辑态', opened)
+  await sleep(300)
+  await evaluate(`(() => {
+    const input = document.querySelector('tr[data-row="63"] input[data-field="targetPrice"]')
+    if (!input) return false
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+    setter.call(input, '9.00')
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    return true
+  })()`)
+  await sleep(300)
+  const saved = await evaluate(`(() => {
+    const tr = document.querySelector('tr[data-row="63"]')
+    const b = [...tr.querySelectorAll('button')].find(x => x.textContent.trim() === '保存')
+    if (!b) return false
+    b.click(); return true
+  })()`)
+  check('点保存', saved)
+  await sleep(800)
+  text = await bodyText()
+  check('保存后提示写入变更历史', text.includes('变更历史'))
+  const hist = await evaluate(`(() => {
+    const tr = document.querySelector('tr[data-row="63"]')
+    const b = [...tr.querySelectorAll('button')].find(x => x.textContent.trim() === '历史')
+    if (!b) return false
+    b.click(); return true
+  })()`)
+  await sleep(400)
+  text = await bodyText()
+  check('历史里能看到 目标售价 8.68 → 9.00', hist && text.includes('目标售价') && text.includes('9.00'))
+
+  await clickNav('概览')
+  text = await bodyText()
+  // 第 63 行是「先卖后买」行（无批次）：改目标价 = 改成交价，动的是实现盈利
+  check('编辑后盈利重算为 ¥9,990', text.includes('9,990'))
+
+  await clickNav('明细')
+  const deleted = await evaluate(`(() => {
+    window.confirm = () => true
+    const tr = document.querySelector('tr[data-row="63"]')
+    const b = [...tr.querySelectorAll('button')].find(x => x.textContent.trim() === '删除')
+    if (!b) return false
+    b.click(); return true
+  })()`)
+  check('点删除（自动确认）', deleted)
+  await sleep(800)
+  await clickNav('概览')
+  text = await bodyText()
+  // 删掉一笔卖出：卖出股数 −500，净持仓 +500，敞口 −500
+  check('删除后净持仓 13,700', text.includes('13,700'))
+  check('删除后敞口 1,500', text.includes('1,500'))
+
+  await clickNav('明细')
+  const restored = await evaluate(`(() => {
+    const cb = [...document.querySelectorAll('input[type="checkbox"]')].find(x => x.closest('label')?.textContent.includes('显示已删除'))
+    if (cb && !cb.checked) cb.click()
+    return true
+  })()`)
+  await sleep(400)
+  const clickedRestore = await evaluate(`(() => {
+    const tr = document.querySelector('tr[data-row="63"]')
+    const b = tr && [...tr.querySelectorAll('button')].find(x => x.textContent.trim() === '恢复')
+    if (!b) return false
+    b.click(); return true
+  })()`)
+  check('恢复第 63 行', restored && clickedRestore)
+  await sleep(600)
+
+  console.log('\n[8] 把改动改回去（验证编辑可逆）')
+  await evaluate(`(() => {
+    const tr = document.querySelector('tr[data-row="63"]')
+    const b = [...tr.querySelectorAll('button')].find(x => x.textContent.trim() === '编辑')
+    if (!b) return false
+    b.click(); return true
+  })()`)
+  await sleep(300)
+  await evaluate(`(() => {
+    const input = document.querySelector('tr[data-row="63"] input[data-field="targetPrice"]')
+    if (!input) return false
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+    setter.call(input, '8.68')
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    return true
+  })()`)
+  await sleep(300)
+  await evaluate(`(() => {
+    const tr = document.querySelector('tr[data-row="63"]')
+    const b = [...tr.querySelectorAll('button')].find(x => x.textContent.trim() === '保存')
+    if (!b) return false
+    b.click(); return true
+  })()`)
+  await sleep(700)
+  await clickNav('概览')
+  text = await bodyText()
+  check('改回 8.68 后盈利回到 ¥9,830', text.includes('9,830') && !text.includes('9,990'))
+  check('改回后基准全中', text.includes('基准全中') || text.includes('基准 16/16'))
+
+  console.log('\n[9] 截图')
   const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true })
-  writeFileSync(join(OUT, 'overview-orders.png'), Buffer.from(shot.data, 'base64'))
+  writeFileSync(join(OUT, 'trades-v2.png'), Buffer.from(shot.data, 'base64'))
   await clickNav('概览')
   const shot2 = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true })
   writeFileSync(join(OUT, 'overview.png'), Buffer.from(shot2.data, 'base64'))
   console.log(`  截图已存 ${OUT}`)
 
-  console.log('\n[7] 运行时错误')
+  console.log('\n[10] 运行时错误')
   check('无未捕获异常 / console.error', problems.length === 0, problems.slice(0, 5).join(' | '))
 
   socket.close()

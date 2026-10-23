@@ -17,7 +17,7 @@ export interface StockConfig {
 
 /** 从 Excel 解析出来的原始行，尚未派生任何规则字段 */
 export interface RawRecord {
-  /** Excel 行号，可回溯 */
+  /** Excel 行号，可回溯；手动新增的行从 100000 起（origin='manual'） */
   sourceRow: number
   stockName: string
   buyDateSerial: number | null
@@ -35,6 +35,26 @@ export interface RawRecord {
   /** Excel 里的实现盈利（仅留痕，不参与计算） */
   rawProfitCents: number | null
   importKey: string
+  /** 来源：解析导入 or 手动新增 */
+  origin?: 'excel' | 'manual'
+  /** 软删除时间；非空的行不参与任何计算 */
+  deletedAt?: number | null
+  /** 最近一次编辑时间 */
+  editedAt?: number | null
+  /** 由哪一批导入写入，用于回滚（P9 之外补充） */
+  batchId?: string | null
+}
+
+/** 编辑审计（P10）：实体 / 字段 / 旧值 / 新值 / 时间 / 来源 */
+export interface AuditLog {
+  id?: number
+  entity: 'record' | 'stock'
+  entityId: string
+  field: string
+  oldValue: string
+  newValue: string
+  at: number
+  source: string
 }
 
 /** 买入批次（派生对象，不落库） */
@@ -110,6 +130,8 @@ export interface RebuyOrder {
   grossProfitCents: number
   hands: number
   createdAt: number
+  /** 无买入批次的卖出 → 真空头敞口；有批次只是回补再买入，不占敞口 */
+  exposure: boolean
   /** planPrice/planQty 只在挂单页改，不动真实成交（P8） */
   planPriceCents?: number | null
   planQty?: number | null

@@ -47,12 +47,15 @@ export function buildLedger(
 ): Ledger {
   const baseAmountYuan = opts.baseAmountYuan ?? 6000
   const deriveSellPrice = opts.deriveSellPrice ?? false
+  // 软删除的行不参与任何计算
+  const live = records.filter((r) => !r.deletedAt)
+  const byRow = new Map(live.map((r) => [r.sourceRow, r]))
   const stockMap = new Map(stocks.map((s) => [s.name, s]))
   const anomalies: Anomaly[] = []
   const lots: Lot[] = []
   const sells: SellExecution[] = []
 
-  for (const r of records) {
+  for (const r of live) {
     const cfg = stockMap.get(r.stockName)
     const stockId = cfg?.id ?? stockIdOf(r.stockName)
     const interval = cfg?.intervalCents ?? 0
@@ -184,7 +187,7 @@ export function buildLedger(
   const orders: RebuyOrder[] = []
   for (const sell of sells) {
     if (sell.rebuyStatus !== 'pending') continue
-    const rec = records.find((r) => r.sourceRow === sell.sourceRow)
+    const rec = byRow.get(sell.sourceRow)
     if (!rec || rec.earlyBuyPriceCents === null) continue
     orders.push({
       id: `rb:${sell.id}`,
@@ -200,6 +203,7 @@ export function buildLedger(
       grossProfitCents: 0,
       hands: 0,
       createdAt: sell.sourceRow,
+      exposure: rec.buyPriceCents === null,
     })
   }
 
@@ -215,7 +219,7 @@ export function buildLedger(
 
   // 汇总
   const totals = {
-    rows: records.length,
+    rows: live.length,
     buyQty: sumBy(lots, (l) => l.qty),
     buyAmountCents: sumBy(lots, (l) => mulCents(l.buyPriceCents, l.qty)),
     sellCount: sells.length,
@@ -233,11 +237,15 @@ export function buildLedger(
     rebuyAmountCents: sumBy(orders, (o) => mulCents(o.rebuyPriceCents, o.baseQty + o.rewardQty)),
     rewardQty: sumBy(orders, (o) => o.rewardQty),
     netQty: 0,
-    exposureQty: sumBy(orders, (o) => o.baseQty),
+    // 只算真空头敞口：无买入批次的那几笔卖出（D5）
+    exposureQty: sumBy(
+      orders.filter((o) => o.exposure),
+      (o) => o.baseQty,
+    ),
   }
   totals.netQty = totals.buyQty - totals.sellQty
 
-  const byStock = summarizeByStock(records, lots, sells, targets, orders)
+  const byStock = summarizeByStock(live, lots, sells, targets, orders)
   const monthly = summarizeMonthly(sells)
 
   const checks: CheckResult[] = [
@@ -248,10 +256,11 @@ export function buildLedger(
       expected: '等式成立',
     },
     {
-      name: 'Σ待卖量 − Σ待买基础量 = 净持仓',
-      ok: totals.targetQty - totals.rebuyBaseQty === totals.netQty,
-      actual: `${totals.targetQty} − ${totals.rebuyBaseQty} = ${totals.targetQty - totals.rebuyBaseQty}`,
+      name: 'Σ待卖量 − 待补敞口 = 净持仓',
+      ok: totals.targetQty - totals.exposureQty === totals.netQty,
+      actual: `${totals.targetQty} − ${totals.exposureQty} = ${totals.targetQty - totals.exposureQty}`,
       expected: `= ${totals.netQty}`,
+      detail: '待补只算无买入批次的卖出；有批次的回补只是再买入，不占敞口',
     },
     {
       name: 'Σ待卖量 = Σ批次剩余',
@@ -363,7 +372,7 @@ function summarizeByStock(
       rebuyCount: os.length,
       rebuyQty: sumBy(os, (o) => o.baseQty + o.rewardQty),
       netQty: sumBy(ls, (l) => l.qty) - sumBy(ss, (s) => s.qty),
-      exposureQty: sumBy(os, (o) => o.baseQty),
+      exposureQty: sumBy(os.filter((o) => o.exposure), (o) => o.baseQty),
     }
   })
 }

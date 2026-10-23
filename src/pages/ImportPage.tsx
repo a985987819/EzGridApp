@@ -14,7 +14,7 @@ const ANOMALY_LABEL: Record<string, string> = {
 }
 
 export function ImportPage({ goOverview }: { goOverview: () => void }) {
-  const { stocks, records, preview, setPreview, commitImport, deriveSellPrice, setDeriveSellPrice } = useApp()
+  const { stocks, records, preview, setPreview, commitImport, deriveSellPrice, setDeriveSellPrice, batches, rollbackBatch } = useApp()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState<string | null>(null)
@@ -136,6 +136,51 @@ export function ImportPage({ goOverview }: { goOverview: () => void }) {
           </p>
         </div>
       </div>
+
+      {batches.length > 0 && (
+        <div className="card">
+          <header>
+            <h3>导入批次</h3>
+            <span className="hint">回滚只会移除这一批新增的行，之前手动改过的行也会一起被移除</span>
+          </header>
+          <div className="body tight">
+            <table className="grid">
+              <thead>
+                <tr>
+                  <th className="l">文件</th>
+                  <th className="l">工作表</th>
+                  <th>时间</th>
+                  <th>解析行</th>
+                  <th>新增</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {batches.map((b) => (
+                  <tr key={b.id}>
+                    <td className="l">{b.fileName}</td>
+                    <td className="l muted">{b.sheetName}</td>
+                    <td className="num">{new Date(b.importedAt).toLocaleString('zh-CN', { hour12: false })}</td>
+                    <td className="num">{b.recordCount}</td>
+                    <td className="num">{b.addedCount}</td>
+                    <td>
+                      <button
+                        className="btn sm ghost"
+                        onClick={() => {
+                          if (!window.confirm(`回滚「${b.fileName}」这一批（${b.addedCount} 行）？`)) return
+                          void rollbackBatch(b.id).then((n) => setDone(`已回滚 ${n} 行`))
+                        }}
+                      >
+                        回滚
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {preview && previewLedger && (
         <>

@@ -172,6 +172,7 @@ export function OrdersPage() {
                 <th>合计</th>
                 <th>金额</th>
                 <th>组池 / 手数</th>
+                <th className="l">性质</th>
                 <th className="l">区间</th>
               </tr>
             </thead>
@@ -190,13 +191,16 @@ export function OrdersPage() {
                       {money(o.grossProfitCents)} / {o.hands} 手
                     </td>
                     <td className="l">
+                      <span className={o.exposure ? 'tag bad' : 'tag'}>{o.exposure ? '空头敞口' : '回补再买入'}</span>
+                    </td>
+                    <td className="l">
                       <span className={z === '区间内' ? 'tag ok' : z === '无区间' ? 'tag' : 'tag bad'}>{z}</span>
                     </td>
                   </tr>
                 )
               })}
               {orders.length === 0 && (
-                <tr><td colSpan={8} className="l muted" style={{ padding: 20 }}>该股没有待买单</td></tr>
+                <tr><td colSpan={9} className="l muted" style={{ padding: 20 }}>该股没有待买单</td></tr>
               )}
             </tbody>
           </table>

@@ -1,3 +1,4 @@
+import { useMemo, useState } from 'react'
 import { useApp } from '../store/useApp'
 import { CheckGrid } from '../components/CheckGrid'
 import { PriceGrid } from '../components/PriceGrid'
@@ -5,8 +6,13 @@ import { money, qty, signedMoney, tone } from '../ui/format'
 
 export function Overview({ onPick }: { onPick: (stock: string, priceCents: number) => void }) {
   const { ledger, baseline, records, basename } = useApp()
+  const [active, setActive] = useState('')
   const t = ledger.totals
   const failed = baseline.filter((c) => !c.ok).length
+  const current = useMemo(
+    () => ledger.byStock.find((s) => s.stockName === active) ?? ledger.byStock.find((s) => s.rows > 0),
+    [ledger.byStock, active],
+  )
 
   if (records.length === 0) {
     return (
@@ -127,18 +133,48 @@ export function Overview({ onPick }: { onPick: (stock: string, priceCents: numbe
 
       <div className="card">
         <header>
-          <h3>价格网格</h3>
-          <span className="hint">高 → 低；左买右卖，同价合并但保留记录 ID</span>
+          <h3>股票明细</h3>
+          <span className="hint">按股票分页看价格网格；点任意价格跳到明细</span>
         </header>
         <div className="body">
-          {ledger.byStock
-            .filter((s) => s.rows > 0)
-            .map((s) => (
-              <PriceGrid key={s.stockName} stock={s} onPick={(p) => onPick(s.stockName, p)} />
+          <div className="tabs">
+            {ledger.byStock.map((s) => (
+              <button
+                key={s.stockName}
+                className={`tab${(active || ledger.byStock[0]?.stockName) === s.stockName ? ' active' : ''}`}
+                onClick={() => setActive(s.stockName)}
+              >
+                {s.stockName}
+                <span className="n">{s.rows} 行 · 待卖 {qty(s.targetQty)}</span>
+              </button>
             ))}
+          </div>
+          {current && (
+            <>
+              <div className="mini">
+                <div>
+                  <div className="k">可卖</div>
+                  <div className="v">{qty(current.targetQty)}</div>
+                </div>
+                <div>
+                  <div className="k">待补</div>
+                  <div className="v">{qty(current.exposureQty)}</div>
+                </div>
+                <div>
+                  <div className="k">净持仓</div>
+                  <div className="v">{qty(current.netQty)}</div>
+                </div>
+                <div>
+                  <div className="k">已实现盈利</div>
+                  <div className={`v ${tone(current.profitCents)}`}>{signedMoney(current.profitCents)}</div>
+                </div>
+              </div>
+              <PriceGrid stock={current} onPick={(p) => onPick(current.stockName, p)} />
+            </>
+          )}
           {t.exposureQty > 0 && (
-            <p className="note" style={{ marginBottom: 0 }}>
-              <b>卖满提示：</b>把 {qty(t.targetQty)} 股全部卖出后，该组合还会有 {qty(t.exposureQty)} 股待回补敞口，
+            <p className="note" style={{ marginBottom: 0, marginTop: 12 }}>
+              <b>卖满提示：</b>把 {qty(t.targetQty)} 股全部卖出后，这个组合还会有 {qty(t.exposureQty)} 股待回补敞口，
               待买清单必须一直在视野里。
             </p>
           )}
