@@ -44,8 +44,14 @@ export interface RawRecord {
   targetNeedsDerive: boolean
   soldQty: number | null
   sellDateSerial: number | null
-  /** P 列「提前卖的买价」= 回补价（D5） */
+  /** P 列「提前卖的买价」= 回补价（D5）；手动新增卖出时按 R3 四级优先级派生 */
   earlyBuyPriceCents: number | null
+  /**
+   * 回补价的来源留痕（R3）：
+   * custom = 手填 / P 列；lot = 关联买入价；
+   * sellMinusInterval = 卖出价 − 该股默认间隔；repaid = 勾了「已回补」
+   */
+  rebuyPriceSource?: RebuyPriceSource
   /** Excel 里的实现盈利（仅留痕，不参与计算） */
   rawProfitCents: number | null
   importKey: string
@@ -92,6 +98,8 @@ export interface Lot {
 
 export type RebuyStatus = 'pending' | 'repaid'
 export type PriceSource = 'target' | 'earlyBuy' | 'missing'
+/** R3 的回补价来源 */
+export type RebuyPriceSource = 'custom' | 'lot' | 'p' | 'sellMinusInterval' | 'repaid'
 
 /** 卖出成交（派生对象） */
 export interface SellExecution {
@@ -114,6 +122,10 @@ export interface SellExecution {
   /** 成本价分组键 stockId|priceCents */
   groupKey: string | null
   costComplete: boolean
+  /** 关联的买入批次（§7.1）；先卖后买行为 null */
+  lotId: string | null
+  /** 关联的自动卖出目标（§7.1），派生后回填 */
+  targetId: string | null
 }
 
 /** 计划价（P8）：只挂在页面上与导出里，不动真实成交与任何计算 */
@@ -190,6 +202,11 @@ export interface RebuyOrder {
   groupKey: string
   grossProfitCents: number
   hands: number
+  /**
+   * 本次奖励手数的凑手来源（§7.1）：同组、按 FIFO 顺序截至本单的订单 id。
+   * 已回补的历史卖出没有订单，所以不会出现在这个列表里。
+   */
+  rewardSourceOrderIds: string[]
   createdAt: number
   /** 无买入批次的卖出 → 真空头敞口；有批次只是回补再买入，不占敞口 */
   exposure: boolean

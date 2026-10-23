@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Button, Card, Input, Modal, Select, Tabs, Tag, notificationOpen } from 'animal-island-ui'
+import { Button, Card, Input, Modal, Select, Tag, notificationOpen } from 'animal-island-ui'
 import { useApp } from '../store/useApp'
 import { activeStocks } from '../domain/stocks'
 import { LIMIT_PCT, limitRange } from '../domain/limit'
@@ -27,10 +27,21 @@ export function OrdersPage() {
         ? '未设置'
         : `${LIMIT_PCT[cfg.priceLimitType]}%`
 
-  const range =
+  const computedRange =
     confirmed && confirmed.stock === effectiveStock
       ? limitRange(confirmed.closeCents, cfg?.priceLimitType ?? 'unknown', cfg?.customLimitPct ?? null)
       : null
+
+  // §10：涨跌停允许手工覆盖，只影响挂单页的区间判断，不改股票配置
+  const [limitOverride, setLimitOverride] = useState<{ stock: string; up: number; down: number } | null>(null)
+  const [editingLimit, setEditingLimit] = useState(false)
+  const [upText, setUpText] = useState('')
+  const [downText, setDownText] = useState('')
+
+  const range =
+    limitOverride && limitOverride.stock === effectiveStock
+      ? { upCents: limitOverride.up, downCents: limitOverride.down, pct: computedRange?.pct ?? 0 }
+      : computedRange
 
   const targets = ledger.targets.filter((t) => t.stockName === effectiveStock)
   const orders = ledger.orders.filter((o) => o.stockName === effectiveStock)
@@ -141,6 +152,8 @@ export function OrdersPage() {
       })
       return
     }
+    setLimitOverride(null)
+    setEditingLimit(false)
     setConfirmed({ stock: effectiveStock, closeCents: cents })
   }
 
@@ -225,6 +238,8 @@ export function OrdersPage() {
             onChange={(v) => {
               setStockName(v)
               setConfirmed(null)
+              setLimitOverride(null)
+              setEditingLimit(false)
             }}
             aria-label="选择股票"
           />
@@ -235,12 +250,16 @@ export function OrdersPage() {
               onChange={(e) => {
                 setLastClose(e.target.value)
                 setConfirmed(null)
+                setLimitOverride(null)
+                setEditingLimit(false)
               }}
               placeholder="昨收价，如 8.10"
               allowClear
               onClear={() => {
                 setLastClose('')
                 setConfirmed(null)
+                setLimitOverride(null)
+                setEditingLimit(false)
               }}
               aria-label="昨收价"
             />
@@ -257,11 +276,86 @@ export function OrdersPage() {
                 <span data-tag="limit-down">
                   <Tag size="medium" variant="soft" color="app-green">跌停价 {price(range.downCents)}</Tag>
                 </span>
+                {limitOverride && limitOverride.stock === effectiveStock ? (
+                  <>
+                    <Tag size="small" variant="soft" color="purple" data-tag="limit-manual">手工区间</Tag>
+                    <Button
+                      size="small"
+                      type="text"
+                      onClick={() => {
+                        setLimitOverride(null)
+                        setEditingLimit(false)
+                        notificationOpen({ message: '已回到按涨跌幅算的区间', type: 'info' })
+                      }}
+                    >
+                      恢复
+                    </Button>
+                  </>
+                ) : (
+                  <Button
+                    size="small"
+                    type="text"
+                    onClick={() => {
+                      setUpText(price(range.upCents))
+                      setDownText(price(range.downCents))
+                      setEditingLimit(true)
+                    }}
+                  >
+                    手工调整
+                  </Button>
+                )}
               </>
             ) : (
               <span className="tiny muted">填完昨收点「确认」，才算涨停/跌停</span>
             )}
           </div>
+
+          {editingLimit && range && (
+            <div className="stack tight divider-top">
+              <div className="row nowrap" style={{ gap: 6 }}>
+                <Input
+                  className="grow"
+                  value={downText}
+                  onChange={(e) => setDownText(e.target.value)}
+                  placeholder="跌停价"
+                  aria-label="手工跌停价"
+                />
+                <span className="tiny muted">~</span>
+                <Input
+                  className="grow"
+                  value={upText}
+                  onChange={(e) => setUpText(e.target.value)}
+                  placeholder="涨停价"
+                  aria-label="手工涨停价"
+                />
+              </div>
+              <div className="row nowrap" style={{ gap: 6 }}>
+                <Button
+                  size="small"
+                  type="primary"
+                  style={{ flex: 1 }}
+                  onClick={() => {
+                    const up = toCents(upText)
+                    const down = toCents(downText)
+                    if (up === null || down === null || up <= 0 || down <= 0) {
+                      notificationOpen({ message: '两个价都要填正数', type: 'warning' })
+                      return
+                    }
+                    if (down >= up) {
+                      notificationOpen({ message: '跌停价要低于涨停价', type: 'warning' })
+                      return
+                    }
+                    setLimitOverride({ stock: effectiveStock, up, down })
+                    setEditingLimit(false)
+                    notificationOpen({ message: '已按手工区间挂单', description: '只影响本页判断，不改股票配置', type: 'success' })
+                  }}
+                >
+                  应用
+                </Button>
+                <Button size="small" onClick={() => setEditingLimit(false)}>取消</Button>
+              </div>
+            </div>
+          )}
         </div>
       </Card>
       </div>
@@ -390,105 +484,119 @@ export function OrdersPage() {
         )}
       </Card>
 
-      {/* 3. 待买 / 待卖全量 */}
+      {/* 3. 待买（常驻，不藏页签，§04） */}
       <Card>
-        <Tabs
-          aria-label="待买待卖清单"
-          items={[
-            {
-              key: 'buy',
-              label: `待买 ${orders.length}`,
-              children:
-                orders.length === 0 ? (
-                  <div className="empty-box">该股没有待买单</div>
-                ) : (
-                  <div className="data-block">
-                    {orders.map((o) => {
-                      const z = zone(o.rebuyPriceCents)
-                      return (
-                        <div key={o.id} className="line">
-                          <div className="left">
-                            <div className="t1 num">
-                              {price(o.rebuyPriceCents)}
-                              <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}>
-                                {' '}× {qty(o.remainingQty)} 股
-                              </span>
-                              {o.remainingQty === 0 && <Tag size="small" variant="soft" color="app-green" style={{ marginLeft: 6 }}>已回补完</Tag>}
-                            </div>
-                            <div className="t2">
-                              行{o.sourceRow} · 计划 {o.baseQty}
-                              {o.rewardQty > 0 && ` + 奖励 ${o.rewardQty}`}
-                              {o.execQty > 0 && ` · 已回补 ${o.execQty}`}
-                              {` · 组池 ${money(o.grossProfitCents)} / ${o.hands} 手`}
-                            </div>
-                            <div className="tag-row" style={{ marginTop: 4 }}>
-                              <Tag size="small" variant="soft" color={o.exposure ? 'app-red' : 'app-teal'}>
-                                {o.exposure ? '空头敞口' : '回补再买入'}
-                              </Tag>
-                              <Tag size="small" variant="soft" color={z === '区间内' ? 'app-green' : z === '无区间' ? 'default' : 'app-red'}>
-                                {z}
-                              </Tag>
-                              {o.execQty > 0 && (
-                                <Button size="small" type="text" onClick={() => void undoExec(o.id)}>撤销最后一笔</Button>
-                              )}
-                            </div>
-                          </div>
-                          <div className="right num" style={{ fontWeight: 600 }}>
-                            {money(o.rebuyPriceCents * o.remainingQty)}
-                          </div>
-                        </div>
-                      )
-                    })}
-                  </div>
-                ),
-            },
-            {
-              key: 'sell',
-              label: `待卖 ${targets.length}`,
-              children:
-                targets.length === 0 ? (
-                  <div className="empty-box">该股批次已全部卖完</div>
-                ) : (
-                  <div className="data-block">
-                    {targets.map((t) => {
-                      const z = zone(t.priceCents)
-                      const lot = ledger.lots.find((l) => l.id === t.lotId)
-                      return (
-                        <div key={t.id} className="line">
-                          <div className="left">
-                            <div className="t1 num">
-                              {price(t.priceCents)}
-                              <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}> × {qty(t.qty)} 股</span>
-                            </div>
-                            <div className="t2">批次 {t.lotId.replace('lot:', '')} · 买入 {price(lot?.buyPriceCents ?? null)}</div>
-                            <div className="tag-row" style={{ marginTop: 4 }}>
-                              <Tag size="small" variant="soft" color={z === '区间内' ? 'app-green' : z === '无区间' ? 'default' : 'app-red'}>
-                                {z}
-                              </Tag>
-                            </div>
-                          </div>
-                          <div className="right">
-                            <div className="num" style={{ fontWeight: 600 }}>{money(t.amountCents)}</div>
-                            <div className="tiny up num">{signedMoney(t.expectProfitCents)}</div>
-                          </div>
-                        </div>
-                      )
-                    })}
-                    <div className="line">
-                      <div className="left t1">合计</div>
-                      <div className="right num" style={{ fontWeight: 600 }}>
-                        {money(targetTotal)}
-                        <div className="tiny up num">{signedMoney(targets.reduce((a, t) => a + t.expectProfitCents, 0))}</div>
-                      </div>
+        <div className="sec-head">
+          <strong>待买</strong>
+          <Tag size="small" variant="soft" color="purple">{orders.length} 条</Tag>
+          <div className="spacer" />
+          <span className="sec-sub">空头敞口要一直看得见</span>
+        </div>
+        {orders.length === 0 ? (
+          <div className="empty-box">该股没有待买单</div>
+        ) : (
+          <div className="data-block">
+            {orders.map((o) => {
+              const z = zone(o.rebuyPriceCents)
+              return (
+                <div key={o.id} className="line">
+                  <div className="left">
+                    <div className="t1 num">
+                      {price(o.rebuyPriceCents)}
+                      <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}>
+                        {' '}× {qty(o.remainingQty)} 股
+                      </span>
+                      {o.remainingQty === 0 && (
+                        <Tag size="small" variant="soft" color="app-green" style={{ marginLeft: 6 }}>已回补完</Tag>
+                      )}
+                    </div>
+                    <div className="t2">
+                      行{o.sourceRow} · 计划 {o.baseQty}
+                      {o.rewardQty > 0 && ` + 奖励 ${o.rewardQty}`}
+                      {o.execQty > 0 && ` · 已回补 ${o.execQty}`}
+                      {` · 组池 ${money(o.grossProfitCents)} / ${o.hands} 手`}
+                    </div>
+                    <div className="tag-row" style={{ marginTop: 4 }}>
+                      <Tag size="small" variant="soft" color={o.exposure ? 'app-red' : 'app-teal'}>
+                        {o.exposure ? '空头敞口' : '回补再买入'}
+                      </Tag>
+                      <Tag
+                        size="small"
+                        variant="soft"
+                        color={z === '区间内' ? 'app-green' : z === '无区间' ? 'default' : 'app-red'}
+                      >
+                        {z}
+                      </Tag>
+                      {o.execQty > 0 && (
+                        <Button size="small" type="text" onClick={() => void undoExec(o.id)}>撤销最后一笔</Button>
+                      )}
                     </div>
                   </div>
-                ),
-            },
-          ]}
-        />
+                  <div className="right num" style={{ fontWeight: 600 }}>
+                    {money(o.rebuyPriceCents * o.remainingQty)}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
         <p className="tiny muted" style={{ margin: '10px 0 0' }}>
-          待买剩余 {money(rebuyTotal)}（其中奖励 {money(rewardTotal)}） · 待卖 {money(targetTotal)} ·
-          待补敞口 {qty(summary?.exposureQty ?? 0)} 股
+          待买剩余 {money(rebuyTotal)}（其中奖励 {money(rewardTotal)}） · 待补敞口{' '}
+          {qty(summary?.exposureQty ?? 0)} 股
+        </p>
+      </Card>
+
+      {/* 4. 待卖（常驻） */}
+      <Card>
+        <div className="sec-head">
+          <strong>待卖</strong>
+          <Tag size="small" variant="soft" color="app-teal">{targets.length} 条</Tag>
+          <div className="spacer" />
+          <span className="sec-sub">量不超批次剩余</span>
+        </div>
+        {targets.length === 0 ? (
+          <div className="empty-box">该股批次已全部卖完</div>
+        ) : (
+          <div className="data-block">
+            {targets.map((t) => {
+              const z = zone(t.priceCents)
+              const lot = ledger.lots.find((l) => l.id === t.lotId)
+              return (
+                <div key={t.id} className="line">
+                  <div className="left">
+                    <div className="t1 num">
+                      {price(t.priceCents)}
+                      <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}> × {qty(t.qty)} 股</span>
+                    </div>
+                    <div className="t2">批次 {t.lotId.replace('lot:', '')} · 买入 {price(lot?.buyPriceCents ?? null)}</div>
+                    <div className="tag-row" style={{ marginTop: 4 }}>
+                      <Tag
+                        size="small"
+                        variant="soft"
+                        color={z === '区间内' ? 'app-green' : z === '无区间' ? 'default' : 'app-red'}
+                      >
+                        {z}
+                      </Tag>
+                    </div>
+                  </div>
+                  <div className="right">
+                    <div className="num" style={{ fontWeight: 600 }}>{money(t.amountCents)}</div>
+                    <div className="tiny up num">{signedMoney(t.expectProfitCents)}</div>
+                  </div>
+                </div>
+              )
+            })}
+            <div className="line">
+              <div className="left t1">合计</div>
+              <div className="right num" style={{ fontWeight: 600 }}>
+                {money(targetTotal)}
+                <div className="tiny up num">{signedMoney(targets.reduce((a, t) => a + t.expectProfitCents, 0))}</div>
+              </div>
+            </div>
+          </div>
+        )}
+        <p className="tiny muted" style={{ margin: '10px 0 0' }}>
+          待卖合计 {money(targetTotal)}
         </p>
       </Card>
 

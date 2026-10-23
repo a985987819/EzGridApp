@@ -74,7 +74,7 @@ describe('手动新增：卖出（先卖后买）', () => {
     for (const c of l.checks) expect(c.ok, `${c.name}: ${c.actual}`).toBe(true)
   })
 
-  it('卖出时直接带买入信息 → 一次成型', () => {
+  it('卖出时直接带买入信息 → 回补价取关联买入价（R3 第 2 级）', () => {
     const { record, errors } = buildManualRecord(
       {
         kind: 'sell',
@@ -88,13 +88,73 @@ describe('手动新增：卖出（先卖后买）', () => {
         buyDate: '2026-10-20',
       },
       100005,
+      { intervalCents: 57 },
     )
     expect(errors).toHaveLength(0)
+    expect(record.earlyBuyPriceCents).toBe(801)
+    expect(record.rebuyPriceSource).toBe('lot')
+
     const l = buildLedger([record], DEFAULT_STOCKS)
     expect(l.sells[0].costCents).toBe(801)
     expect(l.sells[0].profitCents).toBe(33500) // (8.68-8.01)*500
+    // R3：新增卖出默认生成待买；有批次所以不是空头敞口，是「回补再买入」
+    expect(l.sells[0].rebuyStatus).toBe('pending')
+    expect(l.orders).toHaveLength(1)
+    expect(l.orders[0].rebuyPriceCents).toBe(801)
+    expect(l.orders[0].exposure).toBe(false)
+    for (const c of l.checks) expect(c.ok, `${c.name}: ${c.actual}`).toBe(true)
+  })
+
+  it('勾「已回补」→ 不生成待买（repaid）', () => {
+    const { record, errors } = buildManualRecord(
+      {
+        kind: 'sell',
+        stockName: '柳工',
+        date: '2026-10-21',
+        price: '8.68',
+        qty: '500',
+        rebuyPrice: '',
+        repaid: true,
+        buyPrice: '8.01',
+        buyQty: '500',
+        buyDate: '2026-10-20',
+      },
+      100008,
+      { intervalCents: 57 },
+    )
+    expect(errors).toHaveLength(0)
+    expect(record.earlyBuyPriceCents).toBeNull()
+    expect(record.rebuyPriceSource).toBe('repaid')
+    const l = buildLedger([record], DEFAULT_STOCKS)
     expect(l.sells[0].rebuyStatus).toBe('repaid')
     expect(l.orders).toHaveLength(0)
+  })
+
+  it('无买入信息、无回补价 → 卖出价 − 该股间隔（R3 第 4 级）', () => {
+    const { record, errors } = buildManualRecord(
+      { kind: 'sell', stockName: '柳工', date: '2026-10-21', price: '8.68', qty: '500' },
+      100009,
+      { intervalCents: 57 },
+    )
+    expect(errors).toHaveLength(0)
+    // 8.68 − 0.57 = 8.11
+    expect(record.earlyBuyPriceCents).toBe(811)
+    expect(record.rebuyPriceSource).toBe('sellMinusInterval')
+
+    const l = buildLedger([record], DEFAULT_STOCKS)
+    expect(l.orders).toHaveLength(1)
+    expect(l.orders[0].rebuyPriceCents).toBe(811)
+    expect(l.orders[0].exposure).toBe(true) // 无批次 → 空头敞口
+    for (const c of l.checks) expect(c.ok, `${c.name}: ${c.actual}`).toBe(true)
+  })
+
+  it('推不出回补价 → 报错要求手填（R3 无解）', () => {
+    const { errors } = buildManualRecord(
+      { kind: 'sell', stockName: '柳工', date: '2026-10-21', price: '8.68', qty: '500' },
+      100010,
+      { intervalCents: 0 },
+    )
+    expect(errors.join('｜')).toContain('算不出回补价')
   })
 
   it('卖出数量大于买入份额被拒', () => {

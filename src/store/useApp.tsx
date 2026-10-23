@@ -302,7 +302,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const all = await db.records.toArray()
       const maxRow = all.reduce((a, r) => Math.max(a, r.sourceRow), MANUAL_ROW_BASE - 1)
       const sourceRow = Math.max(maxRow + 1, MANUAL_ROW_BASE)
-      const { record, errors } = buildManualRecord(input, sourceRow)
+      const cfg = stocks.find((s) => s.name === input.stockName)
+      const { record, errors } = buildManualRecord(input, sourceRow, {
+        intervalCents: cfg?.intervalCents ?? 0,
+      })
       if (errors.length) throw new Error(errors.join('；'))
       await db.transaction('rw', db.records, db.auditLogs, async () => {
         await db.records.put(record)
@@ -319,7 +322,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       await reloadRecords()
       return sourceRow
     },
-    [reloadRecords],
+    [reloadRecords, stocks],
   )
 
   const reorderStocks = useCallback(async (orderedIds: string[]) => {

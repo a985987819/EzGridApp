@@ -12,6 +12,8 @@ import type { Lot, RawRecord, SellExecution } from '../domain/types'
 
 type StatusFilter = 'all' | 'holding' | 'soldout' | 'pending' | 'dateMissing' | 'needsPrice'
 
+type SortBy = 'rowDesc' | 'rowAsc' | 'sellDateDesc' | 'sellDateAsc' | 'profitDesc' | 'profitAsc'
+
 interface Row {
   rec: RawRecord
   lot: Lot | null
@@ -27,6 +29,20 @@ const STATUS_OPTIONS: { key: StatusFilter; label: string }[] = [
   { key: 'needsPrice', label: '缺价格' },
 ]
 
+const SORT_OPTIONS: { key: SortBy; label: string }[] = [
+  { key: 'rowDesc', label: '行号 高→低' },
+  { key: 'rowAsc', label: '行号 低→高' },
+  { key: 'sellDateDesc', label: '卖出日期 新→旧' },
+  { key: 'sellDateAsc', label: '卖出日期 旧→新' },
+  { key: 'profitDesc', label: '盈利 高→低' },
+  { key: 'profitAsc', label: '盈利 低→高' },
+]
+
+/** 行上的「交易日期」：卖出日期优先，其次买入日期 */
+function tradeDate(r: Row): string | null {
+  return r.sell?.soldAt ?? r.lot?.buyDate ?? serialToIso(r.rec.buyDateSerial)
+}
+
 const BLANK_DRAFT = Object.fromEntries(EDITABLE.map((f) => [f.key, ''])) as Record<EditableKey, string>
 
 const BLANK_FORM: ManualInput = {
@@ -37,6 +53,7 @@ const BLANK_FORM: ManualInput = {
   qty: '',
   targetPrice: '',
   rebuyPrice: '',
+  repaid: false,
   buyPrice: '',
   buyQty: '',
   buyDate: '',
@@ -66,6 +83,9 @@ export function TradesPage({
   const [status, setStatus] = useState<StatusFilter>('all')
   const [keyword, setKeyword] = useState('')
   const [priceFilter, setPriceFilter] = useState<number | null>(focus?.priceCents ?? null)
+  const [fromDate, setFromDate] = useState('')
+  const [toDate, setToDate] = useState('')
+  const [sortBy, setSortBy] = useState<SortBy>('rowDesc')
   const [showDeleted, setShowDeleted] = useState(false)
   const [openRow, setOpenRow] = useState<number | null>(null)
   const [editing, setEditing] = useState(false)
@@ -87,9 +107,11 @@ export function TradesPage({
   const rows = useMemo<Row[]>(() => {
     const lotMap = new Map(ledger.lots.map((l) => [l.sourceRow, l]))
     const sellMap = new Map(ledger.sells.map((s) => [s.sourceRow, s]))
-    return scopedRecords
-      .map((rec) => ({ rec, lot: lotMap.get(rec.sourceRow) ?? null, sell: sellMap.get(rec.sourceRow) ?? null }))
-      .sort((a, b) => b.rec.sourceRow - a.rec.sourceRow)
+    return scopedRecords.map((rec) => ({
+      rec,
+      lot: lotMap.get(rec.sourceRow) ?? null,
+      sell: sellMap.get(rec.sourceRow) ?? null,
+    }))
   }, [scopedRecords, ledger])
 
   const filtered = useMemo(
@@ -104,6 +126,13 @@ export function TradesPage({
         if (priceFilter !== null) {
           const prices = [r.rec.targetPriceCents, r.rec.buyPriceCents, r.sell?.priceCents ?? null, r.rec.earlyBuyPriceCents]
           if (!prices.includes(priceFilter)) return false
+        }
+        // 日期区间：卖出日期优先，其次买入日期；没日期的行在有区间条件时直接排除
+        if (fromDate || toDate) {
+          const d = tradeDate(r)
+          if (d === null) return false
+          if (fromDate && d < fromDate) return false
+          if (toDate && d > toDate) return false
         }
         switch (status) {
           case 'holding':
@@ -120,10 +149,39 @@ export function TradesPage({
             return true
         }
       }),
-    [rows, stockFilter, keyword, priceFilter, status, showDeleted, enabledSet],
+    [rows, stockFilter, keyword, priceFilter, status, showDeleted, enabledSet, fromDate, toDate],
   )
 
-  const current = filtered.find((r) => r.rec.sourceRow === openRow) ?? null
+  /** 排序后的可见列表（S3：可按行号/日期/盈利排） */
+  const visible = useMemo(() => {
+    const arr = [...filtered]
+    const dateOf = (r: Row) => tradeDate(r) ?? ''
+    const profitOf = (r: Row) => r.sell?.profitCents ?? 0
+    switch (sortBy) {
+      case 'rowAsc':
+        return arr.sort((a, b) => a.rec.sourceRow - b.rec.sourceRow)
+      case 'sellDateDesc':
+        return arr.sort((a, b) => dateOf(b).localeCompare(dateOf(a)))
+      case 'sellDateAsc':
+        // 没日期的排在最后，避免空串顶到最前
+        return arr.sort((a, b) => {
+          const x = dateOf(a)
+          const y = dateOf(b)
+          if (x === y) return 0
+          if (x === '') return 1
+          if (y === '') return -1
+          return x.localeCompare(y)
+        })
+      case 'profitDesc':
+        return arr.sort((a, b) => profitOf(b) - profitOf(a))
+      case 'profitAsc':
+        return arr.sort((a, b) => profitOf(a) - profitOf(b))
+      default:
+        return arr.sort((a, b) => b.rec.sourceRow - a.rec.sourceRow)
+    }
+  }, [filtered, sortBy])
+
+  const current = visible.find((r) => r.rec.sourceRow === openRow) ?? null
 
   function open(r: Row) {
     const next = { ...BLANK_DRAFT }
@@ -177,7 +235,7 @@ export function TradesPage({
 
   function exportCsv() {
     const head = ['行号', '来源', '股票', '买入日期', '买入价', '买入份额', '已卖', '剩余', '目标售价', '回补价', '卖出日期', '成交价', '实现盈利', '标记']
-    const body = filtered.map((r) => [
+    const body = visible.map((r) => [
       r.rec.sourceRow,
       r.rec.origin === 'manual' ? '手动' : 'Excel',
       r.rec.stockName,
@@ -244,6 +302,39 @@ export function TradesPage({
             aria-label="搜索"
           />
         </div>
+
+        {/* S3：日期区间筛选（卖出日期优先，其次买入日期） */}
+        <div className="row nowrap date-row">
+          <input
+            type="date"
+            className="date-input"
+            value={fromDate}
+            max={toDate || undefined}
+            onChange={(e) => setFromDate(e.target.value)}
+            aria-label="起始日期"
+          />
+          <span className="tiny muted">→</span>
+          <input
+            type="date"
+            className="date-input"
+            value={toDate}
+            min={fromDate || undefined}
+            onChange={(e) => setToDate(e.target.value)}
+            aria-label="结束日期"
+          />
+          {(fromDate || toDate) && (
+            <Button
+              size="small"
+              type="text"
+              onClick={() => {
+                setFromDate('')
+                setToDate('')
+              }}
+            >
+              清除
+            </Button>
+          )}
+        </div>
       </div>
 
       <Card>
@@ -253,19 +344,28 @@ export function TradesPage({
             显示已删除
           </label>
           <div className="spacer" />
-          <Button size="small" onClick={exportCsv}>导出 CSV</Button>
+          <div className="sort-select">
+            <Select
+              options={SORT_OPTIONS.map((o) => ({ key: o.key, label: o.label }))}
+              value={sortBy}
+              onChange={(v) => setSortBy(v as SortBy)}
+              aria-label="排序"
+            />
+          </div>
         </div>
-        <Button
-          block
-          type="primary"
-          style={{ marginTop: 8 }}
-          onClick={() => {
-            setForm({ ...BLANK_FORM, stockName: stockFilter === 'all' ? stockNames[0] ?? '' : stockFilter })
-            setAdding(true)
-          }}
-        >
-          新增一笔
-        </Button>
+        <div className="row nowrap" style={{ gap: 8, marginTop: 8 }}>
+          <Button style={{ flex: 1 }} onClick={exportCsv}>导出 CSV</Button>
+          <Button
+            type="primary"
+            style={{ flex: 1 }}
+            onClick={() => {
+              setForm({ ...BLANK_FORM, stockName: stockFilter === 'all' ? stockNames[0] ?? '' : stockFilter })
+              setAdding(true)
+            }}
+          >
+            新增一笔
+          </Button>
+        </div>
       </Card>
 
       {priceFilter !== null && (
@@ -286,12 +386,12 @@ export function TradesPage({
         </div>
       )}
 
-      {filtered.length === 0 ? (
+      {visible.length === 0 ? (
         <Card>
           <div className="empty-box">没有匹配的行</div>
         </Card>
       ) : (
-        filtered.map((r) => {
+        visible.map((r) => {
           const deleted = Boolean(r.rec.deletedAt)
           return (
             <Card
@@ -334,7 +434,7 @@ export function TradesPage({
       )}
 
       <p className="tiny muted" style={{ textAlign: 'center' }}>
-        共 {filtered.length} 行 · 合计盈利 {money(filtered.reduce((a, r) => a + (r.sell?.profitCents ?? 0), 0))}
+        共 {visible.length} 行 · 合计盈利 {money(visible.reduce((a, r) => a + (r.sell?.profitCents ?? 0), 0))}
         {hiddenStockCount > 0 && stockFilter === 'all' && ` · 已隐藏 ${hiddenStockCount} 只停用股票`}
       </p>
 
@@ -430,6 +530,15 @@ export function TradesPage({
 
                 <div className="tag-row">
                   {current.sell?.rebuyStatus === 'pending' && <Tag size="small" variant="soft" color="app-orange">待回补</Tag>}
+                  {current.rec.rebuyPriceSource === 'lot' && (
+                    <Tag size="small" variant="soft" color="purple">回补价 = 关联买入价</Tag>
+                  )}
+                  {current.rec.rebuyPriceSource === 'sellMinusInterval' && (
+                    <Tag size="small" variant="soft" color="purple">回补价 = 卖出价 − 间隔</Tag>
+                  )}
+                  {current.rec.rebuyPriceSource === 'repaid' && (
+                    <Tag size="small" variant="soft">已回补</Tag>
+                  )}
                   {current.sell?.sellBeforeBuy && <Tag size="small" variant="soft" color="app-teal">先卖后买</Tag>}
                   {current.sell?.dateMissing && <Tag size="small" variant="soft" color="app-yellow">缺日期</Tag>}
                   {current.sell && current.sell.priceCents === null && <Tag size="small" variant="soft" color="app-red">缺价格</Tag>}
@@ -631,16 +740,26 @@ export function TradesPage({
             ) : (
               <>
                 <label>
-                  <span>回补价 P（可空，空则视为已回补）</span>
+                  <span>回补价 P（可空，按 R3 自动推导）</span>
                   <Input
                     value={form.rebuyPrice ?? ''}
-                    placeholder="7.90"
+                    placeholder="留空则按优先级推导"
                     onChange={(e) => setForm({ ...form, rebuyPrice: e.target.value })}
                     data-field="rebuyPrice"
                   />
                 </label>
+                <label className="row" style={{ gap: 8, fontSize: 12 }}>
+                  <Switch
+                    size="small"
+                    checked={form.repaid === true}
+                    onChange={(v) => setForm({ ...form, repaid: v })}
+                    aria-label="这笔已回补"
+                  />
+                  这笔已回补（不生成待买）
+                </label>
                 <p className="tiny muted" style={{ margin: 0 }}>
-                  先卖后买：买入信息可以现在填，也可以留空——之后在明细里补买入价和份额，会自动生成待卖。
+                  新增卖出默认都生成待买。回补价留空时按「关联买入价 → 卖出价 − 该股间隔」推导，
+                  都推不出会让你手填。卖的是已有批次就勾上「已回补」。
                 </p>
                 <div className="row nowrap">
                   <label style={{ flex: 1 }}>

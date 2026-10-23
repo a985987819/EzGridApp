@@ -302,4 +302,45 @@ describe('§09 测试矩阵', () => {
     expect(l.totals.targetQty - l.totals.exposureQty).toBe(l.totals.netQty)
     for (const c of l.checks) expect(c.ok, `${c.name}: ${c.actual}`).toBe(true)
   })
+
+  it('§7.1 卖出挂回批次与目标：lotId / targetId 齐全', () => {
+    const l = buildLedger(fixture.records, DEFAULT_STOCKS)
+    // 有买入批次的卖出：lotId 指向自己那一行
+    const r14 = l.sells.find((s) => s.sourceRow === 14)!
+    expect(r14.lotId).toBe('lot:14')
+    // R14 已全卖完 → 没有剩余就没有自动目标
+    expect(r14.targetId).toBeNull()
+
+    // 真实数据里每行都是「买满即卖光」，没有部分卖出样本，所以 targetId 全为 null
+    for (const s of l.sells) expect(s.targetId).toBeNull()
+
+    // 构造一笔部分卖出：批次还剩 600，自动目标存在，targetId 应回填
+    const partial = rec({
+      stockName: '柳工',
+      buyPriceCents: 800,
+      buyQtyRaw: 1000,
+      soldQty: 400,
+      targetPriceCents: 900,
+    })
+    const l2 = buildLedger([partial], DEFAULT_STOCKS)
+    expect(l2.lots[0].remainingQty).toBe(600)
+    expect(l2.sells[0].lotId).toBe(l2.lots[0].id)
+    expect(l2.sells[0].targetId).toBe(l2.targets[0].id)
+
+    // 先卖后买（R60–63）没有批次，lotId / targetId 都是 null
+    for (const row of [60, 61, 62, 63]) {
+      const s = l.sells.find((x) => x.sourceRow === row)!
+      expect(s.lotId).toBeNull()
+      expect(s.targetId).toBeNull()
+    }
+  })
+
+  it('§7.1 凑手来源：R63 的奖励只来自同组自己（R46 已回补、没有订单）', () => {
+    const l = buildLedger(fixture.records, DEFAULT_STOCKS)
+    const r63 = l.orders.find((o) => o.sourceRow === 63)!
+    expect(r63.rewardQty).toBe(100)
+    expect(r63.rewardSourceOrderIds).toEqual([r63.id])
+    const others = l.orders.filter((o) => o.sourceRow !== 63)
+    for (const o of others) expect(o.rewardSourceOrderIds).toEqual([])
+  })
 })

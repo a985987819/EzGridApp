@@ -266,6 +266,24 @@ try {
   await evaluate(`window.scrollTo(0, 0)`)
   await sleep(300)
 
+  console.log('\n[4.5] 三格点开看构成')
+  check(
+    '点「净持仓」',
+    await evaluate(`(() => {
+      const el = document.querySelector('[data-metric="net"]')
+      if (!el) return false
+      el.click(); return true
+    })()`),
+  )
+  await sleep(500)
+  text = await bodyText()
+  check('出现「净持仓构成」', text.includes('净持仓构成'))
+  check('构成里有 Σ 买入 / Σ 卖出 / Σ 回补', text.includes('Σ 买入份额') && text.includes('Σ 卖出量') && text.includes('Σ 回补成交'))
+  check('参数一致（合计 13,200）', text.includes('= 13,200'))
+  check('点「收起」', await clickByText('button', '收起'))
+  await sleep(400)
+  check('收起后面板消失', !(await bodyText()).includes('净持仓构成'))
+
   console.log('\n[5] 价格网格列序')
   await clickByText('.stock-tabs > *', '柳工')
   await sleep(400)
@@ -301,6 +319,37 @@ try {
 
   console.log('\n[6] 明细：股票 tab + 抽屉编辑')
   check('切到明细', await nav('trades'))
+  // S3：日期区间筛选 + 排序
+  const headCount = async () =>
+    Number((await evaluate(`document.querySelector('.page-title p')?.textContent ?? ''`)).split('/')[0]) || 0
+  const allCount = await headCount()
+  await setInput('input[aria-label="起始日期"]', '2026-08-01')
+  await sleep(400)
+  const fromCount = await headCount()
+  check('起始日期筛选生效（8 月后行数变少）', fromCount > 0 && fromCount < allCount, `${fromCount}/${allCount}`)
+  await setInput('input[aria-label="结束日期"]', '2026-08-31')
+  await sleep(400)
+  const rangeCount = await headCount()
+  check('结束日期进一步收窄', rangeCount <= fromCount, `${rangeCount}/${fromCount}`)
+  check('清除日期筛选', await clickByText('button', '清除'))
+  await sleep(400)
+  check('清除后恢复全部', (await headCount()) === allCount, `${await headCount()}/${allCount}`)
+
+  const sortPick = async (label) => {
+    await evaluate(`document.querySelector('.app-main [role="combobox"][aria-label="排序"]')?.click()`)
+    await sleep(300)
+    const ok = await clickByText('[role="option"]', label)
+    await sleep(400)
+    return ok
+  }
+  const firstRows = async () =>
+    JSON.parse(await evaluate(`JSON.stringify([...document.querySelectorAll('[data-row]')].slice(0,3).map(e => Number(e.getAttribute('data-row'))))`))
+  check('排序切到「行号 低→高」', await sortPick('行号 低→高'))
+  const asc = await firstRows()
+  check('升序生效', asc[0] < asc[1] && asc[1] < asc[2], JSON.stringify(asc))
+  check('排序切回「行号 高→低」', await sortPick('行号 高→低'))
+  const desc = await firstRows()
+  check('降序恢复', desc[0] > desc[1] && desc[1] > desc[2], JSON.stringify(desc))
   check('明细顶部吸顶', (await stickyOf('trades')) === 'sticky')
   const tradePills = await evaluate(`JSON.stringify([...document.querySelectorAll('.stock-tabs > *')].map(e => e.textContent.trim()))`)
   check('明细也有股票药丸（含「全部」）', JSON.parse(tradePills)[0] === '全部' && JSON.parse(tradePills).length === 5, tradePills)
@@ -428,6 +477,28 @@ try {
   check('可挂买/可挂卖 分组标签存在', blk.labels.some((l) => l.includes('可挂买')) && blk.labels.some((l) => l.includes('可挂卖')), blocks)
   check('今日挂单里有「记成交」', text.includes('记成交'))
 
+  // 待买/待卖必须常驻，不能藏在页签后面（§04）
+  const tabCount = await evaluate(`document.querySelectorAll('[role="tab"]').length`)
+  check('挂单页不再用页签藏待买', Number(tabCount) === 0, String(tabCount))
+  check('待买清单常驻', /待买\s*\d+\s*条/.test(text) && text.includes('空头敞口要一直看得见'))
+
+  console.log('\n[8.1] 涨跌停手工覆盖')
+  check('点「手工调整」', await clickByText('button', '手工调整'))
+  await sleep(400)
+  await setInput('input[aria-label="手工跌停价"]', '7.00')
+  await setInput('input[aria-label="手工涨停价"]', '9.50')
+  await sleep(200)
+  check('点「应用」', await clickByText('button', '应用'))
+  await sleep(700)
+  text = await bodyText()
+  const manualUp = await evaluate(`document.querySelector('[data-tag="limit-up"]')?.textContent.trim() ?? ''`)
+  check('手工区间生效（涨停 9.50）', manualUp.includes('9.50'), manualUp)
+  check('出现「手工区间」标记', text.includes('手工区间'))
+  check('点「恢复」', await clickByText('button', '恢复'))
+  await sleep(600)
+  const backUp = await evaluate(`document.querySelector('[data-tag="limit-up"]')?.textContent.trim() ?? ''`)
+  check('恢复后回到 8.91', backUp.includes('8.91'), backUp)
+
   console.log('\n[8.2] 挂单计划价')
   check('点第一个「计划」', await clickByText('button', '计划'))
   await sleep(500)
@@ -514,7 +585,7 @@ try {
   await setInput('input[data-field="date"]', '2026-10-21')
   await setInput('input[data-field="price"]', '8.68')
   await setInput('input[data-field="qty"]', '500')
-  await setInput('input[data-field="rebuyPrice"]', '8.01')
+  // R3：回补价留空 → 卖出价 8.68 − 柳工间隔 0.57 = 8.11，且默认生成待买
   await sleep(300)
   check('点保存', await clickByText('button', '保存'))
   await sleep(1200)
@@ -522,6 +593,15 @@ try {
   text = await bodyText()
   check('卖出后净持仓 12,700', text.includes('12,700'))
   check('卖出后敞口 2,500', text.includes('2,500'))
+
+  // 回补价被自动推导出来，来源写在明细里
+  await nav('trades')
+  await evaluate(`document.querySelector('[data-row="100000"]')?.click()`)
+  await sleep(700)
+  text = await bodyText()
+  check('抽屉标出「回补价 = 卖出价 − 间隔」', text.includes('回补价 = 卖出价 − 间隔'))
+  check('推导出的回补价 8.11', text.includes('8.11'))
+  await closeDrawer()
 
   console.log('\n[11] 删掉这笔手动卖出，恢复原状')
   await nav('trades')
@@ -595,6 +675,12 @@ try {
     const shot = await send('Page.captureScreenshot', { format: 'png' })
     writeFileSync(join(OUT, file), Buffer.from(shot.data, 'base64'))
   }
+  // 挂单页整页（看待买/待卖是不是常驻两段）
+  await nav('orders')
+  await sleep(500)
+  const ordersFull = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true })
+  writeFileSync(join(OUT, 'mobile-orders-full.png'), Buffer.from(ordersFull.data, 'base64'))
+
   await nav('manage')
   await sleep(500)
   const manageShot = await send('Page.captureScreenshot', { format: 'png' })

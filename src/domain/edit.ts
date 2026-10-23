@@ -113,7 +113,11 @@ export function applyEdits(rec: RawRecord, draft: Partial<Record<EditableKey, st
         // 手改过的目标价不再由公式派生
         if (cents !== null) next.targetNeedsDerive = false
       }
-      if (key === 'earlyBuyPrice') next.earlyBuyPriceCents = cents
+      if (key === 'earlyBuyPrice') {
+        next.earlyBuyPriceCents = cents
+        // 手改过回补价 → 来源标记成「自定义」，不再显示自动推导标签
+        next.rebuyPriceSource = cents === null ? undefined : 'custom'
+      }
     } else if (kind === 'qty') {
       let q: number | null = null
       if (text !== '') {

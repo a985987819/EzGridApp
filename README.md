@@ -1,4 +1,4 @@
-# 网格交易管理（V7.1 · 文档 S0–S9 全部完成）
+# 网格交易管理（V8 · 文档 S0–S9 + 逐条对账）
 
 把 `26年网格记录.xlsx` 里「交易记录」这张手工表，变成一套**能自动生成待买 / 待卖清单、能算奖励、能自证数据没错**的本地网页工具。
 
@@ -12,7 +12,7 @@
 cd E:\projects\grid-trading
 npm install
 npm run dev       # http://127.0.0.1:5173
-npm run test      # 99 条单元测试，含真实文件 dry-run + §09 的 24 条测试矩阵
+npm run test      # 104 条单元测试，含真实文件 dry-run + §09 的 24 条测试矩阵
 npm run build     # tsc --noEmit + vite build
 node e2e/smoke.mjs http://127.0.0.1:5173   # 无头浏览器走一遍主链路
 ```
@@ -105,6 +105,19 @@ tests/fixtures/        26年网格记录.xlsx（测试与内置示例都用它�
 2. **UI 全部走 `animal-island-ui`**（Card / Button / Tabs / Tag / Input / Select / Drawer / Modal /
    Switch / Upload / Collapse / Notification），只有价格网格用原生 `<table>`——它是个二维矩阵，
    不是数据表格，用 Table 反而更绕。配色、圆角、字体全部继承库的 `--animal-*` token。
+
+## V8 做了什么（文档逐条对账）
+
+拿《规则确认与开发规划 V1.1》从 D1 对到 §10，补掉这些缺口（细节见 `ROADMAP.md`、偏差见 `ACCEPTANCE.md`）：
+
+- **R3 新增卖出自动生成待买**：回补价按「自定义 > 关联买入价 > P 列 > 卖出价 − 间隔 > 无解」推导，
+  勾「这笔已回补」才判 `repaid`。之前手记一笔卖出忘了填回补价，敞口会悄悄少算。
+- **明细加日期区间 + 排序**（S3）：卖出日期优先、其次买入日期；6 种排序。
+- **挂单页待买常驻**（§04）：不再藏在页签后面，待买、待卖两段并列。
+- **涨跌停可手工覆盖**（§10）：只影响本页判断，不改股票配置，可一键恢复。
+- **三格点开看构成**（§04）：移动端没有悬停，改成点击展开。
+- **§7.1 字段补齐**：`SellExecution.lotId / targetId`、`RebuyOrder.rewardSourceOrderIds`。
+- **ACCEPTANCE.md**：真实数据验收 / 构造数据 / 已知偏差 / 未做清单，一张表看完。
 
 ## 视觉分层：表头不再和数据糊在一起
 
