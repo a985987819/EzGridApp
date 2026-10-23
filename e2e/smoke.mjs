@@ -143,9 +143,15 @@ try {
   const bodyText = () => evaluate(`document.body.innerText`)
 
   console.log(`\n[1] 首屏 ${BASE}`)
-  await send('Page.navigate', { url: `${BASE}/` })
-  await settle()
-  let text = await bodyText()
+  // Vite 在文件增删时会整页重载，偶发拿到空壳；这里最多重试 3 次
+  let text = ''
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await send('Page.navigate', { url: `${BASE}/` })
+    await settle()
+    text = await bodyText()
+    if (text.includes('网格交易管理')) break
+    await sleep(1200)
+  }
   check('渲染出侧栏', text.includes('网格交易管理'))
   check('空态提示', text.includes('还没有导入数据') || text.includes('概览'))
 
@@ -226,6 +232,21 @@ try {
   text = await bodyText()
   check('切到三一重工，可卖 3,800', text.includes('3,800'))
   check('三一网格出现', text.includes('20.78') || text.includes('19.88'))
+
+  await evaluate(`(() => {
+    const t = [...document.querySelectorAll('.tab')].find(x => x.textContent.includes('柳工'))
+    if (t) t.click()
+  })()`)
+  await sleep(400)
+  const gridDump = await evaluate(`JSON.stringify(
+    [...document.querySelectorAll('table.pricegrid')[0].querySelectorAll('tbody tr')]
+      .slice(0, 6).map(tr => [...tr.children].map(td => td.textContent.trim()))
+  )`)
+  console.log('  网格前 6 行:', gridDump)
+  const cells = JSON.parse(gridDump)
+  check('网格 4 列且第 2 列是价格', cells.every((c) => c.length === 4 && /^\d+\.\d{2}$/.test(c[1])))
+  check('网格第 3 列出现待卖股数', cells.some((c) => /股$/.test(c[2])))
+  check('网格第 4 列出现已卖出笔数', cells.some((c) => /笔/.test(c[3])))
 
   console.log('\n[7] 明细：行内编辑 → 审计 → 删除 → 恢复')
   await clickNav('明细')
