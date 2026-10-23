@@ -140,6 +140,12 @@ export function parseWorkbook(buffer: ArrayBuffer | Uint8Array): ParseResult {
 
     const buyDateSerial = idx.buyDate === null ? null : numOrNull(sheet, r, idx.buyDate)
     const sellDateSerial = idx.sellDate === null ? null : numOrNull(sheet, r, idx.sellDate)
+    // 日期格是 =TODAY() 公式、且文件里没存计算结果 → 标记出来，
+    // 这类格子打开 Excel 会显示「当天」，不是真实成交日，不能拿来当数据
+    const buyDateFormula = idx.buyDate === null ? null : cellFormula(sheet, r, idx.buyDate)
+    const sellDateFormula = idx.sellDate === null ? null : cellFormula(sheet, r, idx.sellDate)
+    const buyDateNeedsToday = buyDateSerial === null && buyDateFormula !== null && /TODAY\s*\(/i.test(buyDateFormula)
+    const sellDateNeedsToday = sellDateSerial === null && sellDateFormula !== null && /TODAY\s*\(/i.test(sellDateFormula)
     const earlyBuyPriceCents = idx.earlyBuy === null ? null : centsOrNull(sheet, r, idx.earlyBuy)
     const rawProfitCents = idx.profit === null ? null : centsOrNull(sheet, r, idx.profit)
 
@@ -156,6 +162,8 @@ export function parseWorkbook(buffer: ArrayBuffer | Uint8Array): ParseResult {
       sellDateSerial,
       earlyBuyPriceCents,
       rawProfitCents,
+      buyDateNeedsToday,
+      sellDateNeedsToday,
       importKey: '',
     }
     const base = makeImportKey(rec)

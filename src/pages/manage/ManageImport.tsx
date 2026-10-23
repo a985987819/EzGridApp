@@ -168,6 +168,21 @@ export function ManageImport() {
             {preview.missingColumns.length > 0 && (
               <p className="tiny" style={{ color: 'var(--up)' }}>缺少列：{preview.missingColumns.join('、')}</p>
             )}
+            {(() => {
+              const buyToday = preview.records.filter((r) => r.buyDateNeedsToday).map((r) => r.sourceRow)
+              const sellToday = preview.records.filter((r) => r.sellDateNeedsToday).map((r) => r.sourceRow)
+              if (buyToday.length === 0 && sellToday.length === 0) return null
+              return (
+                <div className="hint-block" style={{ borderTop: '1px solid var(--line)', paddingTop: 8 }}>
+                  <b>日期是 =TODAY() 公式、没存计算结果：</b>
+                  {buyToday.length > 0 && <> 买入日期 {buyToday.length} 行（R{buyToday.join('、R')}）</>}
+                  {buyToday.length > 0 && sellToday.length > 0 && '；'}
+                  {sellToday.length > 0 && <> 卖出日期 {sellToday.length} 行（R{sellToday.join('、R')}）</>}
+                  。这类格子打开 Excel 只会显示「当天」，不是真实成交日，
+                  所以按缺失入库，在明细里补一下即可。
+                </div>
+              )
+            })()}
             <CheckList checks={previewChecks} />
             <div className="row" style={{ marginTop: 12 }}>
               <Button type="primary" block loading={busy} onClick={() => void onCommit()}>

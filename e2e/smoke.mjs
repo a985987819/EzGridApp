@@ -350,6 +350,45 @@ try {
   check('排序切回「行号 高→低」', await sortPick('行号 高→低'))
   const desc = await firstRows()
   check('降序恢复', desc[0] > desc[1] && desc[1] > desc[2], JSON.stringify(desc))
+
+  // 买入日期排序（新→旧）
+  const firstBuyDates = async () =>
+    JSON.parse(await evaluate(`JSON.stringify([...document.querySelectorAll('.trade-item .dates')].slice(0,3).map(e => e.textContent.trim()))`))
+  check('排序切到「买入日期 新→旧」', await sortPick('买入日期 新→旧'))
+  const buyDesc = await firstBuyDates()
+  console.log('  买入日期降序前 3:', buyDesc)
+  const isoOf = (t) => (t.match(/买入 (\d{4}-\d{2}-\d{2})/) || [])[1] ?? ''
+  const dates = buyDesc.map(isoOf).filter(Boolean)
+  check('买入日期降序生效', dates.length >= 2 && dates.every((d, i) => i === 0 || dates[i - 1] >= d), JSON.stringify(buyDesc))
+  const datesShot = await send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync(join(OUT, 'mobile-trades-dates.png'), Buffer.from(datesShot.data, 'base64'))
+  check('排序切回「行号 高→低」', await sortPick('行号 高→低'))
+
+  // 卡片上买入/卖出日期都要显示（空就显示 —）
+  const cardText = await evaluate(`document.querySelector('[data-row="63"] .dates')?.textContent.trim() ?? ''`)
+  console.log('  R63 日期行:', cardText)
+  check('卡片显示买入/卖出日期', cardText.includes('买入') && cardText.includes('卖出'))
+  check('R63 买入日期为空显示 —（先卖后买）', /买入\s*—/.test(cardText), cardText)
+  check('R63 卖出日期为空显示 —', /卖出\s*—/.test(cardText), cardText)
+  const r2Text = await evaluate(`document.querySelector('[data-row="2"] .dates')?.textContent.trim() ?? ''`)
+  check('R2 两个日期都有值', /买入 \d{4}-\d{2}-\d{2}/.test(r2Text) && /卖出 \d{4}-\d{2}-\d{2}/.test(r2Text), r2Text)
+
+  // 缺日期筛选拆成买入/卖出两个
+  const pickStatus = async (label) => {
+    await evaluate(`document.querySelector('.app-main [role="combobox"][aria-label="按状态筛选"]')?.click()`)
+    await sleep(300)
+    const ok = await clickByText('[role="option"]', label)
+    await sleep(400)
+    return ok
+  }
+  check('筛选「缺卖出日期」', await pickStatus('缺卖出日期'))
+  const sellMissingCount = await headCount()
+  check('缺卖出日期 9 行', sellMissingCount === 9, String(sellMissingCount))
+  check('筛选「缺买入日期」', await pickStatus('缺买入日期'))
+  const buyMissingCount = await headCount()
+  check('缺买入日期 4 行（R60–63）', buyMissingCount === 4, String(buyMissingCount))
+  check('筛选回到全部状态', await pickStatus('全部状态'))
+  check('全部状态行数恢复', (await headCount()) === allCount, `${await headCount()}/${allCount}`)
   check('明细顶部吸顶', (await stickyOf('trades')) === 'sticky')
   const tradePills = await evaluate(`JSON.stringify([...document.querySelectorAll('.stock-tabs > *')].map(e => e.textContent.trim()))`)
   check('明细也有股票药丸（含「全部」）', JSON.parse(tradePills)[0] === '全部' && JSON.parse(tradePills).length === 5, tradePills)

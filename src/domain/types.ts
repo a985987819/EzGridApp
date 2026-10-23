@@ -61,6 +61,13 @@ export interface RawRecord {
   deletedAt?: number | null
   /** 最近一次编辑时间 */
   editedAt?: number | null
+  /**
+   * 买入日期是 `=TODAY()` 公式且工作簿没存计算结果。
+   * 这类格子 Excel 打开后会显示「当天」，并不等于真实成交日，所以按缺失处理。
+   */
+  buyDateNeedsToday?: boolean
+  /** 同上，卖出日期列 */
+  sellDateNeedsToday?: boolean
   /** 由哪一批导入写入，用于回滚（P9 之外补充） */
   batchId?: string | null
   /** 归属账户，缺省为默认账户 */

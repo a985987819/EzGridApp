@@ -10,9 +10,24 @@ import { toCents } from '../domain/money'
 import { downloadText, toCsv } from '../ui/csv'
 import type { Lot, RawRecord, SellExecution } from '../domain/types'
 
-type StatusFilter = 'all' | 'holding' | 'soldout' | 'pending' | 'dateMissing' | 'needsPrice'
+type StatusFilter =
+  | 'all'
+  | 'holding'
+  | 'soldout'
+  | 'pending'
+  | 'buyDateMissing'
+  | 'sellDateMissing'
+  | 'needsPrice'
 
-type SortBy = 'rowDesc' | 'rowAsc' | 'sellDateDesc' | 'sellDateAsc' | 'profitDesc' | 'profitAsc'
+type SortBy =
+  | 'rowDesc'
+  | 'rowAsc'
+  | 'buyDateDesc'
+  | 'buyDateAsc'
+  | 'sellDateDesc'
+  | 'sellDateAsc'
+  | 'profitDesc'
+  | 'profitAsc'
 
 interface Row {
   rec: RawRecord
@@ -25,22 +40,43 @@ const STATUS_OPTIONS: { key: StatusFilter; label: string }[] = [
   { key: 'holding', label: '还有剩余持仓' },
   { key: 'soldout', label: '已卖完' },
   { key: 'pending', label: '待回补' },
-  { key: 'dateMissing', label: '缺卖出日期' },
+  { key: 'buyDateMissing', label: '缺买入日期' },
+  { key: 'sellDateMissing', label: '缺卖出日期' },
   { key: 'needsPrice', label: '缺价格' },
 ]
 
 const SORT_OPTIONS: { key: SortBy; label: string }[] = [
   { key: 'rowDesc', label: '行号 高→低' },
   { key: 'rowAsc', label: '行号 低→高' },
+  { key: 'buyDateDesc', label: '买入日期 新→旧' },
+  { key: 'buyDateAsc', label: '买入日期 旧→新' },
   { key: 'sellDateDesc', label: '卖出日期 新→旧' },
   { key: 'sellDateAsc', label: '卖出日期 旧→新' },
   { key: 'profitDesc', label: '盈利 高→低' },
   { key: 'profitAsc', label: '盈利 低→高' },
 ]
 
-/** 行上的「交易日期」：卖出日期优先，其次买入日期 */
+/** 行上的买入日期（可空） */
+function buyDateOf(r: Row): string | null {
+  return r.lot?.buyDate ?? serialToIso(r.rec.buyDateSerial)
+}
+
+/** 行上的卖出日期（可空） */
+function sellDateOf(r: Row): string | null {
+  return r.sell?.soldAt ?? null
+}
+
+/** 日期区间筛选用：卖出日期优先，其次买入日期 */
 function tradeDate(r: Row): string | null {
-  return r.sell?.soldAt ?? r.lot?.buyDate ?? serialToIso(r.rec.buyDateSerial)
+  return sellDateOf(r) ?? buyDateOf(r)
+}
+
+/** 升序比较：空值永远排最后 */
+function cmpDate(a: string | null, b: string | null, dir: 1 | -1): number {
+  if (a === b) return 0
+  if (a === null) return 1
+  if (b === null) return -1
+  return a < b ? -dir : dir
 }
 
 const BLANK_DRAFT = Object.fromEntries(EDITABLE.map((f) => [f.key, ''])) as Record<EditableKey, string>
@@ -141,8 +177,10 @@ export function TradesPage({
             return r.sell !== null && (r.lot?.remainingQty ?? 0) === 0
           case 'pending':
             return r.sell?.rebuyStatus === 'pending'
-          case 'dateMissing':
-            return r.sell?.dateMissing === true
+          case 'buyDateMissing':
+            return buyDateOf(r) === null
+          case 'sellDateMissing':
+            return r.sell !== null && sellDateOf(r) === null
           case 'needsPrice':
             return (r.sell !== null && r.sell.priceCents === null) || r.lot?.needsPrice === true
           default:
@@ -152,26 +190,21 @@ export function TradesPage({
     [rows, stockFilter, keyword, priceFilter, status, showDeleted, enabledSet, fromDate, toDate],
   )
 
-  /** 排序后的可见列表（S3：可按行号/日期/盈利排） */
+  /** 排序后的可见列表（S3：行号 / 买入日期 / 卖出日期 / 盈利，各升降一档） */
   const visible = useMemo(() => {
     const arr = [...filtered]
-    const dateOf = (r: Row) => tradeDate(r) ?? ''
     const profitOf = (r: Row) => r.sell?.profitCents ?? 0
     switch (sortBy) {
       case 'rowAsc':
         return arr.sort((a, b) => a.rec.sourceRow - b.rec.sourceRow)
+      case 'buyDateDesc':
+        return arr.sort((a, b) => cmpDate(buyDateOf(a), buyDateOf(b), -1))
+      case 'buyDateAsc':
+        return arr.sort((a, b) => cmpDate(buyDateOf(a), buyDateOf(b), 1))
       case 'sellDateDesc':
-        return arr.sort((a, b) => dateOf(b).localeCompare(dateOf(a)))
+        return arr.sort((a, b) => cmpDate(sellDateOf(a), sellDateOf(b), -1))
       case 'sellDateAsc':
-        // 没日期的排在最后，避免空串顶到最前
-        return arr.sort((a, b) => {
-          const x = dateOf(a)
-          const y = dateOf(b)
-          if (x === y) return 0
-          if (x === '') return 1
-          if (y === '') return -1
-          return x.localeCompare(y)
-        })
+        return arr.sort((a, b) => cmpDate(sellDateOf(a), sellDateOf(b), 1))
       case 'profitDesc':
         return arr.sort((a, b) => profitOf(b) - profitOf(a))
       case 'profitAsc':
@@ -344,28 +377,28 @@ export function TradesPage({
             显示已删除
           </label>
           <div className="spacer" />
-          <div className="sort-select">
-            <Select
-              options={SORT_OPTIONS.map((o) => ({ key: o.key, label: o.label }))}
-              value={sortBy}
-              onChange={(v) => setSortBy(v as SortBy)}
-              aria-label="排序"
-            />
-          </div>
+          <Button size="small" onClick={exportCsv}>导出 CSV</Button>
         </div>
-        <div className="row nowrap" style={{ gap: 8, marginTop: 8 }}>
-          <Button style={{ flex: 1 }} onClick={exportCsv}>导出 CSV</Button>
-          <Button
-            type="primary"
-            style={{ flex: 1 }}
-            onClick={() => {
-              setForm({ ...BLANK_FORM, stockName: stockFilter === 'all' ? stockNames[0] ?? '' : stockFilter })
-              setAdding(true)
-            }}
-          >
-            新增一笔
-          </Button>
+        {/* 排序单独占一行，8 个选项在 390px 下才不会挤成两行 */}
+        <div className="sort-row">
+          <Select
+            options={SORT_OPTIONS.map((o) => ({ key: o.key, label: o.label }))}
+            value={sortBy}
+            onChange={(v) => setSortBy(v as SortBy)}
+            aria-label="排序"
+          />
         </div>
+        <Button
+          block
+          type="primary"
+          style={{ marginTop: 8 }}
+          onClick={() => {
+            setForm({ ...BLANK_FORM, stockName: stockFilter === 'all' ? stockNames[0] ?? '' : stockFilter })
+            setAdding(true)
+          }}
+        >
+          新增一笔
+        </Button>
       </Card>
 
       {priceFilter !== null && (
@@ -420,10 +453,23 @@ export function TradesPage({
                   {r.lot ? `剩余 ${qty(r.lot.remainingQty)}` : r.rec.soldQty ? `已卖 ${qty(r.rec.soldQty)}` : ''}
                 </span>
               </div>
+              {/* 买入 / 卖出日期都显示；没有就显示 —（R60–63 是先卖后买，买入日期本来就空） */}
+              <div className="dates num">
+                <span className={buyDateOf(r) === null ? 'missing' : undefined}>
+                  买入 <b>{buyDateOf(r) ?? '—'}</b>
+                </span>
+                <span className="sep" aria-hidden />
+                <span className={sellDateOf(r) === null ? 'missing' : undefined}>
+                  卖出 <b>{sellDateOf(r) ?? '—'}</b>
+                </span>
+              </div>
               <div className="tag-row">
                 {r.sell?.rebuyStatus === 'pending' && <Tag size="small" variant="soft" color="app-orange">待回补</Tag>}
                 {r.sell?.sellBeforeBuy && <Tag size="small" variant="soft" color="app-teal">先卖后买</Tag>}
-                {r.sell?.dateMissing && <Tag size="small" variant="soft" color="app-yellow">缺日期</Tag>}
+                {r.sell?.dateMissing && <Tag size="small" variant="soft" color="app-yellow">缺卖出日期</Tag>}
+                {buyDateOf(r) === null && (r.lot !== null || r.rec.buyPriceCents !== null) && (
+                  <Tag size="small" variant="soft" color="app-yellow">缺买入日期</Tag>
+                )}
                 {r.sell && r.sell.priceCents === null && <Tag size="small" variant="soft" color="app-red">缺价格</Tag>}
                 {r.rec.editedAt && <Tag size="small" variant="soft" color="purple">改过</Tag>}
                 {deleted && <Tag size="small" variant="soft" color="app-red">已删除</Tag>}

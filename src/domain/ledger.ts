@@ -173,7 +173,9 @@ export function buildLedger(
           kind: 'dateMissing',
           sourceRow: r.sourceRow,
           stockName: r.stockName,
-          detail: 'Excel 用 TODAY() 且无缓存值，卖出日期待补',
+          detail: r.sellDateNeedsToday
+            ? '卖出日期是 =TODAY() 公式、工作簿没存计算结果（打开 Excel 只会显示当天），需补真实成交日'
+            : '卖出日期为空，待补真实成交日',
         })
       }
       if (profit !== null && profit < 0) {
