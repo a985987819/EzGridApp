@@ -23,8 +23,8 @@ export function ManageBackup() {
   return (
     <div className="stack">
       <Card>
-        <div className="row" style={{ marginBottom: 8 }}>
-          <strong style={{ fontSize: 14 }}>备份</strong>
+        <div className="sec-head">
+          <strong>备份</strong>
           <div className="spacer" />
           <Tag size="small" variant="soft">{records.length} 行 · {audits.length} 条审计</Tag>
         </div>

@@ -144,11 +144,11 @@ export function ManageImport() {
       {preview && previewLedger && (
         <>
           <Card>
-            <div className="row" style={{ marginBottom: 6 }}>
-              <strong style={{ fontSize: 14 }}>dry-run 报告</strong>
+            <div className="sec-head">
+              <strong>dry-run 报告</strong>
               <Tag size="small" variant="soft">{preview.sheetName}</Tag>
               <div className="spacer" />
-              <span className="tiny muted">
+              <span className="sec-sub">
                 {preview.records.length} 行 · 跳过 {preview.skippedRows.length}
               </span>
             </div>
@@ -178,10 +178,10 @@ export function ManageImport() {
           </Card>
 
           <Card>
-            <div className="row" style={{ marginBottom: 6 }}>
-              <strong style={{ fontSize: 14 }}>异常清单</strong>
+            <div className="sec-head">
+              <strong>异常清单</strong>
               <div className="spacer" />
-              <span className="tiny muted">{previewLedger.anomalies.length} 条</span>
+              <span className="sec-sub">{previewLedger.anomalies.length} 条</span>
               <Button size="small" type="text" onClick={exportAnomalies}>
                 <IconDownload /> CSV
               </Button>
@@ -189,7 +189,8 @@ export function ManageImport() {
             {previewLedger.anomalies.length === 0 ? (
               <div className="empty-box">没有异常</div>
             ) : (
-              previewLedger.anomalies.map((a, i) => (
+              <div className="data-block">
+              {previewLedger.anomalies.map((a, i) => (
                 <div className="line" key={`${a.kind}-${a.sourceRow}-${i}`}>
                   <div className="left">
                     <div className="t1" style={{ fontWeight: 500 }}>
@@ -199,16 +200,22 @@ export function ManageImport() {
                     <div className="t2">{a.detail}</div>
                   </div>
                 </div>
-              ))
+              ))}
+              </div>
             )}
           </Card>
 
           <Card>
-            <strong style={{ fontSize: 14 }}>清单预演</strong>
-            <div className="row" style={{ gap: 6, margin: '8px 0' }}>
+            <div className="sec-head">
+              <strong>清单预演</strong>
+              <div className="spacer" />
+              <span className="sec-sub">前 8 条待卖</span>
+            </div>
+            <div className="row divider-bottom" style={{ gap: 6, marginTop: 0 }}>
               <Tag size="small" variant="soft" color="purple">待买 {previewLedger.orders.length}</Tag>
               <Tag size="small" variant="soft" color="app-teal">待卖 {previewLedger.targets.length}</Tag>
             </div>
+            <div className="data-block">
             {previewLedger.orders.map((o) => (
               <div className="line" key={o.id}>
                 <div className="left">
@@ -227,6 +234,7 @@ export function ManageImport() {
                 <div className="right num">{money(t.amountCents)}</div>
               </div>
             ))}
+            </div>
             {previewLedger.targets.length > 8 && (
               <p className="tiny muted" style={{ margin: '6px 0 0' }}>
                 还有 {previewLedger.targets.length - 8} 条待卖，写入后到「挂单」页看全部
@@ -237,15 +245,16 @@ export function ManageImport() {
       )}
 
       <Card>
-        <div className="row" style={{ marginBottom: 4 }}>
-          <strong style={{ fontSize: 14 }}>导入批次</strong>
+        <div className="sec-head">
+          <strong>导入批次</strong>
           <div className="spacer" />
-          <span className="tiny muted">{batches.length} 批</span>
+          <span className="sec-sub">{batches.length} 批</span>
         </div>
         {batches.length === 0 ? (
           <div className="empty-box">还没有导入过</div>
         ) : (
-          batches.map((b) => (
+          <div className="data-block">
+          {batches.map((b) => (
             <div className="line" key={b.id}>
               <div className="left">
                 <div className="t1" style={{ fontWeight: 500 }}>{b.fileName}</div>
@@ -268,7 +277,8 @@ export function ManageImport() {
                 </Button>
               </div>
             </div>
-          ))
+          ))}
+          </div>
         )}
       </Card>
     </div>

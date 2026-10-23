@@ -437,14 +437,15 @@ export function TradesPage({
                 </div>
 
                 {current.lot && current.lot.remainingQty > 0 && (
-                  <div>
-                    <div className="row" style={{ marginBottom: 6 }}>
-                      <strong style={{ fontSize: 13 }}>卖出目标</strong>
+                  <div className="divider-top">
+                    <div className="sec-head sm">
+                      <strong>卖出目标</strong>
                       <div className="spacer" />
-                      <span className="tiny muted">
+                      <span className="sec-sub">
                         批次剩余 {qty(current.lot.remainingQty)} 股
                       </span>
                     </div>
+                    <div className="data-block">
                     {ledger.targets
                       .filter((t) => t.lotId === current.lot!.id)
                       .map((t) => (
@@ -469,6 +470,7 @@ export function TradesPage({
                           )}
                         </div>
                       ))}
+                    </div>
                     {ledger.targets.filter((t) => t.lotId === current.lot!.id).length === 0 && (
                       <p className="tiny muted" style={{ margin: '0 0 6px' }}>
                         还没有目标（缺目标售价）
@@ -515,9 +517,9 @@ export function TradesPage({
                   </div>
                 )}
 
-                <div>
-                  <div className="row" style={{ marginBottom: 6 }}>
-                    <strong style={{ fontSize: 13 }}>变更历史</strong>
+                <div className="divider-top">
+                  <div className="sec-head sm">
+                    <strong>变更历史</strong>
                     <div className="spacer" />
                     <span className="tiny muted">{historyOf(current.rec.sourceRow).length} 条</span>
                   </div>

@@ -5,6 +5,12 @@
   --header-h: calc(63px + env(safe-area-inset-top));
   --up: #d0453f;
   --down: #2f8f5b;
+  /* 分隔线三档：line 用于行间，line-strong 用于区块/表头，line-soft 用于内部分组 */
+  --line: #e4dccd;
+  --line-strong: #cbbfa9;
+  --line-soft: #efe9de;
+  --block-bg: rgba(255, 255, 255, 0.55);
+  --head-bg: rgba(240, 232, 216, 0.72);
 }
 
 * { box-sizing: border-box; }
@@ -160,7 +166,7 @@ button { font-family: inherit; }
 .metrics > div {
   padding: 4px 10px;
   text-align: center;
-  border-right: 1px dashed var(--animal-border-color-light, #e8e2d6);
+  border-right: 1px solid var(--line);
 }
 .metrics > div:last-child { border-right: none; }
 .metrics .k { font-size: 11px; color: var(--animal-text-color-secondary, #9f927d); }
@@ -179,8 +185,8 @@ button { font-family: inherit; }
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 8px 0;
-  border-bottom: 1px dashed var(--animal-border-color-light, #e8e2d6);
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
 }
 .line:last-child { border-bottom: none; }
 .line .left { min-width: 0; }
@@ -199,26 +205,41 @@ button { font-family: inherit; }
 .tag-row { display: flex; gap: 4px; flex-wrap: wrap; }
 
 /* ---------- 价格网格 ---------- */
+/* 表格外面套一层边框，表头单独给底色 + 实线，避免表头和数据糊在一起 */
+.table-wrap {
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--block-bg);
+}
 .pricegrid { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .pricegrid th {
   font-size: 10.5px;
-  font-weight: 600;
+  font-weight: 700;
+  letter-spacing: 0.02em;
   color: var(--animal-text-color-secondary, #9f927d);
-  padding: 4px 2px 6px;
+  padding: 7px 6px;
   text-align: right;
+  background: var(--head-bg);
+  border-bottom: 1px solid var(--line-strong);
+  white-space: nowrap;
 }
 .pricegrid th.c, .pricegrid td.c { text-align: center; }
 .pricegrid td {
-  padding: 6px 2px;
-  border-top: 1px solid var(--animal-border-color-light, #e8e2d6);
+  padding: 7px 6px;
+  border-top: 1px solid var(--line);
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+.pricegrid tbody tr:first-child td { border-top: none; }
+.pricegrid tbody tr:nth-child(even) td { background: rgba(240, 232, 216, 0.34); }
+.pricegrid tbody tr:first-child td:first-child { border-top-left-radius: 0; }
 .pricegrid td.px {
   text-align: center;
   font-weight: 700;
-  background: rgba(240, 232, 216, 0.5);
-  border-radius: 8px;
+  background: rgba(240, 232, 216, 0.9);
+  border-left: 1px solid var(--line);
+  border-right: 1px solid var(--line);
 }
 .pricegrid tr:active td { background: rgba(25, 200, 185, 0.08); }
 
@@ -239,7 +260,7 @@ button { font-family: inherit; }
 .empty-box { text-align: center; padding: 26px 12px; color: var(--animal-text-color-secondary, #9f927d); font-size: 13px; }
 .empty-box strong { display: block; color: var(--animal-text-color); font-size: 15px; margin-bottom: 4px; }
 
-.stat-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 0; border-bottom: 1px dashed var(--animal-border-color-light, #e8e2d6); font-size: 13px; }
+.stat-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
 .stat-line:last-child { border-bottom: none; }
 .stat-line .m { flex: 1; }
 
@@ -323,3 +344,101 @@ button { font-family: inherit; }
 .page-sticky .page-title { margin-bottom: 8px; }
 /* 吸顶时把卡片的下边距压掉，避免出现空白缝 */
 .page-sticky > :last-child { margin-bottom: 0; }
+
+/* ---------- 数据区块：把「表头」和「数据」分开 ---------- */
+
+/* 卡片内侧的小节标题：标题下一条实线，线以下是数据，线以上是标题 */
+.sec-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line-strong);
+}
+.sec-head > strong { font-size: 14px; }
+.sec-head .sec-sub { font-size: 11.5px; color: var(--animal-text-color-secondary, #9f927d); }
+
+/* 数据块：列表外面套一层浅底 + 边框，和标题、和卡片边缘都拉开 */
+.data-block {
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--block-bg);
+  padding: 0 10px;
+  overflow: hidden;
+}
+.data-block > .line { border-bottom: 1px solid var(--line); }
+.data-block > .line:last-child { border-bottom: none; }
+/* 块内如果有嵌套 stack，让行分隔线也生效 */
+.data-block .line { border-bottom: 1px solid var(--line); }
+.data-block .line:last-child { border-bottom: none; }
+
+/* 数据块里的小分组标题（可挂买 / 可挂卖） */
+.group-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--animal-text-color-secondary, #9f927d);
+  padding: 8px 2px 2px;
+}
+.group-label::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+/* 指标条：四格/三格数字，外面一圈浅边框，不与下方列表混在一起 */
+.metric-strip {
+  display: grid;
+  gap: 4px;
+  text-align: center;
+  padding: 8px 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--head-bg);
+}
+
+/* 通用分隔：需要一条横线时直接加类，不用写行内 style */
+.divider-top { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.divider-bottom { margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+
+/* 吸顶块底边加一道发丝线，滚动时能和下面的内容分开 */
+.page-sticky::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--line);
+  opacity: 0.9;
+}
+
+/* 抽屉/小卡片里的小节标题 */
+.sec-head.sm { margin-bottom: 8px; padding-bottom: 6px; }
+.sec-head.sm > strong { font-size: 13px; }
+
+/* 行内动作太多时：金额留在右上，按钮整行下移，避免挤成两行叠字 */
+.line.wrap-row { flex-wrap: wrap; }
+.line.wrap-row .left { flex: 1 1 60%; }
+.line.wrap-row .acts {
+  flex: 1 0 100%;
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+
+/* 指标条里的金额比股数长，字号收一档并给单元格留内边距 */
+.metric-strip > div { min-width: 0; padding: 0 2px; }
+.metric-strip .v { font-size: 13px; white-space: nowrap; }
+
+/* 金额较长的指标条：手机上排成 2×2，避免两列数字贴在一起 */
+.metric-strip.two-col { grid-template-columns: repeat(2, 1fr); row-gap: 10px; }
+.metric-strip.two-col > div { border-right: none; }
+
+/* 金额型指标：字号收一档 + 不换行，避免「+」被挤到单独一行 */
+.metrics .v.money { font-size: 14.5px; white-space: nowrap; letter-spacing: -0.01em; }

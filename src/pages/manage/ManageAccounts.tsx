@@ -49,8 +49,10 @@ export function ManageAccounts() {
       })}
 
       <Card>
-        <strong style={{ fontSize: 14 }}>新增账户</strong>
-        <div className="row nowrap" style={{ marginTop: 8 }}>
+        <div className="sec-head">
+          <strong>新增账户</strong>
+        </div>
+        <div className="row nowrap">
           <Input
             className="grow"
             value={name}

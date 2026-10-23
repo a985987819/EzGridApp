@@ -247,7 +247,7 @@ export function OrdersPage() {
             <Button type="primary" onClick={confirmClose}>确认</Button>
           </div>
 
-          <div className="row" style={{ gap: 6 }}>
+          <div className="row divider-top" style={{ gap: 6 }}>
             <Tag size="medium" variant="soft" color="app-blue">涨跌幅 {limitLabel}</Tag>
             {range ? (
               <>
@@ -268,8 +268,8 @@ export function OrdersPage() {
 
       {/* 2. 今日挂单 */}
       <Card>
-        <div className="row" style={{ marginBottom: 6 }}>
-          <strong style={{ fontSize: 14 }}>今日挂单</strong>
+        <div className="sec-head">
+          <strong>今日挂单</strong>
           {range && (
             <>
               <Tag size="small" variant="soft" color="app-teal">可挂买 {buyToday.length}</Tag>
@@ -277,14 +277,14 @@ export function OrdersPage() {
             </>
           )}
           <div className="spacer" />
-          <span className="tiny muted">{effectiveStock}</span>
+          <span className="sec-sub">{effectiveStock}</span>
         </div>
 
         {!range ? (
           <div className="empty-box">填昨收价并点「确认」后，这里列出今天价格区间内能挂的单</div>
         ) : (
           <>
-            <div className="grid-4" style={{ padding: '2px 0 10px' }}>
+            <div className="grid-4 metric-strip two-col" style={{ marginBottom: 10 }}>
               <div>
                 <div className="k">可挂买</div>
                 <div className="v">{money(buyTodayAmount)}</div>
@@ -309,56 +309,75 @@ export function OrdersPage() {
               <div className="empty-box">这个区间里没有可挂的单（{buyOut} 买 / {sellOut} 卖 越界）</div>
             ) : (
               <>
-                {buyToday.map((o) => (
-                  <div key={`t-${o.id}`} className="line">
-                    <div className="left">
-                      <div className="t1 num">买 {price(o.rebuyPriceCents)} × {qty(o.remainingQty)}</div>
-                      <div className="t2">
-                        行{o.sourceRow}
-                        {o.rewardQty > 0 && ` · 含奖励 ${o.rewardQty}`}
-                        {o.execQty > 0 && ` · 已回补 ${o.execQty}`}
-                      </div>
-                      {o.planPriceCents != null && (
-                        <div className="tag-row" style={{ marginTop: 4 }}>
-                          <Tag size="small" variant="soft" color="purple">
-                            计划 {price(o.planPriceCents)} × {qty(o.planQty ?? o.remainingQty)}
-                          </Tag>
+                {buyToday.length > 0 && (
+                  <>
+                    <div className="group-label">可挂买 · {buyToday.length} 条</div>
+                    <div className="data-block">
+                      {buyToday.map((o) => (
+                        <div key={`t-${o.id}`} className="line wrap-row">
+                          <div className="left">
+                            <div className="t1 num">买 {price(o.rebuyPriceCents)} × {qty(o.remainingQty)}</div>
+                            <div className="t2">
+                              行{o.sourceRow}
+                              {o.rewardQty > 0 && ` · 含奖励 ${o.rewardQty}`}
+                              {o.execQty > 0 && ` · 已回补 ${o.execQty}`}
+                            </div>
+                            {o.planPriceCents != null && (
+                              <div className="tag-row" style={{ marginTop: 4 }}>
+                                <Tag size="small" variant="soft" color="purple">
+                                  计划 {price(o.planPriceCents)} × {qty(o.planQty ?? o.remainingQty)}
+                                </Tag>
+                              </div>
+                            )}
+                          </div>
+                          <div className="right num" style={{ fontWeight: 600 }}>
+                            {money(o.rebuyPriceCents * o.remainingQty)}
+                          </div>
+                          <div className="acts">
+                            <Button
+                              size="small"
+                              onClick={() => openPlan('buy', o.id, `买 ${o.stockName}`, o.rebuyPriceCents, o.planPriceCents, o.planQty)}
+                            >
+                              计划
+                            </Button>
+                            <Button size="small" onClick={() => openExec(o)}>记成交</Button>
+                          </div>
                         </div>
-                      )}
+                      ))}
                     </div>
-                    <div className="right row" style={{ gap: 6 }}>
-                      <span className="num">{money(o.rebuyPriceCents * o.remainingQty)}</span>
-                      <Button
-                        size="small"
-                        onClick={() => openPlan('buy', o.id, `买 ${o.stockName}`, o.rebuyPriceCents, o.planPriceCents, o.planQty)}
-                      >
-                        计划
-                      </Button>
-                      <Button size="small" onClick={() => openExec(o)}>记成交</Button>
-                    </div>
-                  </div>
-                ))}
-                {sellToday.map((t) => (
-                  <div key={`s-${t.id}`} className="line">
-                    <div className="left">
-                      <div className="t1 num">卖 {price(t.priceCents)} × {qty(t.qty)}</div>
-                      <div className="t2">批次 {t.lotId.replace('lot:', '')} · 预期 {signedMoney(t.expectProfitCents)}</div>
-                      {t.planPriceCents != null && (
-                        <div className="tag-row" style={{ marginTop: 4 }}>
-                          <Tag size="small" variant="soft" color="purple">
-                            计划 {price(t.planPriceCents)} × {qty(t.planQty ?? t.qty)}
-                          </Tag>
+                  </>
+                )}
+
+                {sellToday.length > 0 && (
+                  <>
+                    <div className="group-label">可挂卖 · {sellToday.length} 条</div>
+                    <div className="data-block">
+                      {sellToday.map((t) => (
+                        <div key={`s-${t.id}`} className="line wrap-row">
+                          <div className="left">
+                            <div className="t1 num">卖 {price(t.priceCents)} × {qty(t.qty)}</div>
+                            <div className="t2">批次 {t.lotId.replace('lot:', '')} · 预期 {signedMoney(t.expectProfitCents)}</div>
+                            {t.planPriceCents != null && (
+                              <div className="tag-row" style={{ marginTop: 4 }}>
+                                <Tag size="small" variant="soft" color="purple">
+                                  计划 {price(t.planPriceCents)} × {qty(t.planQty ?? t.qty)}
+                                </Tag>
+                              </div>
+                            )}
+                          </div>
+                          <div className="right num" style={{ fontWeight: 600 }}>
+                            {money(t.amountCents)}
+                          </div>
+                          <div className="acts">
+                            <Button size="small" onClick={() => openPlan('sell', t.id, `卖 ${t.stockName}`, t.priceCents, t.planPriceCents, t.planQty)}>
+                              计划
+                            </Button>
+                          </div>
                         </div>
-                      )}
+                      ))}
                     </div>
-                    <div className="right row" style={{ gap: 6 }}>
-                      <span className="num">{money(t.amountCents)}</span>
-                      <Button size="small" onClick={() => openPlan('sell', t.id, `卖 ${t.stockName}`, t.priceCents, t.planPriceCents, t.planQty)}>
-                        计划
-                      </Button>
-                    </div>
-                  </div>
-                ))}
+                  </>
+                )}
               </>
             )}
 
@@ -383,7 +402,7 @@ export function OrdersPage() {
                 orders.length === 0 ? (
                   <div className="empty-box">该股没有待买单</div>
                 ) : (
-                  <div className="stack tight">
+                  <div className="data-block">
                     {orders.map((o) => {
                       const z = zone(o.rebuyPriceCents)
                       return (
@@ -430,7 +449,7 @@ export function OrdersPage() {
                 targets.length === 0 ? (
                   <div className="empty-box">该股批次已全部卖完</div>
                 ) : (
-                  <>
+                  <div className="data-block">
                     {targets.map((t) => {
                       const z = zone(t.priceCents)
                       const lot = ledger.lots.find((l) => l.id === t.lotId)
@@ -462,7 +481,7 @@ export function OrdersPage() {
                         <div className="tiny up num">{signedMoney(targets.reduce((a, t) => a + t.expectProfitCents, 0))}</div>
                       </div>
                     </div>
-                  </>
+                  </div>
                 ),
             },
           ]}

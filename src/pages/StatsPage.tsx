@@ -25,17 +25,17 @@ export function StatsPage() {
         <div className="metrics">
           <div>
             <div className="k">买入</div>
-            <div className="v" style={{ fontSize: 16 }}>{money(t.buyAmountCents)}</div>
+            <div className="v money">{money(t.buyAmountCents)}</div>
             <div className="s">{qty(t.buyQty)} 股</div>
           </div>
           <div>
             <div className="k">卖出</div>
-            <div className="v" style={{ fontSize: 16 }}>{money(t.sellAmountCents)}</div>
+            <div className="v money">{money(t.sellAmountCents)}</div>
             <div className="s">{t.sellCount} 笔 / {qty(t.sellQty)} 股</div>
           </div>
           <div>
             <div className="k">实现盈利</div>
-            <div className={`v ${tone(t.profitCents)}`} style={{ fontSize: 16 }}>{signedMoney(t.profitCents)}</div>
+            <div className={`v money ${tone(t.profitCents)}`}>{signedMoney(t.profitCents)}</div>
             <div className="s">未扣费用</div>
           </div>
         </div>
@@ -44,11 +44,12 @@ export function StatsPage() {
       <CalendarCard />
 
       <Card>
-        <div className="row" style={{ marginBottom: 4 }}>
-          <strong style={{ fontSize: 14 }}>月度成交</strong>
+        <div className="sec-head">
+          <strong>月度成交</strong>
           <div className="spacer" />
-          <span className="tiny muted">收益率 = 盈利 / 卖出额</span>
+          <span className="sec-sub">收益率 = 盈利 / 卖出额</span>
         </div>
+        <div className="data-block">
         {ledger.monthly.map((m) => (
           <div key={m.month} className="line">
             <div className="left">
@@ -72,12 +73,14 @@ export function StatsPage() {
             </div>
           </div>
         ))}
+        </div>
       </Card>
 
       <Card>
-        <div className="row" style={{ marginBottom: 4 }}>
-          <strong style={{ fontSize: 14 }}>按股票</strong>
+        <div className="sec-head">
+          <strong>按股票</strong>
         </div>
+        <div className="data-block">
         {byStock.map((s) => (
           <div key={s.stockName} className="line">
             <div className="left" style={{ flex: 1 }}>
@@ -119,18 +122,20 @@ export function StatsPage() {
           </div>
           <div className={`right num ${tone(t.profitCents)}`} style={{ fontWeight: 700 }}>{signedMoney(t.profitCents)}</div>
         </div>
+        </div>
       </Card>
 
       <Card>
-        <div className="row" style={{ marginBottom: 4 }}>
-          <strong style={{ fontSize: 14 }}>组池（同股同回补价）</strong>
+        <div className="sec-head">
+          <strong>组池（同股同回补价）</strong>
           <div className="spacer" />
-          <span className="tiny muted">R4 全部卖出入池</span>
+          <span className="sec-sub">R4 全部卖出入池</span>
         </div>
         {groups.length === 0 ? (
           <div className="empty-box">没有可分配的组池</div>
         ) : (
-          groups.map((g) => (
+          <div className="data-block">
+          {groups.map((g) => (
             <div key={g.groupKey} className="line">
               <div className="left">
                 <div className="t1 mono" style={{ fontSize: 12.5 }}>{g.groupKey.replace('stock:', '')}</div>
@@ -143,7 +148,8 @@ export function StatsPage() {
                 <div className="tiny muted num">可动用 {money(g.availableCents)}</div>
               </div>
             </div>
-          ))
+          ))}
+          </div>
         )}
       </Card>
     </div>
@@ -163,7 +169,8 @@ function CalendarCard() {
       ledger.sells
         .filter((s) => s.soldAt !== null && s.profitCents !== null)
         .map((s) => ({
-          title: signedMoney(s.profitCents),
+          // 日历格子很窄，用「+196」这种紧凑写法，避免被裁掉
+          title: compactYuan(s.profitCents ?? 0),
           start: s.soldAt as string,
           color: (s.profitCents ?? 0) >= 0 ? ('coral' as const) : ('green' as const),
         })),
@@ -175,8 +182,8 @@ function CalendarCard() {
 
   return (
     <Card>
-      <div className="row" style={{ marginBottom: 8 }}>
-        <strong style={{ fontSize: 14 }}>成交日历</strong>
+      <div className="sec-head">
+        <strong>成交日历</strong>
         <div className="spacer" />
         {missing > 0 && <Tag size="small" variant="soft" color="app-yellow">{missing} 笔缺日期</Tag>}
       </div>
@@ -189,8 +196,8 @@ function CalendarCard() {
         showEventTime={false}
         aria-label="成交日历"
       />
-      <div style={{ marginTop: 10 }}>
-        <div className="row" style={{ marginBottom: 4 }}>
+      <div className="divider-top">
+        <div className="row" style={{ marginBottom: 6 }}>
           <span className="tiny muted">{selected}</span>
           <div className="spacer" />
           <span className="tiny muted">{daySells.length} 笔</span>
@@ -198,7 +205,8 @@ function CalendarCard() {
         {daySells.length === 0 ? (
           <p className="tiny muted" style={{ margin: 0 }}>这天没有成交</p>
         ) : (
-          daySells.map((s) => (
+          <div className="data-block">
+          {daySells.map((s) => (
             <div key={s.id} className="line">
               <div className="left">
                 <div className="t1" style={{ fontSize: 13 }}>
@@ -210,11 +218,18 @@ function CalendarCard() {
                 {signedMoney(s.profitCents)}
               </div>
             </div>
-          ))
+          ))}
+          </div>
         )}
       </div>
     </Card>
   )
+}
+
+/** 日历格用的紧凑金额：+196 / -120（元，四舍五入到整数） */
+function compactYuan(cents: number): string {
+  const yuan = Math.round(Math.abs(cents) / 100)
+  return `${cents >= 0 ? '+' : '-'}${yuan}`
 }
 
 function price2(cents: number | null): string {

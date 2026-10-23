@@ -52,26 +52,28 @@ export function PriceGrid({
 
   return (
     <>
-      <table className="pricegrid">
-        <thead>
-          <tr>
-            <th className="c">回补 / 买</th>
-            <th className="c">价格</th>
-            <th className="c">待卖 / 卖</th>
-            <th className="c">已卖出</th>
-          </tr>
-        </thead>
-        <tbody>
-          {levels.map((l) => (
-            <tr key={l.priceCents} onClick={() => onPick(l.priceCents)}>
-              <td className="c down">{l.rebuyQty ? `${qty(l.rebuyQty)} 股` : '—'}</td>
-              <td className="px">{(l.priceCents / 100).toFixed(2)}</td>
-              <td className="c up">{l.targetQty ? `${qty(l.targetQty)} 股` : '—'}</td>
-              <td className="c muted">{l.soldCount ? `${l.soldCount} 笔 / ${qty(l.soldQty)}` : '—'}</td>
+      <div className="table-wrap">
+        <table className="pricegrid">
+          <thead>
+            <tr>
+              <th className="c">回补 / 买</th>
+              <th className="c">价格</th>
+              <th className="c">待卖 / 卖</th>
+              <th className="c">已卖出</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {levels.map((l) => (
+              <tr key={l.priceCents} onClick={() => onPick(l.priceCents)}>
+                <td className="c down">{l.rebuyQty ? `${qty(l.rebuyQty)} 股` : '—'}</td>
+                <td className="px">{(l.priceCents / 100).toFixed(2)}</td>
+                <td className="c up">{l.targetQty ? `${qty(l.targetQty)} 股` : '—'}</td>
+                <td className="c muted">{l.soldCount ? `${l.soldCount} 笔 / ${qty(l.soldQty)}` : '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
       <p className="tiny muted" style={{ margin: '8px 0 0' }}>
         目标金额 {money(stock.targetAmountCents)} · 预期收益 {money(stock.expectProfitCents)} · 点价格看明细
       </p>

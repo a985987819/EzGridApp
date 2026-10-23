@@ -75,7 +75,7 @@ export function Overview({
             <div className="s">买入 − 卖出</div>
           </div>
         </div>
-        <div className="row" style={{ marginTop: 10, gap: 6 }}>
+        <div className="row divider-top" style={{ gap: 6 }}>
           <Tag size="small" variant="soft" color={failed ? 'app-red' : 'app-green'}>
             {failed ? `基准 ${baseline.length - failed}/${baseline.length}` : '基准全中'}
           </Tag>
@@ -94,27 +94,29 @@ export function Overview({
       </div>
 
       <Card>
-        <div className="row" style={{ marginBottom: 8 }}>
-          <strong style={{ fontSize: 14 }}>股票价格网格</strong>
-          <div className="spacer" />
-          <span className="tiny muted">高 → 低</span>
-        </div>
-        <div className="stock-tabs">
-          {withRows.map((s) => (
-            <Tag
-              key={s.stockName}
-              size="medium"
-              variant={current?.stockName === s.stockName ? 'solid' : 'soft'}
-              color={current?.stockName === s.stockName ? 'app-teal' : 'default'}
-              onClick={() => setActive(s.stockName)}
-            >
-              {s.stockName}
-            </Tag>
-          ))}
+        <div className="sec-head" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
+          <div className="row">
+            <strong>股票价格网格</strong>
+            <div className="spacer" />
+            <span className="sec-sub">高 → 低</span>
+          </div>
+          <div className="stock-tabs">
+            {withRows.map((s) => (
+              <Tag
+                key={s.stockName}
+                size="medium"
+                variant={current?.stockName === s.stockName ? 'solid' : 'soft'}
+                color={current?.stockName === s.stockName ? 'app-teal' : 'default'}
+                onClick={() => setActive(s.stockName)}
+              >
+                {s.stockName}
+              </Tag>
+            ))}
+          </div>
         </div>
         {current && (
-          <div className="stack tight" style={{ marginTop: 10 }}>
-            <div className="grid-4">
+          <div className="stack tight">
+            <div className="grid-4 metric-strip">
               <div>
                 <div className="k">可卖</div>
                 <div className="v">{qty(current.targetQty)}</div>

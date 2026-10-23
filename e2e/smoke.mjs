@@ -278,6 +278,27 @@ try {
   check('4 列且第 2 列价格', cells.every((c) => c.length === 4 && /^\d+\.\d{2}$/.test(c[1])))
   check('第 3 列待卖 / 第 4 列已卖出', cells.some((c) => /股$/.test(c[2])) && cells.some((c) => /笔/.test(c[3])))
 
+  // 表头必须自己带底色 + 分隔线，否则和数据行糊在一起
+  const headStyle = await evaluate(`(() => {
+    const th = document.querySelector('table.pricegrid thead th')
+    const td = document.querySelector('table.pricegrid tbody td')
+    if (!th || !td) return null
+    const hs = getComputedStyle(th)
+    const ts = getComputedStyle(td)
+    return JSON.stringify({
+      headBg: hs.backgroundColor,
+      bodyBg: ts.backgroundColor,
+      headBorder: hs.borderBottomWidth + ' ' + hs.borderBottomStyle,
+      wrapBorder: getComputedStyle(document.querySelector('.table-wrap')).borderTopWidth,
+      inWrap: Boolean(th.closest('.table-wrap')),
+    })
+  })()`)
+  console.log('  表头样式:', headStyle)
+  const hs = JSON.parse(headStyle)
+  check('表头在带边框的容器里', hs.inWrap === true && hs.wrapBorder !== '0px')
+  check('表头有底色（与数据行不同）', hs.headBg !== hs.bodyBg && hs.headBg !== 'rgba(0, 0, 0, 0)')
+  check('表头有下边线', hs.headBorder.startsWith('1px solid'))
+
   console.log('\n[6] 明细：股票 tab + 抽屉编辑')
   check('切到明细', await nav('trades'))
   check('明细顶部吸顶', (await stickyOf('trades')) === 'sticky')
@@ -390,6 +411,21 @@ try {
   check('跌停价 7.29', limitDown.includes('7.29'))
   check('出现「今日挂单」', text.includes('今日挂单'))
   check('今日挂单有可挂买', /可挂买\s*[1-9]/.test(text))
+
+  // 今日挂单 / 待买 / 待卖 都要在带边框的数据块里，且块内有分组标签
+  const blocks = await evaluate(`(() => {
+    const list = [...document.querySelectorAll('.data-block')]
+    const bordered = list.filter(el => parseFloat(getComputedStyle(el).borderTopWidth) > 0)
+    return JSON.stringify({
+      total: list.length,
+      bordered: bordered.length,
+      labels: [...document.querySelectorAll('.group-label')].map(e => e.textContent.trim()),
+    })
+  })()`)
+  console.log('  数据块:', blocks)
+  const blk = JSON.parse(blocks)
+  check('挂单页有带边框的数据块', blk.bordered >= 2, blocks)
+  check('可挂买/可挂卖 分组标签存在', blk.labels.some((l) => l.includes('可挂买')) && blk.labels.some((l) => l.includes('可挂卖')), blocks)
   check('今日挂单里有「记成交」', text.includes('记成交'))
 
   console.log('\n[8.2] 挂单计划价')
