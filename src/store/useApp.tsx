@@ -14,7 +14,7 @@ import { DEFAULT_STOCKS } from '../domain/defaults'
 import { applyEdits, type EditableKey } from '../domain/edit'
 import { applyOrder, normalizeStocks } from '../domain/stocks'
 import { buildManualRecord, MANUAL_ROW_BASE, type ManualInput } from '../domain/manual'
-import type { AuditLog, CheckResult, Ledger, RawRecord, StockConfig } from '../domain/types'
+import type { AuditLog, CheckResult, Ledger, RawRecord, RebuyExecution, RebuyOrder, StockConfig } from '../domain/types'
 import type { ParseResult } from '../io/parseWorkbook'
 
 export interface ImportOutcome {
@@ -28,6 +28,7 @@ interface AppContextValue {
   stocks: StockConfig[]
   records: RawRecord[]
   audits: AuditLog[]
+  executions: RebuyExecution[]
   ledger: Ledger
   baseline: CheckResult[]
   deriveSellPrice: boolean
@@ -43,6 +44,8 @@ interface AppContextValue {
   addManualRecord: (input: ManualInput) => Promise<number>
   reorderStocks: (orderedIds: string[]) => Promise<void>
   setStockEnabled: (id: string, enabled: boolean) => Promise<void>
+  recordRebuy: (order: RebuyOrder, qty: number, priceCents: number, rewardQty: number, note?: string) => Promise<void>
+  removeRebuy: (id: string) => Promise<void>
   historyOf: (sourceRow: number) => AuditLog[]
   updateStock: (s: StockConfig) => Promise<void>
   addStock: (s: StockConfig) => Promise<void>
@@ -51,6 +54,7 @@ interface AppContextValue {
   exportBackup: () => Promise<string>
   restoreBackup: (json: string) => Promise<void>
   basename: string
+  lastBackupAt: number | null
 }
 
 const AppContext = createContext<AppContextValue | null>(null)
@@ -64,15 +68,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [stocks, setStocks] = useState<StockConfig[]>(DEFAULT_STOCKS)
   const [records, setRecords] = useState<RawRecord[]>([])
   const [audits, setAudits] = useState<AuditLog[]>([])
+  const [executions, setExecutions] = useState<RebuyExecution[]>([])
   const [batches, setBatches] = useState<ImportBatch[]>([])
   const [deriveSellPrice, setDeriveSellPrice] = useState(false)
   const [preview, setPreview] = useState<ParseResult | null>(null)
   const [basename, setBasename] = useState('—')
+  const [lastBackupAt, setLastBackupAt] = useState<number | null>(null)
 
   const reloadRecords = useCallback(async () => {
-    const [r, a] = await Promise.all([db.records.toArray(), db.auditLogs.toArray()])
+    const [r, a, x] = await Promise.all([
+      db.records.toArray(),
+      db.auditLogs.toArray(),
+      db.rebuyExecutions.toArray(),
+    ])
     setRecords(r)
     setAudits(a)
+    setExecutions(x)
   }, [])
 
   useEffect(() => {
@@ -82,11 +93,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if ((await db.stocks.count()) === 0) {
         await db.stocks.bulkPut(DEFAULT_STOCKS)
       }
-      const [sRaw, r, a, b] = await Promise.all([
+      const [sRaw, r, a, b, x, backupMeta] = await Promise.all([
         db.stocks.toArray(),
         db.records.toArray(),
         db.auditLogs.toArray(),
         db.batches.orderBy('importedAt').reverse().toArray(),
+        db.rebuyExecutions.toArray(),
+        db.meta.get('lastBackupAt'),
       ])
       if (!alive) return
       // 老库补齐 order / enabled 并压平序号
@@ -96,8 +109,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setStocks(s)
       setRecords(r)
       setAudits(a)
+      setExecutions(x)
       setBatches(b)
       setBasename(b[0]?.fileName ?? '—')
+      setLastBackupAt(backupMeta ? Number(backupMeta.value) : null)
       setReady(true)
     })()
     return () => {
@@ -106,8 +121,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const ledger = useMemo(
-    () => buildLedger(records, stocks, { deriveSellPrice }),
-    [records, stocks, deriveSellPrice],
+    () => buildLedger(records, stocks, { deriveSellPrice, executions }),
+    [records, stocks, deriveSellPrice, executions],
   )
 
   const baseline = useMemo(() => compareBaseline(ledger), [ledger])
@@ -259,6 +274,63 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [audits],
   )
 
+  const recordRebuy = useCallback(
+    async (order: RebuyOrder, qty: number, priceCents: number, rewardQty: number, note?: string) => {
+      if (!Number.isInteger(qty) || qty <= 0) throw new Error('回补股数必须是正整数')
+      if (!Number.isInteger(priceCents) || priceCents <= 0) throw new Error('回补价必须大于 0')
+      if (qty > order.remainingQty) throw new Error(`最多还能回补 ${order.remainingQty} 股`)
+      const exec: RebuyExecution = {
+        id: `exec:${order.id}:${Date.now()}`,
+        orderId: order.id,
+        sellExecId: order.sellExecId,
+        stockId: order.stockId,
+        stockName: order.stockName,
+        qty,
+        priceCents,
+        rewardQty: Math.min(rewardQty, qty),
+        groupKeyAtExecution: order.groupKey,
+        at: Date.now(),
+        note,
+      }
+      await db.transaction('rw', db.rebuyExecutions, db.auditLogs, async () => {
+        await db.rebuyExecutions.put(exec)
+        await db.auditLogs.add({
+          entity: 'order',
+          entityId: order.id,
+          field: '记回补成交',
+          oldValue: `已回补 ${order.execQty}`,
+          newValue: `已回补 ${order.execQty + qty}（${qty} 股 @ ${(priceCents / 100).toFixed(2)}）`,
+          at: Date.now(),
+          source: 'rebuy',
+        })
+      })
+      await reloadRecords()
+    },
+    [reloadRecords],
+  )
+
+  const removeRebuy = useCallback(
+    async (id: string) => {
+      await db.transaction('rw', db.rebuyExecutions, db.auditLogs, async () => {
+        const exec = await db.rebuyExecutions.get(id)
+        await db.rebuyExecutions.delete(id)
+        if (exec) {
+          await db.auditLogs.add({
+            entity: 'order',
+            entityId: exec.orderId,
+            field: '撤销回补成交',
+            oldValue: `${exec.qty} 股 @ ${(exec.priceCents / 100).toFixed(2)}`,
+            newValue: '已撤销',
+            at: Date.now(),
+            source: 'rebuy',
+          })
+        }
+      })
+      await reloadRecords()
+    },
+    [reloadRecords],
+  )
+
   const updateStock = useCallback(async (s: StockConfig) => {
     await db.stocks.put(s)
     setStocks(normalizeStocks(await db.stocks.toArray()))
@@ -276,23 +348,41 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const resetAll = useCallback(async () => {
-    await Promise.all([db.records.clear(), db.batches.clear(), db.auditLogs.clear()])
+    await Promise.all([
+      db.records.clear(),
+      db.batches.clear(),
+      db.auditLogs.clear(),
+      db.rebuyExecutions.clear(),
+    ])
     setRecords([])
     setBatches([])
     setAudits([])
+    setExecutions([])
     setBasename('—')
     setPreview(null)
   }, [])
 
   const exportBackup = useCallback(async () => {
-    const [s, r, b, a] = await Promise.all([
+    const [s, r, b, a, x] = await Promise.all([
       db.stocks.toArray(),
       db.records.toArray(),
       db.batches.toArray(),
       db.auditLogs.toArray(),
+      db.rebuyExecutions.toArray(),
     ])
+    const stamp = String(Date.now())
+    await db.meta.put({ key: 'lastBackupAt', value: stamp })
+    setLastBackupAt(Number(stamp))
     return JSON.stringify(
-      { schemaVersion: 2, exportedAt: new Date().toISOString(), stocks: s, records: r, batches: b, auditLogs: a },
+      {
+        schemaVersion: 3,
+        exportedAt: new Date().toISOString(),
+        stocks: s,
+        records: r,
+        batches: b,
+        auditLogs: a,
+        rebuyExecutions: x,
+      },
       null,
       2,
     )
@@ -306,10 +396,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
         records?: RawRecord[]
         batches?: ImportBatch[]
         auditLogs?: AuditLog[]
+        rebuyExecutions?: RebuyExecution[]
       }
       const version = data.schemaVersion ?? 1
-      if (version > 2) throw new Error('备份版本高于当前程序，拒绝导入（P11）')
-      await db.transaction('rw', db.stocks, db.records, db.batches, db.auditLogs, async () => {
+      if (version > 3) throw new Error('备份版本高于当前程序，拒绝导入（P11）')
+      await db.transaction('rw', db.stocks, db.records, db.batches, db.auditLogs, db.rebuyExecutions, async () => {
         if (data.stocks) {
           await db.stocks.clear()
           await db.stocks.bulkPut(data.stocks)
@@ -350,6 +441,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     stocks,
     records,
     audits,
+    executions,
     ledger,
     baseline,
     deriveSellPrice,
@@ -365,6 +457,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     addManualRecord,
     reorderStocks,
     setStockEnabled,
+    recordRebuy,
+    removeRebuy,
     historyOf,
     updateStock,
     addStock,
@@ -373,6 +467,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     exportBackup,
     restoreBackup,
     basename,
+    lastBackupAt,
   }
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>

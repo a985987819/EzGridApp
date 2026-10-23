@@ -53,7 +53,7 @@ export interface RawRecord {
 /** 编辑审计（P10）：实体 / 字段 / 旧值 / 新值 / 时间 / 来源 */
 export interface AuditLog {
   id?: number
-  entity: 'record' | 'stock'
+  entity: 'record' | 'stock' | 'order'
   entityId: string
   field: string
   oldValue: string
@@ -120,6 +120,23 @@ export interface SellTarget {
 
 export type OrderStatus = 'open' | 'partial' | 'closed' | 'cancelled'
 
+/** 回补成交：一笔待买被真实执行了多少股（平掉空头敞口，不新增可卖批次） */
+export interface RebuyExecution {
+  id: string
+  orderId: string
+  sellExecId: string
+  stockId: string
+  stockName: string
+  qty: number
+  priceCents: number
+  /** 这次成交里含的奖励股数（来自该订单当时的 rewardQty） */
+  rewardQty: number
+  /** 成交时所在的价组，额度消耗永久留在旧组（P4） */
+  groupKeyAtExecution: string
+  at: number
+  note?: string
+}
+
 export interface RebuyOrder {
   id: string
   sellExecId: string
@@ -129,6 +146,12 @@ export interface RebuyOrder {
   rebuyPriceCents: number
   baseQty: number
   rewardQty: number
+  /** 已回补股数（base + reward 合计口径） */
+  execQty: number
+  /** 已成交的奖励股数（不可撤） */
+  doneRewardQty: number
+  /** 还没回补的股数 */
+  remainingQty: number
   status: OrderStatus
   /** 组池信息（R5） */
   groupKey: string
@@ -184,7 +207,7 @@ export interface MonthlyBucket {
 }
 
 export interface Anomaly {
-  kind: 'needsPrice' | 'dateMissing' | 'negativeProfit'
+  kind: 'needsPrice' | 'needsCost' | 'dateMissing' | 'negativeProfit'
   sourceRow: number
   stockName: string
   detail: string
@@ -224,6 +247,10 @@ export interface Ledger {
     rebuyBaseQty: number
     rebuyRewardQty: number
     rebuyQty: number
+    /** 已回补股数（真实成交） */
+    rebuyExecQty: number
+    /** 还没回补的股数 */
+    rebuyRemainingQty: number
     rebuyAmountCents: number
     rewardQty: number
     netQty: number

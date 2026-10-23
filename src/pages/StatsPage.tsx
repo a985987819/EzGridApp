@@ -1,4 +1,5 @@
-import { Card, Tag } from 'animal-island-ui'
+import { useMemo, useState } from 'react'
+import { Calendar, Card, Tag } from 'animal-island-ui'
 import { useApp } from '../store/useApp'
 import { activeStocks } from '../domain/stocks'
 import { money, qty, signedMoney, tone } from '../ui/format'
@@ -39,6 +40,8 @@ export function StatsPage() {
           </div>
         </div>
       </Card>
+
+      <CalendarCard />
 
       <Card>
         <div className="row" style={{ marginBottom: 4 }}>
@@ -145,4 +148,75 @@ export function StatsPage() {
       </Card>
     </div>
   )
+}
+
+
+/** 成交日历：按月看每天卖出了什么、赚了多少（红盈绿亏） */
+function CalendarCard() {
+  const { ledger } = useApp()
+  const today = new Date()
+  const [panel, setPanel] = useState(`${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`)
+  const [selected, setSelected] = useState(today.toISOString().slice(0, 10))
+
+  const events = useMemo(
+    () =>
+      ledger.sells
+        .filter((s) => s.soldAt !== null && s.profitCents !== null)
+        .map((s) => ({
+          title: signedMoney(s.profitCents),
+          start: s.soldAt as string,
+          color: (s.profitCents ?? 0) >= 0 ? ('coral' as const) : ('green' as const),
+        })),
+    [ledger.sells],
+  )
+
+  const daySells = ledger.sells.filter((s) => s.soldAt === selected)
+  const missing = ledger.sells.filter((s) => s.dateMissing).length
+
+  return (
+    <Card>
+      <div className="row" style={{ marginBottom: 8 }}>
+        <strong style={{ fontSize: 14 }}>成交日历</strong>
+        <div className="spacer" />
+        {missing > 0 && <Tag size="small" variant="soft" color="app-yellow">{missing} 笔缺日期</Tag>}
+      </div>
+      <Calendar
+        value={selected}
+        onChange={setSelected}
+        panelValue={panel}
+        onPanelChange={setPanel}
+        events={events}
+        showEventTime={false}
+        aria-label="成交日历"
+      />
+      <div style={{ marginTop: 10 }}>
+        <div className="row" style={{ marginBottom: 4 }}>
+          <span className="tiny muted">{selected}</span>
+          <div className="spacer" />
+          <span className="tiny muted">{daySells.length} 笔</span>
+        </div>
+        {daySells.length === 0 ? (
+          <p className="tiny muted" style={{ margin: 0 }}>这天没有成交</p>
+        ) : (
+          daySells.map((s) => (
+            <div key={s.id} className="line">
+              <div className="left">
+                <div className="t1" style={{ fontSize: 13 }}>
+                  {s.stockName} · {price2(s.priceCents)} × {s.qty}
+                </div>
+                <div className="t2">行 {s.sourceRow} · 成本 {price2(s.costCents)}</div>
+              </div>
+              <div className={`right num ${tone(s.profitCents)}`} style={{ fontWeight: 700 }}>
+                {signedMoney(s.profitCents)}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </Card>
+  )
+}
+
+function price2(cents: number | null): string {
+  return cents === null ? '—' : (cents / 100).toFixed(2)
 }

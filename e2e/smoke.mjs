@@ -323,20 +323,57 @@ try {
   text = await bodyText()
   check('改回后盈利 ¥9,830 且基准全中', text.includes('9,830') && text.includes('基准全中'))
 
-  console.log('\n[8] 挂单：涨跌幅来自股票配置')
+  console.log('\n[8] 挂单：确认昨收 → 涨停/跌停 → 今日挂单')
   check('切到挂单', await nav('orders'))
   text = await bodyText()
   check('页面显示「涨跌幅 10%」', text.includes('涨跌幅 10%'))
   check('没有涨跌幅选择器', !text.includes('创业板 20%'))
-  check('默认股票是三一重工（排序第一）', text.includes('三一重工'))
-  await evaluate(`(() => {
-    const sels = [...document.querySelectorAll('div,button')].find(e => e.getAttribute('role') === 'combobox')
-    return Boolean(sels)
-  })()`)
+  check('未确认时提示要确认', text.includes('才算涨停/跌停'))
+
+  // 选柳工（待卖价多落在区间内）
+  await evaluate(`document.querySelectorAll('[role="combobox"]')[0]?.click()`)
+  await sleep(400)
+  check('选柳工', await clickByText('[role="option"]', '柳工'))
+  await sleep(500)
   check('读入昨收 8.10', await setInput('input[aria-label="昨收价"]', '8.10'))
-  await sleep(600)
+  await sleep(300)
+  check('点「确认」', await clickByText('button', '确认'))
+  await sleep(700)
   text = await bodyText()
-  check('区间随股票配置算出（三一 10% → 7.29/8.91）', text.includes('7.29') && text.includes('8.91'))
+  const limitUp = await evaluate(`document.querySelector('[data-tag="limit-up"]')?.textContent.trim() ?? ''`)
+  const limitDown = await evaluate(`document.querySelector('[data-tag="limit-down"]')?.textContent.trim() ?? ''`)
+  console.log('  涨跌停标签:', limitUp, '/', limitDown)
+  check('涨停价 8.91', limitUp.includes('8.91'))
+  check('跌停价 7.29', limitDown.includes('7.29'))
+  check('出现「今日挂单」', text.includes('今日挂单'))
+  check('今日挂单有可挂买', /可挂买\s*[1-9]/.test(text))
+  check('今日挂单里有「记成交」', text.includes('记成交'))
+
+  const orderShot = await send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync(join(OUT, 'mobile-orders-confirmed.png'), Buffer.from(orderShot.data, 'base64'))
+
+  console.log('\n[8.5] 记回补成交 → 敞口减少 → 撤销')
+  check('点第一个「记成交」', await clickByText('button', '记成交'))
+  await sleep(600)
+  check('弹出记成交窗口', (await bodyText()).includes('本次回补股数'))
+  check('默认股数已填', (await evaluate(`document.querySelector('input[data-field="execQty"]')?.value ?? ''`)) !== '')
+  check('点保存', await clickByText('button', '保存'))
+  await sleep(1200)
+  await nav('overview')
+  text = await bodyText()
+  check('回补 500 股后待补 1,500', text.includes('1,500'))
+  check('回补后净持仓 13,700', text.includes('13,700'))
+  await nav('orders')
+  await evaluate(`document.querySelectorAll('[role="combobox"]')[0]?.click()`)
+  await sleep(300)
+  await clickByText('[role="option"]', '柳工')
+  await sleep(400)
+  check('点「撤销最后一笔」', await clickByText('button', '撤销最后一笔'))
+  await sleep(1000)
+  await nav('overview')
+  text = await bodyText()
+  check('撤销后待补回到 2,000', text.includes('2,000'))
+  check('撤销后净持仓回到 13,200', text.includes('13,200'))
 
   console.log('\n[9] 停用开关：其他页面不再出现该股')
   await nav('manage')
@@ -406,6 +443,34 @@ try {
   text = await bodyText()
   check('回到净持仓 13,200', text.includes('13,200'))
   check('基准重新全中', text.includes('基准全中'))
+
+  console.log('\n[11.5] 下拉浮层不被卡片裁掉')
+  await nav('manage')
+  check('打开涨跌幅下拉', await evaluate(`(() => {
+    const boxes = [...document.querySelectorAll('[role="combobox"]')]
+    const box = boxes[boxes.length - 1]
+    if (!box) return false
+    box.click(); return true
+  })()`))
+  await sleep(500)
+  const dd = await evaluate(`(() => {
+    const d = document.querySelector('[class*="animal-dropdown"]')
+    if (!d) return null
+    const r = d.getBoundingClientRect()
+    const hit = document.elementFromPoint(r.left + r.width / 2, r.top + Math.min(24, r.height / 2))
+    return JSON.stringify({
+      inViewport: r.right <= innerWidth + 1 && r.left >= -1,
+      hitIsOption: Boolean(hit && hit.closest('[class*="animal-dropdown"]')),
+      height: Math.round(r.height),
+    })
+  })()`)
+  console.log('  下拉检测:', dd)
+  check('下拉存在且在视口内', dd !== null && JSON.parse(dd).inViewport === true)
+  check('下拉没有被卡片裁掉（命中测试）', dd !== null && JSON.parse(dd).hitIsOption === true)
+  const ddShot = await send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync(join(OUT, 'mobile-dropdown.png'), Buffer.from(ddShot.data, 'base64'))
+  await evaluate(`document.body.click()`)
+  await sleep(300)
 
   console.log('\n[12] 截图')
   await sleep(4800) // 等轻提示消失，截干净的图

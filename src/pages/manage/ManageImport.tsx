@@ -11,6 +11,7 @@ import { IconDownload, IconUpload } from '../../ui/icons'
 
 const ANOMALY_LABEL: Record<string, string> = {
   needsPrice: '待补价格',
+  needsCost: '待补成本',
   dateMissing: '待补日期',
   negativeProfit: '负盈利',
 }

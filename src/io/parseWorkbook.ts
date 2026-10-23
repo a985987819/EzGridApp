@@ -103,6 +103,9 @@ export function parseWorkbook(buffer: ArrayBuffer | Uint8Array): ParseResult {
   const range = XLSX.utils.decode_range(sheet['!ref'] as string)
   const records: RawRecord[] = []
   const skippedRows: number[] = []
+  // 完全相同的两行（例如 R60/R61 都是「柳工 卖500 @8.58」）字段会撞 key，
+  // 这里按出现次序加 #n，既保证行级唯一，又保证同一文件重复导入仍然幂等
+  const keyCount = new Map<string, number>()
 
   for (let r = range.s.r + 1; r <= range.e.r; r += 1) {
     const sheetRow = r + 1
@@ -151,7 +154,10 @@ export function parseWorkbook(buffer: ArrayBuffer | Uint8Array): ParseResult {
       rawProfitCents,
       importKey: '',
     }
-    rec.importKey = makeImportKey(rec)
+    const base = makeImportKey(rec)
+    const n = (keyCount.get(base) ?? 0) + 1
+    keyCount.set(base, n)
+    rec.importKey = n === 1 ? base : `${base}#${n}`
     records.push(rec)
   }
 

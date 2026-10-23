@@ -14,10 +14,12 @@ export function Overview({
   onPick: (stock: string, priceCents: number) => void
   goManage: () => void
 }) {
-  const { ledger, baseline, records, basename, stocks } = useApp()
+  const { ledger, baseline, records, basename, stocks, lastBackupAt } = useApp()
   const [active, setActive] = useState('')
   const t = ledger.totals
   const failed = baseline.filter((c) => !c.ok).length
+  const backupDays = lastBackupAt ? Math.floor((Date.now() - lastBackupAt) / 86400000) : null
+  const backupStale = backupDays === null || backupDays >= 7
 
   const enabledNames = useMemo(() => activeStockNames(stocks), [stocks])
   const withRows = useMemo<StockSummary[]>(() => {
@@ -77,6 +79,11 @@ export function Overview({
           <Tag size="small" variant="soft" color="app-orange">待卖 {money(t.targetAmountCents)}</Tag>
           {t.exposureQty > 0 && (
             <Tag size="small" variant="soft" color="app-red">卖满后 {qty(t.exposureQty)} 股敞口</Tag>
+          )}
+          {backupStale && hasData && (
+            <Tag size="small" variant="soft" color="app-yellow">
+              {backupDays === null ? '还没备份过' : `${backupDays} 天没备份`}
+            </Tag>
           )}
         </div>
       </Card>

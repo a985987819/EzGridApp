@@ -1,26 +1,24 @@
 import { useMemo, useState } from 'react'
-import { Button, Card, Input, Select, Tabs, Tag, notificationOpen } from 'animal-island-ui'
+import { Button, Card, Input, Modal, Select, Tabs, Tag, notificationOpen } from 'animal-island-ui'
 import { useApp } from '../store/useApp'
 import { activeStocks } from '../domain/stocks'
 import { LIMIT_PCT, limitRange } from '../domain/limit'
 import { toCents } from '../domain/money'
 import { downloadText, toCsv } from '../ui/csv'
 import { money, price, qty, signedMoney } from '../ui/format'
+import type { RebuyOrder } from '../domain/types'
 
 export function OrdersPage() {
-  const { ledger, stocks } = useApp()
+  const { ledger, stocks, executions, recordRebuy, removeRebuy } = useApp()
   // 顺序与启停都跟随「管理 · 股票」
   const stockNames = useMemo(() => activeStocks(stocks).map((s) => s.name), [stocks])
   const [stockName, setStockName] = useState(stockNames[0] ?? '')
   const [lastClose, setLastClose] = useState('')
+  /** 点「确认」后才出区间，避免边输边跳 */
+  const [confirmed, setConfirmed] = useState<{ stock: string; closeCents: number } | null>(null)
 
   const effectiveStock = stockNames.includes(stockName) ? stockName : stockNames[0] ?? ''
-  // 涨跌幅只读股票配置，挂单页不再单独选
   const cfg = stocks.find((s) => s.name === effectiveStock)
-  const range = useMemo(
-    () => limitRange(toCents(lastClose), cfg?.priceLimitType ?? 'unknown', cfg?.customLimitPct ?? null),
-    [lastClose, cfg],
-  )
   const limitLabel = !cfg
     ? '未配置'
     : cfg.priceLimitType === 'custom'
@@ -29,44 +27,120 @@ export function OrdersPage() {
         ? '未设置'
         : `${LIMIT_PCT[cfg.priceLimitType]}%`
 
+  const range =
+    confirmed && confirmed.stock === effectiveStock
+      ? limitRange(confirmed.closeCents, cfg?.priceLimitType ?? 'unknown', cfg?.customLimitPct ?? null)
+      : null
+
   const targets = ledger.targets.filter((t) => t.stockName === effectiveStock)
   const orders = ledger.orders.filter((o) => o.stockName === effectiveStock)
   const summary = ledger.byStock.find((s) => s.stockName === effectiveStock)
 
-  const rebuyTotal = orders.reduce((a, o) => a + o.rebuyPriceCents * (o.baseQty + o.rewardQty), 0)
-  const rewardTotal = orders.reduce((a, o) => a + o.rebuyPriceCents * o.rewardQty, 0)
+  const within = (p: number) => (range ? p >= range.downCents && p <= range.upCents : false)
+  const zone = (p: number): '区间内' | '无区间' | '越界' => (range ? (within(p) ? '区间内' : '越界') : '无区间')
+
+  const buyToday = range ? orders.filter((o) => within(o.rebuyPriceCents) && o.remainingQty > 0) : []
+  const sellToday = range ? targets.filter((t) => within(t.priceCents)) : []
+  const buyOut = range ? orders.filter((o) => !within(o.rebuyPriceCents) && o.remainingQty > 0).length : 0
+  const sellOut = range ? targets.filter((t) => !within(t.priceCents)).length : 0
+  const buyTodayAmount = buyToday.reduce((a, o) => a + o.rebuyPriceCents * o.remainingQty, 0)
+  const sellTodayAmount = sellToday.reduce((a, t) => a + t.amountCents, 0)
+
+  const rebuyTotal = orders.reduce((a, o) => a + o.rebuyPriceCents * o.remainingQty, 0)
+  const rewardTotal = orders.reduce((a, o) => a + o.rebuyPriceCents * Math.max(0, o.rewardQty - o.doneRewardQty), 0)
   const targetTotal = targets.reduce((a, t) => a + t.amountCents, 0)
   const availableProfit = ledger.groups
     .filter((g) => g.stockId === (summary?.stockId ?? ''))
     .reduce((a, g) => a + g.availableCents, 0)
 
-  function zone(p: number): '区间内' | '无区间' | '越界' {
-    if (!range) return '无区间'
-    return p > range.upCents || p < range.downCents ? '越界' : '区间内'
+  // 记成交
+  const [execOrder, setExecOrder] = useState<RebuyOrder | null>(null)
+  const [execQty, setExecQty] = useState('')
+  const [execPrice, setExecPrice] = useState('')
+  const [execReward, setExecReward] = useState('')
+
+  function openExec(o: RebuyOrder) {
+    setExecOrder(o)
+    setExecQty(String(o.remainingQty))
+    setExecPrice((o.rebuyPriceCents / 100).toFixed(2))
+    setExecReward(String(Math.max(0, o.rewardQty - o.doneRewardQty)))
+  }
+
+  async function saveExec() {
+    if (!execOrder) return
+    try {
+      const q = Number(execQty)
+      const p = toCents(execPrice)
+      const r = Number(execReward || 0)
+      if (!Number.isFinite(q) || q <= 0) throw new Error('股数要填正整数')
+      if (p === null) throw new Error('回补价不合法')
+      if (!Number.isFinite(r) || r < 0) throw new Error('奖励股数不合法')
+      await recordRebuy(execOrder, q, p, r)
+      setExecOrder(null)
+      notificationOpen({
+        message: '已记回补成交',
+        description: `${q} 股 @ ${execPrice}，敞口减少 ${q} 股`,
+        type: 'success',
+      })
+    } catch (e) {
+      notificationOpen({ message: '记录失败', description: e instanceof Error ? e.message : String(e), type: 'error' })
+    }
+  }
+
+  async function undoExec(orderId: string) {
+    const list = executions.filter((e) => e.orderId === orderId).sort((a, b) => b.at - a.at)
+    const last = list[0]
+    if (!last) return
+    if (!window.confirm(`撤销最后一笔回补成交（${last.qty} 股 @ ${(last.priceCents / 100).toFixed(2)}）？`)) return
+    await removeRebuy(last.id)
+    notificationOpen({ message: '已撤销', type: 'info' })
+  }
+
+  function confirmClose() {
+    const cents = toCents(lastClose)
+    if (cents === null || cents <= 0) {
+      notificationOpen({ message: '先填昨收价', description: '比如 8.10', type: 'warning' })
+      return
+    }
+    if (!cfg || cfg.priceLimitType === 'unknown') {
+      notificationOpen({
+        message: '这只票没设涨跌幅',
+        description: '去「管理 · 股票」设好再来算区间',
+        type: 'warning',
+      })
+      return
+    }
+    setConfirmed({ stock: effectiveStock, closeCents: cents })
   }
 
   function copyList() {
     const lines: string[] = [`${effectiveStock} 挂单清单`]
-    if (orders.length) {
-      lines.push('【待买】')
-      for (const o of orders) {
-        lines.push(`  行${o.sourceRow}  ${price(o.rebuyPriceCents)} × ${o.baseQty + o.rewardQty} 股（基础 ${o.baseQty} + 奖励 ${o.rewardQty}）`)
+    if (range) lines.push(`昨收 ${(range.downCents / 100).toFixed(2)}~${(range.upCents / 100).toFixed(2)}？区间 ${(range.downCents / 100).toFixed(2)}~${(range.upCents / 100).toFixed(2)}`)
+    if (buyToday.length) {
+      lines.push('【今日可挂买】')
+      for (const o of buyToday) {
+        lines.push(`  行${o.sourceRow}  ${price(o.rebuyPriceCents)} × ${o.remainingQty} 股`)
       }
     }
-    if (targets.length) {
-      lines.push('【待卖】')
-      for (const t of targets) {
+    if (sellToday.length) {
+      lines.push('【今日可挂卖】')
+      for (const t of sellToday) {
         lines.push(`  批次${t.lotId.replace('lot:', '')}  ${price(t.priceCents)} × ${t.qty} 股`)
       }
     }
-    void navigator.clipboard?.writeText(lines.join('\n'))
+    if (!range) {
+      lines.push('（未确认昨收价，以下是全部待买/待卖）')
+      for (const o of orders) lines.push(`  待买 ${price(o.rebuyPriceCents)} × ${o.remainingQty}`)
+      for (const t of targets) lines.push(`  待卖 ${price(t.priceCents)} × ${t.qty}`)
+    }
+    void navigator.clipboard?.writeText(lines.filter(Boolean).join('\n'))
     notificationOpen({ message: '清单已复制', type: 'success' })
   }
 
   function exportCsv() {
     const rows: (string | number)[][] = [['类型', '来源行', '价格', '股数', '金额', '区间']]
     for (const o of orders) {
-      rows.push(['待买', o.sourceRow, price(o.rebuyPriceCents), o.baseQty + o.rewardQty, ((o.rebuyPriceCents * (o.baseQty + o.rewardQty)) / 100).toFixed(2), zone(o.rebuyPriceCents)])
+      rows.push(['待买', o.sourceRow, price(o.rebuyPriceCents), o.remainingQty, ((o.rebuyPriceCents * o.remainingQty) / 100).toFixed(2), zone(o.rebuyPriceCents)])
     }
     for (const t of targets) {
       rows.push(['待卖', Number(t.lotId.replace('lot:', '')), price(t.priceCents), t.qty, (t.amountCents / 100).toFixed(2), zone(t.priceCents)])
@@ -106,64 +180,136 @@ export function OrdersPage() {
         </div>
       </div>
 
+      {/* 1. 选股 + 昨收 + 确认 */}
       <Card>
         <div className="stack tight">
-          <div className="row nowrap">
-            <Select
-              options={stockNames.map((s) => ({ key: s, label: s }))}
-              value={effectiveStock}
-              onChange={setStockName}
-              aria-label="选择股票"
-            />
-            <Tag size="medium" variant="soft" color="app-blue">
-              涨跌幅 {limitLabel}
-            </Tag>
-          </div>
+          <Select
+            options={stockNames.map((s) => ({ key: s, label: s }))}
+            value={effectiveStock}
+            onChange={(v) => {
+              setStockName(v)
+              setConfirmed(null)
+            }}
+            aria-label="选择股票"
+          />
           <div className="row nowrap">
             <Input
               className="grow"
               value={lastClose}
-              onChange={(e) => setLastClose(e.target.value)}
-              placeholder="昨收价 8.10"
+              onChange={(e) => {
+                setLastClose(e.target.value)
+                setConfirmed(null)
+              }}
+              placeholder="昨收价，如 8.10"
               allowClear
-              onClear={() => setLastClose('')}
+              onClear={() => {
+                setLastClose('')
+                setConfirmed(null)
+              }}
               aria-label="昨收价"
             />
-            <div style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
-              {range ? (
-                <>
-                  <span className="down num">{price(range.downCents)}</span>
-                  <span className="muted"> ~ </span>
-                  <span className="up num">{price(range.upCents)}</span>
-                </>
-              ) : (
-                <Tag size="small" variant="soft" color="app-red">无区间</Tag>
-              )}
-            </div>
+            <Button type="primary" onClick={confirmClose}>确认</Button>
+          </div>
+
+          <div className="row" style={{ gap: 6 }}>
+            <Tag size="medium" variant="soft" color="app-blue">涨跌幅 {limitLabel}</Tag>
+            {range ? (
+              <>
+                <span data-tag="limit-up">
+                  <Tag size="medium" variant="soft" color="app-red">涨停价 {price(range.upCents)}</Tag>
+                </span>
+                <span data-tag="limit-down">
+                  <Tag size="medium" variant="soft" color="app-green">跌停价 {price(range.downCents)}</Tag>
+                </span>
+              </>
+            ) : (
+              <span className="tiny muted">填完昨收点「确认」，才算涨停/跌停</span>
+            )}
           </div>
         </div>
       </Card>
 
+      {/* 2. 今日挂单 */}
       <Card>
-        <div className="metrics">
-          <div>
-            <div className="k">待买总额</div>
-            <div className="v" style={{ fontSize: 17 }}>{money(rebuyTotal)}</div>
-            <div className="s">奖励占 {money(rewardTotal)}</div>
-          </div>
-          <div>
-            <div className="k">待卖预期额</div>
-            <div className="v" style={{ fontSize: 17 }}>{money(targetTotal)}</div>
-            <div className="s">目标价 × 剩余</div>
-          </div>
-          <div>
-            <div className="k">可分配余额</div>
-            <div className="v" style={{ fontSize: 17 }}>{money(availableProfit)}</div>
-            <div className="s">组池未动用</div>
-          </div>
+        <div className="row" style={{ marginBottom: 6 }}>
+          <strong style={{ fontSize: 14 }}>今日挂单</strong>
+          {range && (
+            <>
+              <Tag size="small" variant="soft" color="app-teal">可挂买 {buyToday.length}</Tag>
+              <Tag size="small" variant="soft" color="app-orange">可挂卖 {sellToday.length}</Tag>
+            </>
+          )}
+          <div className="spacer" />
+          <span className="tiny muted">{effectiveStock}</span>
         </div>
+
+        {!range ? (
+          <div className="empty-box">填昨收价并点「确认」后，这里列出今天价格区间内能挂的单</div>
+        ) : (
+          <>
+            <div className="grid-4" style={{ padding: '2px 0 10px' }}>
+              <div>
+                <div className="k">可挂买</div>
+                <div className="v">{money(buyTodayAmount)}</div>
+              </div>
+              <div>
+                <div className="k">可挂卖</div>
+                <div className="v">{money(sellTodayAmount)}</div>
+              </div>
+              <div>
+                <div className="k">越界</div>
+                <div className="v" style={{ color: buyOut + sellOut > 0 ? 'var(--up)' : undefined }}>
+                  {buyOut + sellOut}
+                </div>
+              </div>
+              <div>
+                <div className="k">可分配</div>
+                <div className="v">{money(availableProfit)}</div>
+              </div>
+            </div>
+
+            {buyToday.length === 0 && sellToday.length === 0 ? (
+              <div className="empty-box">这个区间里没有可挂的单（{buyOut} 买 / {sellOut} 卖 越界）</div>
+            ) : (
+              <>
+                {buyToday.map((o) => (
+                  <div key={`t-${o.id}`} className="line">
+                    <div className="left">
+                      <div className="t1 num">买 {price(o.rebuyPriceCents)} × {qty(o.remainingQty)}</div>
+                      <div className="t2">
+                        行{o.sourceRow}
+                        {o.rewardQty > 0 && ` · 含奖励 ${o.rewardQty}`}
+                        {o.execQty > 0 && ` · 已回补 ${o.execQty}`}
+                      </div>
+                    </div>
+                    <div className="right row" style={{ gap: 6 }}>
+                      <span className="num">{money(o.rebuyPriceCents * o.remainingQty)}</span>
+                      <Button size="small" onClick={() => openExec(o)}>记成交</Button>
+                    </div>
+                  </div>
+                ))}
+                {sellToday.map((t) => (
+                  <div key={`s-${t.id}`} className="line">
+                    <div className="left">
+                      <div className="t1 num">卖 {price(t.priceCents)} × {qty(t.qty)}</div>
+                      <div className="t2">批次 {t.lotId.replace('lot:', '')} · 预期 {signedMoney(t.expectProfitCents)}</div>
+                    </div>
+                    <div className="right num">{money(t.amountCents)}</div>
+                  </div>
+                ))}
+              </>
+            )}
+
+            {(buyOut > 0 || sellOut > 0) && (
+              <p className="tiny" style={{ margin: '8px 0 0', color: 'var(--up)' }}>
+                有 {buyOut} 条待买、{sellOut} 条待卖在今日区间外（涨跌停之外挂不进去），下面列表里标红。
+              </p>
+            )}
+          </>
+        )}
       </Card>
 
+      {/* 3. 待买 / 待卖全量 */}
       <Card>
         <Tabs
           aria-label="待买待卖清单"
@@ -183,11 +329,16 @@ export function OrdersPage() {
                           <div className="left">
                             <div className="t1 num">
                               {price(o.rebuyPriceCents)}
-                              <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}> × {qty(o.baseQty + o.rewardQty)} 股</span>
+                              <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}>
+                                {' '}× {qty(o.remainingQty)} 股
+                              </span>
+                              {o.remainingQty === 0 && <Tag size="small" variant="soft" color="app-green" style={{ marginLeft: 6 }}>已回补完</Tag>}
                             </div>
                             <div className="t2">
-                              行{o.sourceRow} · 基础 {o.baseQty}
-                              {o.rewardQty > 0 && ` + 奖励 ${o.rewardQty}`} · 组池 {money(o.grossProfitCents)} / {o.hands} 手
+                              行{o.sourceRow} · 计划 {o.baseQty}
+                              {o.rewardQty > 0 && ` + 奖励 ${o.rewardQty}`}
+                              {o.execQty > 0 && ` · 已回补 ${o.execQty}`}
+                              {` · 组池 ${money(o.grossProfitCents)} / ${o.hands} 手`}
                             </div>
                             <div className="tag-row" style={{ marginTop: 4 }}>
                               <Tag size="small" variant="soft" color={o.exposure ? 'app-red' : 'app-teal'}>
@@ -196,10 +347,13 @@ export function OrdersPage() {
                               <Tag size="small" variant="soft" color={z === '区间内' ? 'app-green' : z === '无区间' ? 'default' : 'app-red'}>
                                 {z}
                               </Tag>
+                              {o.execQty > 0 && (
+                                <Button size="small" type="text" onClick={() => void undoExec(o.id)}>撤销最后一笔</Button>
+                              )}
                             </div>
                           </div>
                           <div className="right num" style={{ fontWeight: 600 }}>
-                            {money(o.rebuyPriceCents * (o.baseQty + o.rewardQty))}
+                            {money(o.rebuyPriceCents * o.remainingQty)}
                           </div>
                         </div>
                       )
@@ -225,9 +379,7 @@ export function OrdersPage() {
                               {price(t.priceCents)}
                               <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}> × {qty(t.qty)} 股</span>
                             </div>
-                            <div className="t2">
-                              批次 {t.lotId.replace('lot:', '')} · 买入 {price(lot?.buyPriceCents ?? null)}
-                            </div>
+                            <div className="t2">批次 {t.lotId.replace('lot:', '')} · 买入 {price(lot?.buyPriceCents ?? null)}</div>
                             <div className="tag-row" style={{ marginTop: 4 }}>
                               <Tag size="small" variant="soft" color={z === '区间内' ? 'app-green' : z === '无区间' ? 'default' : 'app-red'}>
                                 {z}
@@ -253,17 +405,60 @@ export function OrdersPage() {
             },
           ]}
         />
+        <p className="tiny muted" style={{ margin: '10px 0 0' }}>
+          待买剩余 {money(rebuyTotal)}（其中奖励 {money(rewardTotal)}） · 待卖 {money(targetTotal)} ·
+          待补敞口 {qty(summary?.exposureQty ?? 0)} 股
+        </p>
       </Card>
 
       {summary && summary.exposureQty > 0 && (
         <Card>
           <p className="hint-block" style={{ margin: 0 }}>
             <b>敞口提示：</b>{summary.stockName} 可卖 {qty(summary.targetQty)} 股，净持仓 {qty(summary.netQty)} 股。
-            待卖全部执行完，会有 <b style={{ color: 'var(--up)' }}>{qty(summary.exposureQty)} 股</b> 需要通过待买回补
+            待卖全部执行完，还会有 <b style={{ color: 'var(--up)' }}>{qty(summary.exposureQty)} 股</b> 需要通过待买回补
             ——这部分不是持仓，是在加空。
           </p>
         </Card>
       )}
+
+      <Modal
+        open={execOrder !== null}
+        title="记回补成交"
+        typewriter={false}
+        onClose={() => setExecOrder(null)}
+        footer={
+          <div className="row nowrap" style={{ gap: 8 }}>
+            <Button type="primary" style={{ flex: 1 }} onClick={() => void saveExec()}>保存</Button>
+            <Button onClick={() => setExecOrder(null)}>取消</Button>
+          </div>
+        }
+      >
+        {execOrder && (
+          <div className="stack tight">
+            <p className="hint-block" style={{ margin: 0 }}>
+              {execOrder.stockName} · 行 {execOrder.sourceRow} · 计划 {execOrder.baseQty}
+              {execOrder.rewardQty > 0 && ` + 奖励 ${execOrder.rewardQty}`} 股，还能回补 {execOrder.remainingQty} 股。
+            </p>
+            <div className="form-grid">
+              <label>
+                <span>本次回补股数</span>
+                <Input value={execQty} onChange={(e) => setExecQty(e.target.value)} data-field="execQty" />
+              </label>
+              <label>
+                <span>成交价</span>
+                <Input value={execPrice} onChange={(e) => setExecPrice(e.target.value)} data-field="execPrice" />
+              </label>
+              <label>
+                <span>其中奖励股数（已成交不可撤）</span>
+                <Input value={execReward} onChange={(e) => setExecReward(e.target.value)} data-field="execReward" />
+              </label>
+            </div>
+            <p className="tiny muted" style={{ margin: 0 }}>
+              回补成交只平掉空头敞口，不会新增可卖批次；要重新挂卖，请到明细里另建一笔买入。
+            </p>
+          </div>
+        )}
+      </Modal>
     </div>
   )
 }

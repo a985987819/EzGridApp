@@ -5,7 +5,7 @@ import { downloadText } from '../../ui/csv'
 import { IconDownload, IconUpload } from '../../ui/icons'
 
 export function ManageBackup() {
-  const { exportBackup, restoreBackup, resetAll, records, audits, basename, deriveSellPrice, setDeriveSellPrice } = useApp()
+  const { exportBackup, restoreBackup, resetAll, records, audits, basename, deriveSellPrice, setDeriveSellPrice, lastBackupAt } = useApp()
   const fileRef = useRef<HTMLInputElement>(null)
 
   return (
@@ -68,6 +68,13 @@ export function ManageBackup() {
         </div>
         <p className="hint-block" style={{ margin: '10px 0 0' }}>
           当前数据源：{basename}。数据只存在本机 IndexedDB，长期不打开会被浏览器清理，<b>建议每周导出一次</b>。
+          <br />
+          上次备份：
+          <b>
+            {lastBackupAt
+              ? `${new Date(lastBackupAt).toLocaleString('zh-CN', { hour12: false })}（${Math.floor((Date.now() - lastBackupAt) / 86400000)} 天前）`
+              : '还没备份过'}
+          </b>
         </p>
       </Card>
 

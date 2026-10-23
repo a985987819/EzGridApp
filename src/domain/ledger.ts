@@ -8,6 +8,7 @@ import { deriveBuyQty } from './qty'
 import { serialToIso, stockIdOf } from './defaults'
 import type {
   Anomaly,
+  RebuyExecution,
   CheckResult,
   GroupPool,
   Ledger,
@@ -30,6 +31,8 @@ export interface BuildOptions {
    * 若置为 true，R44 会按 18.81+1.07=19.88 计入，全表盈利变 ¥10,152。
    */
   deriveSellPrice?: boolean
+  /** 回补成交记录（有它才算「待补已回补多少」） */
+  executions?: RebuyExecution[]
 }
 
 export function groupKeyOf(stockId: string, priceCents: number): string {
@@ -47,6 +50,13 @@ export function buildLedger(
 ): Ledger {
   const baseAmountYuan = opts.baseAmountYuan ?? 6000
   const deriveSellPrice = opts.deriveSellPrice ?? false
+  const executions = opts.executions ?? []
+  const execByOrder = new Map<string, RebuyExecution[]>()
+  for (const e of executions) {
+    const list = execByOrder.get(e.orderId)
+    if (list) list.push(e)
+    else execByOrder.set(e.orderId, [e])
+  }
   // 软删除的行不参与任何计算
   const live = records.filter((r) => !r.deletedAt)
   const byRow = new Map(live.map((r) => [r.sourceRow, r]))
@@ -161,6 +171,13 @@ export function buildLedger(
           stockName: r.stockName,
           detail: '缺目标售价（E 列公式已损坏），盈利无法计算，不入组池',
         })
+      } else if (cost === null) {
+        anomalies.push({
+          kind: 'needsCost',
+          sourceRow: r.sourceRow,
+          stockName: r.stockName,
+          detail: '买入价与 P 列都空，无法确定成本，盈利算不出来',
+        })
       }
       // D4：先卖后买合法，不进异常清单，仅置标记
     }
@@ -189,8 +206,12 @@ export function buildLedger(
     if (sell.rebuyStatus !== 'pending') continue
     const rec = byRow.get(sell.sourceRow)
     if (!rec || rec.earlyBuyPriceCents === null) continue
+    const orderId = `rb:${sell.id}`
+    const myExecs = execByOrder.get(orderId) ?? []
+    const execQty = myExecs.reduce((a, e) => a + e.qty, 0)
+    const doneRewardQty = myExecs.reduce((a, e) => a + e.rewardQty, 0)
     orders.push({
-      id: `rb:${sell.id}`,
+      id: orderId,
       sellExecId: sell.id,
       sourceRow: sell.sourceRow,
       stockId: sell.stockId,
@@ -198,7 +219,10 @@ export function buildLedger(
       rebuyPriceCents: rec.earlyBuyPriceCents,
       baseQty: sell.qty,
       rewardQty: 0,
-      status: 'open',
+      execQty,
+      doneRewardQty,
+      remainingQty: Math.max(0, sell.qty - execQty),
+      status: execQty <= 0 ? 'open' : 'partial',
       groupKey: groupKeyOf(sell.stockId, rec.earlyBuyPriceCents),
       grossProfitCents: 0,
       hands: 0,
@@ -208,13 +232,17 @@ export function buildLedger(
   }
 
   // R4/R5 组池与奖励
-  const groups = computeGroups(sells, orders)
+  const groups = computeGroups(sells, orders, executions)
   for (const o of orders) {
     const g = groups.get(o.groupKey)
     if (g) {
       o.grossProfitCents = g.grossProfitCents
       o.hands = g.grantedHands
     }
+    // 奖励股数确定后再算剩余与状态
+    const planQty = o.baseQty + o.rewardQty
+    o.remainingQty = Math.max(0, planQty - o.execQty)
+    o.status = o.execQty <= 0 ? 'open' : o.remainingQty === 0 ? 'closed' : 'partial'
   }
 
   // 汇总
@@ -236,23 +264,27 @@ export function buildLedger(
     rebuyQty: sumBy(orders, (o) => o.baseQty + o.rewardQty),
     rebuyAmountCents: sumBy(orders, (o) => mulCents(o.rebuyPriceCents, o.baseQty + o.rewardQty)),
     rewardQty: sumBy(orders, (o) => o.rewardQty),
+    rebuyExecQty: sumBy(executions, (e) => e.qty),
+    rebuyRemainingQty: sumBy(orders, (o) => o.remainingQty),
     netQty: 0,
-    // 只算真空头敞口：无买入批次的那几笔卖出（D5）
+    // 只算真空头敞口：无买入批次、且还没回补掉的那部分（D5）。
+    // 奖励股是额外买入，不算欠账，所以从已成交里剔除。
     exposureQty: sumBy(
       orders.filter((o) => o.exposure),
-      (o) => o.baseQty,
+      (o) => Math.max(0, o.baseQty - Math.max(0, o.execQty - o.doneRewardQty)),
     ),
   }
-  totals.netQty = totals.buyQty - totals.sellQty
+  // 回补成交是真实买入，计入净持仓
+  totals.netQty = totals.buyQty - totals.sellQty + totals.rebuyExecQty
 
   const byStock = summarizeByStock(live, lots, sells, targets, orders)
   const monthly = summarizeMonthly(sells)
 
   const checks: CheckResult[] = [
     {
-      name: 'Σ买入份额 − Σ卖出量 = 净持仓',
-      ok: totals.buyQty - totals.sellQty === totals.netQty,
-      actual: `${totals.buyQty} − ${totals.sellQty} = ${totals.netQty}`,
+      name: 'Σ买入 + Σ回补 − Σ卖出 = 净持仓',
+      ok: totals.buyQty + totals.rebuyExecQty - totals.sellQty === totals.netQty,
+      actual: `${totals.buyQty} + ${totals.rebuyExecQty} − ${totals.sellQty} = ${totals.netQty}`,
       expected: '等式成立',
     },
     {
@@ -296,8 +328,18 @@ export function buildLedger(
   }
 }
 
-/** 组池 + FIFO 授予（R4 / R5 / 8.2）。当前无回补成交，used 恒为 0。 */
-function computeGroups(sells: SellExecution[], orders: RebuyOrder[]): Map<string, GroupPool> {
+/**
+ * 组池 + FIFO 授予（R4 / R5 / 8.2）。
+ * - gross：组内全部真实卖出盈利（含已回补的）
+ * - used：已成交奖励股数 × 成交价，按 groupKeyAtExecution 永久归属（P4）
+ * - 剩余预算 = max(0, gross − used)，能再授几手 = floor(剩余预算 / 每手成本)
+ * - 已成交的奖励股数不可撤（doneRewardQty），新额度只能在它之上叠加
+ */
+function computeGroups(
+  sells: SellExecution[],
+  orders: RebuyOrder[],
+  executions: RebuyExecution[],
+): Map<string, GroupPool> {
   const pools = new Map<string, GroupPool>()
 
   for (const s of sells) {
@@ -322,7 +364,12 @@ function computeGroups(sells: SellExecution[], orders: RebuyOrder[]): Map<string
     g.grossProfitCents += s.profitCents
   }
 
-  // FIFO：只挂给 open 订单，跨单凑整手
+  // 已成交的奖励消耗，永久留在成交时的价组
+  for (const e of executions) {
+    const g = pools.get(e.groupKeyAtExecution)
+    if (g) g.usedProfitCents += e.rewardQty * e.priceCents
+  }
+
   for (const g of pools.values()) {
     g.capacityHands = Math.floor(Math.max(0, g.grossProfitCents - g.usedProfitCents) / g.lotCostCents)
     let left = g.capacityHands
@@ -330,9 +377,13 @@ function computeGroups(sells: SellExecution[], orders: RebuyOrder[]): Map<string
       .filter((o) => o.groupKey === g.groupKey && (o.status === 'open' || o.status === 'partial'))
       .sort((a, b) => a.createdAt - b.createdAt)
     for (const o of groupOrders) {
-      if (left <= 0) break
+      const keep = Math.floor(o.doneRewardQty / 100) // 已成交不可撤
+      if (left <= 0) {
+        o.rewardQty = keep * 100
+        continue
+      }
       const grant = Math.min(left, g.capacityHands)
-      o.rewardQty = grant * 100
+      o.rewardQty = (keep + grant) * 100
       left -= grant
     }
     g.grantedHands = g.capacityHands - left

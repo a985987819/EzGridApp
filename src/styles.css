@@ -292,3 +292,12 @@ button { font-family: inherit; }
 .type-toggle > * { flex: 1; justify-content: center; }
 
 .grow { flex: 1; min-width: 0; }
+
+/* ---------- 修复：卡片会裁掉下拉/浮层 ----------
+   库的 Card 带 overflow:hidden（给花纹用的），下拉菜单被裁在卡片里，
+   手机上点「涨跌幅规则」看不到选项。这里放开卡片裁剪，并限制浮层不超出视口。 */
+[class*='animal-card'] { overflow: visible; }
+[class*='animal-dropdown'] {
+  max-width: calc(100vw - 20px);
+  z-index: 60;
+}
