@@ -1,6 +1,6 @@
-import { Fragment, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
+import { Button, Card, Drawer, Input, Modal, Select, Switch, Tag, notificationOpen } from 'animal-island-ui'
 import { useApp } from '../store/useApp'
-import { centsToYuan } from '../domain/money'
 import { serialToIso } from '../domain/defaults'
 import { EDITABLE, fieldText, type EditableKey } from '../domain/edit'
 import { isoDate, money, price, qty, signedMoney, tone } from '../ui/format'
@@ -14,6 +14,15 @@ interface Row {
   lot: Lot | null
   sell: SellExecution | null
 }
+
+const STATUS_OPTIONS: { key: StatusFilter; label: string }[] = [
+  { key: 'all', label: '全部状态' },
+  { key: 'holding', label: '还有剩余持仓' },
+  { key: 'soldout', label: '已卖完' },
+  { key: 'pending', label: '待回补' },
+  { key: 'dateMissing', label: '缺卖出日期' },
+  { key: 'needsPrice', label: '缺价格' },
+]
 
 const BLANK_DRAFT = Object.fromEntries(EDITABLE.map((f) => [f.key, ''])) as Record<EditableKey, string>
 
@@ -29,12 +38,10 @@ export function TradesPage({
   const [status, setStatus] = useState<StatusFilter>('all')
   const [keyword, setKeyword] = useState('')
   const [priceFilter, setPriceFilter] = useState<number | null>(focus?.priceCents ?? null)
-  const [editing, setEditing] = useState<number | null>(null)
-  const [draft, setDraft] = useState<Record<EditableKey, string>>(BLANK_DRAFT)
-  const [expanded, setExpanded] = useState<number | null>(null)
   const [showDeleted, setShowDeleted] = useState(false)
-  const [msg, setMsg] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [openRow, setOpenRow] = useState<number | null>(null)
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState<Record<EditableKey, string>>(BLANK_DRAFT)
   const [adding, setAdding] = useState(false)
   const [form, setForm] = useState({ stockName: '', buyDate: '', buyPrice: '', buyQty: '', targetPrice: '' })
 
@@ -48,351 +55,387 @@ export function TradesPage({
       .sort((a, b) => b.rec.sourceRow - a.rec.sourceRow)
   }, [records, ledger])
 
-  const filtered = useMemo(() => {
-    return rows.filter((r) => {
-      if (!showDeleted && r.rec.deletedAt) return false
-      if (stockFilter !== 'all' && r.rec.stockName !== stockFilter) return false
-      if (keyword && !String(r.rec.sourceRow).includes(keyword) && !r.rec.stockName.includes(keyword)) return false
-      if (priceFilter !== null) {
-        const prices = [
-          r.rec.targetPriceCents,
-          r.rec.buyPriceCents,
-          r.sell?.priceCents ?? null,
-          r.rec.earlyBuyPriceCents,
-        ]
-        if (!prices.includes(priceFilter)) return false
-      }
-      switch (status) {
-        case 'holding':
-          return (r.lot?.remainingQty ?? 0) > 0
-        case 'soldout':
-          return r.sell !== null && (r.lot?.remainingQty ?? 0) === 0
-        case 'pending':
-          return r.sell?.rebuyStatus === 'pending'
-        case 'dateMissing':
-          return r.sell?.dateMissing === true
-        case 'needsPrice':
-          return (r.sell !== null && r.sell.priceCents === null) || r.lot?.needsPrice === true
-        default:
-          return true
-      }
-    })
-  }, [rows, stockFilter, keyword, priceFilter, status, showDeleted])
+  const filtered = useMemo(
+    () =>
+      rows.filter((r) => {
+        if (!showDeleted && r.rec.deletedAt) return false
+        if (stockFilter !== 'all' && r.rec.stockName !== stockFilter) return false
+        if (keyword && !String(r.rec.sourceRow).includes(keyword) && !r.rec.stockName.includes(keyword)) return false
+        if (priceFilter !== null) {
+          const prices = [r.rec.targetPriceCents, r.rec.buyPriceCents, r.sell?.priceCents ?? null, r.rec.earlyBuyPriceCents]
+          if (!prices.includes(priceFilter)) return false
+        }
+        switch (status) {
+          case 'holding':
+            return (r.lot?.remainingQty ?? 0) > 0
+          case 'soldout':
+            return r.sell !== null && (r.lot?.remainingQty ?? 0) === 0
+          case 'pending':
+            return r.sell?.rebuyStatus === 'pending'
+          case 'dateMissing':
+            return r.sell?.dateMissing === true
+          case 'needsPrice':
+            return (r.sell !== null && r.sell.priceCents === null) || r.lot?.needsPrice === true
+          default:
+            return true
+        }
+      }),
+    [rows, stockFilter, keyword, priceFilter, status, showDeleted],
+  )
 
-  function startEdit(r: Row) {
+  const current = filtered.find((r) => r.rec.sourceRow === openRow) ?? null
+
+  function open(r: Row) {
     const next = { ...BLANK_DRAFT }
     for (const f of EDITABLE) next[f.key] = fieldText(r.rec, f.key)
     setDraft(next)
-    setEditing(r.rec.sourceRow)
-    setError(null)
-    setMsg(null)
-    setExpanded(null)
+    setEditing(false)
+    setOpenRow(r.rec.sourceRow)
   }
 
-  async function save(row: number) {
+  async function save() {
+    if (openRow === null) return
     try {
-      const n = await editRecord(row, draft)
-      setMsg(n === 0 ? '没有改动' : `已保存，${n} 个字段写入变更历史`)
-      setError(null)
-      setEditing(null)
+      const n = await editRecord(openRow, draft)
+      setEditing(false)
+      notificationOpen({
+        message: n === 0 ? '没有改动' : '已保存',
+        description: n === 0 ? undefined : `${n} 个字段进入变更历史`,
+        type: n === 0 ? 'info' : 'success',
+      })
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      notificationOpen({ message: '保存失败', description: e instanceof Error ? e.message : String(e), type: 'error' })
     }
   }
 
   async function onDelete(row: number) {
-    if (!window.confirm(`把第 ${row} 行标记为删除？软删除，可恢复，且会记入变更历史。`)) return
+    if (!window.confirm(`把第 ${row} 行标记为删除？软删除，可恢复。`)) return
     await softDelete(row)
-    setMsg(`第 ${row} 行已软删除`)
-    setExpanded(null)
+    setOpenRow(null)
+    notificationOpen({ message: `第 ${row} 行已删除`, description: '勾「显示已删除」可以恢复', type: 'info' })
   }
 
   async function onRestore(row: number) {
     await restore(row)
-    setMsg(`第 ${row} 行已恢复`)
+    notificationOpen({ message: `第 ${row} 行已恢复`, type: 'success' })
   }
 
   async function onAdd() {
     try {
-      if (!form.stockName) throw new Error('请选择股票')
       const row = await addManualRecord(form)
-      setMsg(`已新增第 ${row} 行`)
-      setError(null)
       setAdding(false)
       setForm({ stockName: '', buyDate: '', buyPrice: '', buyQty: '', targetPrice: '' })
+      notificationOpen({ message: `已新增第 ${row} 行`, type: 'success' })
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      notificationOpen({ message: '新增失败', description: e instanceof Error ? e.message : String(e), type: 'error' })
     }
   }
 
   function exportCsv() {
-    const head = ['行号', '来源', '股票', '买入日期', '买入价', '买入份额', '已卖', '剩余', '目标售价', '回补价', '卖出日期', '成交价', '实现盈利', '回补状态', '标记']
+    const head = ['行号', '来源', '股票', '买入日期', '买入价', '买入份额', '已卖', '剩余', '目标售价', '回补价', '卖出日期', '成交价', '实现盈利', '标记']
     const body = filtered.map((r) => [
       r.rec.sourceRow,
       r.rec.origin === 'manual' ? '手动' : 'Excel',
       r.rec.stockName,
       r.lot ? isoDate(r.lot.buyDate) : serialToIso(r.rec.buyDateSerial) ?? '',
-      r.rec.buyPriceCents === null ? '' : centsToYuan(r.rec.buyPriceCents),
+      r.rec.buyPriceCents === null ? '' : (r.rec.buyPriceCents / 100).toFixed(2),
       r.lot?.qty ?? r.rec.buyQtyRaw ?? '',
       r.rec.soldQty ?? '',
       r.lot?.remainingQty ?? '',
-      r.lot?.targetPriceCents === null || r.lot?.targetPriceCents === undefined ? '' : centsToYuan(r.lot.targetPriceCents),
-      r.rec.earlyBuyPriceCents === null ? '' : centsToYuan(r.rec.earlyBuyPriceCents),
+      r.lot?.targetPriceCents == null ? '' : (r.lot.targetPriceCents / 100).toFixed(2),
+      r.rec.earlyBuyPriceCents === null ? '' : (r.rec.earlyBuyPriceCents / 100).toFixed(2),
       r.sell?.soldAt ?? '',
-      r.sell?.priceCents === null || r.sell?.priceCents === undefined ? '' : centsToYuan(r.sell.priceCents),
-      r.sell?.profitCents === null || r.sell?.profitCents === undefined ? '' : (r.sell.profitCents / 100).toFixed(2),
-      r.sell ? (r.sell.rebuyStatus === 'pending' ? '待回补' : '已回补') : '',
-      [r.sell?.sellBeforeBuy ? '先卖后买' : '', r.sell?.dateMissing ? '缺日期' : '', r.rec.deletedAt ? '已删除' : ''].filter(Boolean).join(' '),
+      r.sell?.priceCents == null ? '' : (r.sell.priceCents / 100).toFixed(2),
+      r.sell?.profitCents == null ? '' : (r.sell.profitCents / 100).toFixed(2),
+      [r.sell?.rebuyStatus === 'pending' ? '待回补' : '', r.sell?.sellBeforeBuy ? '先卖后买' : '', r.rec.deletedAt ? '已删除' : '']
+        .filter(Boolean)
+        .join(' '),
     ])
     downloadText('交易明细.csv', toCsv([head, ...body]), 'text/csv;charset=utf-8')
   }
 
-  const cellInput = (key: EditableKey, kind: 'money' | 'qty' | 'date') => (
-    <input
-      className={`cell${kind === 'date' ? ' text' : ''}`}
-      data-field={key}
-      value={draft[key]}
-      placeholder={kind === 'date' ? 'YYYY-MM-DD' : kind === 'qty' ? '股' : '元'}
-      onChange={(e) => setDraft({ ...draft, [key]: e.target.value })}
-    />
-  )
-
   return (
-    <>
-      <div className="page-head">
-        <div>
-          <h2>明细</h2>
-          <p>
-            {filtered.length} / {rows.length} 行 · 一行 = 一个买入批次；改任一字段都会重算清单、并写入变更历史
-          </p>
-        </div>
-        <div className="row">
-          <button className="btn primary sm" onClick={() => setAdding((v) => !v)}>
-            {adding ? '收起新增' : '新增一笔'}
-          </button>
-          <button className="btn ghost sm" onClick={exportCsv}>
-            导出当前筛选 CSV
-          </button>
-        </div>
+    <div className="stack">
+      <div className="page-title">
+        <h2>明细</h2>
+        <p>{filtered.length} / {rows.length} 行</p>
       </div>
 
-      {adding && (
-        <div className="card">
-          <header>
-            <h3>新增一笔</h3>
-            <span className="hint">行号从 100000 起，标明「手动」，不影响 Excel 行号回溯</span>
-          </header>
-          <div className="body">
-            <div className="row">
-              <label className="field">
-                股票
-                <select
-                  value={form.stockName}
-                  onChange={(e) => setForm({ ...form, stockName: e.target.value })}
-                >
-                  <option value="">选择…</option>
-                  {stocks.map((s) => (
-                    <option key={s.id} value={s.name}>{s.name}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="field">
-                买入日期
-                <input value={form.buyDate} placeholder="2026-10-23" onChange={(e) => setForm({ ...form, buyDate: e.target.value })} />
-              </label>
-              <label className="field">
-                买入价
-                <input value={form.buyPrice} placeholder="8.01" onChange={(e) => setForm({ ...form, buyPrice: e.target.value })} />
-              </label>
-              <label className="field">
-                买入份额
-                <input value={form.buyQty} placeholder="700" onChange={(e) => setForm({ ...form, buyQty: e.target.value })} />
-              </label>
-              <label className="field">
-                目标售价
-                <input value={form.targetPrice} placeholder="8.58" onChange={(e) => setForm({ ...form, targetPrice: e.target.value })} />
-              </label>
-              <button className="btn primary" onClick={() => void onAdd()}>保存</button>
-            </div>
+      <Card>
+        <div className="stack tight">
+          <div className="row nowrap">
+            <Select
+              options={[{ key: 'all', label: '全部股票' }, ...stockNames.map((s) => ({ key: s, label: s }))]}
+              value={stockFilter}
+              onChange={setStockFilter}
+              aria-label="按股票筛选"
+            />
+            <Select
+              options={STATUS_OPTIONS.map((o) => ({ key: o.key, label: o.label }))}
+              value={status}
+              onChange={(v) => setStatus(v as StatusFilter)}
+              aria-label="按状态筛选"
+            />
           </div>
-        </div>
-      )}
-
-      <div className="card">
-        <div className="body">
+          <div className="row nowrap">
+            <Input
+              value={keyword}
+              onChange={(e) => setKeyword(e.target.value)}
+              placeholder="搜股票名 / 行号"
+              allowClear
+              onClear={() => setKeyword('')}
+              aria-label="搜索"
+            />
+            {priceFilter !== null && (
+              <Button
+                size="small"
+                onClick={() => {
+                  setPriceFilter(null)
+                  onClearFocus()
+                }}
+              >
+                {(priceFilter / 100).toFixed(2)} ×
+              </Button>
+            )}
+          </div>
           <div className="row">
-            <label className="field">
-              股票
-              <select value={stockFilter} onChange={(e) => setStockFilter(e.target.value)}>
-                <option value="all">全部</option>
-                {stockNames.map((s) => (
-                  <option key={s} value={s}>{s}</option>
-                ))}
-              </select>
-            </label>
-            <label className="field">
-              状态
-              <select value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)}>
-                <option value="all">全部</option>
-                <option value="holding">还有剩余持仓</option>
-                <option value="soldout">已卖完</option>
-                <option value="pending">待回补</option>
-                <option value="dateMissing">缺卖出日期</option>
-                <option value="needsPrice">缺价格</option>
-              </select>
-            </label>
-            <label className="field">
-              关键词
-              <input value={keyword} onChange={(e) => setKeyword(e.target.value)} placeholder="股票名 / 行号" />
-            </label>
-            <label className="row" style={{ fontSize: 12.5, color: 'var(--muted)', gap: 6 }}>
-              <input type="checkbox" checked={showDeleted} onChange={(e) => setShowDeleted(e.target.checked)} />
+            <label className="row" style={{ gap: 6, fontSize: 12 }}>
+              <Switch size="small" checked={showDeleted} onChange={setShowDeleted} aria-label="显示已删除" />
               显示已删除
             </label>
-            {priceFilter !== null && (
-              <button className="btn sm" onClick={() => { setPriceFilter(null); onClearFocus() }}>
-                价格 {(priceFilter / 100).toFixed(2)} ×
-              </button>
-            )}
             <div className="spacer" />
-            {msg && <span className="tag ok">{msg}</span>}
-            {error && <span className="err">{error}</span>}
+            <Button size="small" onClick={exportCsv}>导出 CSV</Button>
           </div>
+          <Button block type="primary" onClick={() => setAdding(true)}>新增一笔</Button>
         </div>
-      </div>
+      </Card>
 
-      <div className="card">
-        <div className="body tight" style={{ overflowX: 'auto' }}>
-          <table className="grid">
-            <thead>
-              <tr>
-                <th>行</th>
-                <th className="l">股票</th>
-                <th>买入日期</th>
-                <th>买入价</th>
-                <th>份额</th>
-                <th>已卖</th>
-                <th>剩余</th>
-                <th>目标价</th>
-                <th>回补价</th>
-                <th>卖出日期</th>
-                <th>成交价</th>
-                <th>实现盈利</th>
-                <th className="l">标记</th>
-                <th className="l">操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((r) => {
-                const isEditing = editing === r.rec.sourceRow
-                const deleted = Boolean(r.rec.deletedAt)
-                return (
-                  <Fragment key={r.rec.sourceRow}>
-                    <tr data-row={r.rec.sourceRow} style={deleted ? { opacity: 0.45 } : undefined}>
-                      <td className="num muted">
-                        {r.rec.origin === 'manual' ? '手动' : r.rec.sourceRow}
-                        {r.rec.editedAt && <span className="edited-dot" title="改过" />}
-                      </td>
-                      <td className="l">{r.rec.stockName}</td>
-                      <td className="num">{isEditing ? cellInput('buyDate', 'date') : (r.lot ? isoDate(r.lot.buyDate) : serialToIso(r.rec.buyDateSerial) ?? '—')}</td>
-                      <td className="num">
-                        {isEditing
-                          ? cellInput('buyPrice', 'money')
-                          : price(r.rec.buyPriceCents)}
-                      </td>
-                      <td className="num">{isEditing ? cellInput('buyQty', 'qty') : qty(r.lot?.qty ?? r.rec.buyQtyRaw)}</td>
-                      <td className="num">{isEditing ? cellInput('soldQty', 'qty') : qty(r.rec.soldQty)}</td>
-                      <td className="num">{r.lot ? qty(r.lot.remainingQty) : '—'}</td>
-                      <td className="num">
-                        {isEditing
-                          ? cellInput('targetPrice', 'money')
-                          : price(r.lot?.targetPriceCents ?? r.rec.targetPriceCents)}
-                      </td>
-                      <td className="num">
-                        {isEditing ? cellInput('earlyBuyPrice', 'money') : price(r.rec.earlyBuyPriceCents)}
-                      </td>
-                      <td className="num">{isEditing ? cellInput('sellDate', 'date') : (r.sell ? isoDate(r.sell.soldAt) : '—')}</td>
-                      <td className="num">{price(r.sell?.priceCents)}</td>
-                      <td className={`num ${tone(r.sell?.profitCents ?? null)}`}>{signedMoney(r.sell?.profitCents ?? null)}</td>
-                      <td className="l">
-                        <span className="pill-row">
-                          {r.sell?.rebuyStatus === 'pending' && <span className="tag warn">待回补</span>}
-                          {r.sell?.sellBeforeBuy && <span className="tag">先卖后买</span>}
-                          {r.sell?.dateMissing && <span className="tag warn">缺日期</span>}
-                          {r.sell && r.sell.priceCents === null && <span className="tag bad">缺价格</span>}
-                          {deleted && <span className="tag bad">已删除</span>}
-                        </span>
-                      </td>
-                      <td className="l">
-                        <div className="row-actions">
-                          {isEditing ? (
-                            <>
-                              <button className="btn sm primary" onClick={() => void save(r.rec.sourceRow)}>保存</button>
-                              <button className="btn sm ghost" onClick={() => setEditing(null)}>取消</button>
-                            </>
-                          ) : deleted ? (
-                            <button className="btn sm ghost" onClick={() => void onRestore(r.rec.sourceRow)}>恢复</button>
-                          ) : (
-                            <>
-                              <button className="btn sm" onClick={() => startEdit(r)}>编辑</button>
-                              <button
-                                className="btn sm ghost"
-                                onClick={() => setExpanded(expanded === r.rec.sourceRow ? null : r.rec.sourceRow)}
-                              >
-                                历史
-                              </button>
-                              <button className="btn sm ghost" onClick={() => void onDelete(r.rec.sourceRow)}>删除</button>
-                            </>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                    {expanded === r.rec.sourceRow && (
-                      <tr className="subrow">
-                        <td className="l" colSpan={14}>
-                          {(() => {
-                            const list = historyOf(r.rec.sourceRow)
-                            if (list.length === 0) return <span className="muted">还没有变更记录</span>
-                            return (
-                              <ul className="hist">
-                                {list.map((a, i) => (
-                                  <li key={a.id ?? i}>
-                                    <span className="t mono">{new Date(a.at).toLocaleString('zh-CN', { hour12: false })}</span>
-                                    <span className="f">{a.field}</span>：{a.oldValue} → {a.newValue}
-                                    <span className="muted">（{a.source}）</span>
-                                  </li>
-                                ))}
-                              </ul>
-                            )
-                          })()}
-                        </td>
-                      </tr>
-                    )}
-                  </Fragment>
-                )
-              })}
-              {filtered.length === 0 && (
-                <tr>
-                  <td className="l muted" colSpan={14} style={{ textAlign: 'center', padding: 24 }}>
-                    没有匹配的行
-                  </td>
-                </tr>
+      {filtered.length === 0 ? (
+        <Card>
+          <div className="empty-box">没有匹配的行</div>
+        </Card>
+      ) : (
+        filtered.map((r) => {
+          const deleted = Boolean(r.rec.deletedAt)
+          return (
+            <Card
+              key={r.rec.sourceRow}
+              hoverable
+              onClick={() => open(r)}
+              className={`trade-item${deleted ? ' deleted' : ''}`}
+              data-row={r.rec.sourceRow}
+            >
+              <div className="head">
+                <Tag size="small" variant="soft">{r.rec.origin === 'manual' ? '手动' : `行 ${r.rec.sourceRow}`}</Tag>
+                <span className="name">{r.rec.stockName}</span>
+                <div className="spacer" />
+                <span className={`profit ${tone(r.sell?.profitCents ?? null)}`}>
+                  {r.sell ? signedMoney(r.sell.profitCents) : '—'}
+                </span>
+              </div>
+              <div className="mid">
+                <span className="path num">
+                  {r.rec.buyPriceCents !== null ? `买 ${price(r.rec.buyPriceCents)}` : '无买入批次'}
+                  {r.lot ? ` × ${qty(r.lot.qty)}` : r.rec.soldQty ? ` · 卖 ${qty(r.rec.soldQty)}` : ''}
+                  {' → '}
+                  目标 {price(r.lot?.targetPriceCents ?? r.rec.targetPriceCents)}
+                </span>
+                <span className="tiny muted num">
+                  {r.lot ? `剩余 ${qty(r.lot.remainingQty)}` : r.rec.soldQty ? `已卖 ${qty(r.rec.soldQty)}` : ''}
+                </span>
+              </div>
+              <div className="tag-row">
+                {r.sell?.rebuyStatus === 'pending' && <Tag size="small" variant="soft" color="app-orange">待回补</Tag>}
+                {r.sell?.sellBeforeBuy && <Tag size="small" variant="soft" color="app-teal">先卖后买</Tag>}
+                {r.sell?.dateMissing && <Tag size="small" variant="soft" color="app-yellow">缺日期</Tag>}
+                {r.sell && r.sell.priceCents === null && <Tag size="small" variant="soft" color="app-red">缺价格</Tag>}
+                {r.rec.editedAt && <Tag size="small" variant="soft" color="purple">改过</Tag>}
+                {deleted && <Tag size="small" variant="soft" color="app-red">已删除</Tag>}
+              </div>
+            </Card>
+          )
+        })
+      )}
+
+      <p className="tiny muted" style={{ textAlign: 'center' }}>
+        共 {filtered.length} 行 · 合计盈利 {money(filtered.reduce((a, r) => a + (r.sell?.profitCents ?? 0), 0))}
+      </p>
+
+      <Drawer
+        open={current !== null}
+        placement="bottom"
+        height="84vh"
+        title={current ? `${current.rec.stockName} · ${current.rec.origin === 'manual' ? '手动' : `第 ${current.rec.sourceRow} 行`}` : ''}
+        onClose={() => setOpenRow(null)}
+        footer={
+          current ? (
+            <div className="row nowrap" style={{ gap: 8 }}>
+              {editing ? (
+                <>
+                  <Button type="primary" style={{ flex: 1 }} onClick={() => void save()}>保存</Button>
+                  <Button onClick={() => setEditing(false)}>取消</Button>
+                </>
+              ) : (
+                <>
+                  <Button type="primary" style={{ flex: 1 }} onClick={() => setEditing(true)}>编辑</Button>
+                  {current.rec.deletedAt ? (
+                    <Button onClick={() => void onRestore(current.rec.sourceRow)}>恢复</Button>
+                  ) : (
+                    <Button danger onClick={() => void onDelete(current.rec.sourceRow)}>删除</Button>
+                  )}
+                </>
               )}
-            </tbody>
-            <tfoot>
-              <tr>
-                <td className="l" colSpan={4}>合计 {filtered.length} 行</td>
-                <td className="num">{qty(filtered.reduce((a, r) => a + (r.lot?.qty ?? 0), 0))}</td>
-                <td className="num">{qty(filtered.reduce((a, r) => a + (r.rec.soldQty ?? 0), 0))}</td>
-                <td className="num">{qty(filtered.reduce((a, r) => a + (r.lot?.remainingQty ?? 0), 0))}</td>
-                <td colSpan={4} />
-                <td className="num">{money(filtered.reduce((a, r) => a + (r.sell?.profitCents ?? 0), 0))}</td>
-                <td colSpan={2} />
-              </tr>
-            </tfoot>
-          </table>
+            </div>
+          ) : null
+        }
+      >
+        {current && (
+          <div className="stack">
+            {editing ? (
+              <div className="form-grid">
+                {EDITABLE.map((f) => (
+                  <label key={f.key}>
+                    <span>{f.label}</span>
+                    <Input
+                      value={draft[f.key]}
+                      placeholder={f.kind === 'date' ? 'YYYY-MM-DD' : f.kind === 'qty' ? '股数' : '元'}
+                      onChange={(e) => setDraft({ ...draft, [f.key]: e.target.value })}
+                      data-field={f.key}
+                    />
+                  </label>
+                ))}
+                <p className="tiny muted" style={{ margin: 0 }}>
+                  成交价由 E 列（目标售价）决定；成本优先取买入价，无批次时取 P 列。
+                </p>
+              </div>
+            ) : (
+              <>
+                <div className="detail-kv">
+                  <div className="item">
+                    <div className="k">买入日期</div>
+                    <div className="v">{isoDate(current.lot?.buyDate ?? serialToIso(current.rec.buyDateSerial))}</div>
+                  </div>
+                  <div className="item">
+                    <div className="k">买入价 / 份额</div>
+                    <div className="v">
+                      {price(current.rec.buyPriceCents)} / {qty(current.lot?.qty ?? current.rec.buyQtyRaw)}
+                    </div>
+                  </div>
+                  <div className="item">
+                    <div className="k">目标售价</div>
+                    <div className="v">{price(current.lot?.targetPriceCents ?? current.rec.targetPriceCents)}</div>
+                  </div>
+                  <div className="item">
+                    <div className="k">回补价 P</div>
+                    <div className="v">{price(current.rec.earlyBuyPriceCents)}</div>
+                  </div>
+                  <div className="item">
+                    <div className="k">已卖 / 剩余</div>
+                    <div className="v">
+                      {qty(current.rec.soldQty)} / {current.lot ? qty(current.lot.remainingQty) : '—'}
+                    </div>
+                  </div>
+                  <div className="item">
+                    <div className="k">成交价</div>
+                    <div className="v">{price(current.sell?.priceCents)}</div>
+                  </div>
+                  <div className="item">
+                    <div className="k">卖出日期</div>
+                    <div className="v">{current.sell ? isoDate(current.sell.soldAt) : '—'}</div>
+                  </div>
+                  <div className="item">
+                    <div className="k">实现盈利</div>
+                    <div className={`v ${tone(current.sell?.profitCents ?? null)}`}>
+                      {signedMoney(current.sell?.profitCents)}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="tag-row">
+                  {current.sell?.rebuyStatus === 'pending' && <Tag size="small" variant="soft" color="app-orange">待回补</Tag>}
+                  {current.sell?.sellBeforeBuy && <Tag size="small" variant="soft" color="app-teal">先卖后买</Tag>}
+                  {current.sell?.dateMissing && <Tag size="small" variant="soft" color="app-yellow">缺日期</Tag>}
+                  {current.sell && current.sell.priceCents === null && <Tag size="small" variant="soft" color="app-red">缺价格</Tag>}
+                  {current.rec.deletedAt && <Tag size="small" variant="soft" color="app-red">已删除</Tag>}
+                </div>
+
+                <div>
+                  <div className="row" style={{ marginBottom: 6 }}>
+                    <strong style={{ fontSize: 13 }}>变更历史</strong>
+                    <div className="spacer" />
+                    <span className="tiny muted">{historyOf(current.rec.sourceRow).length} 条</span>
+                  </div>
+                  {historyOf(current.rec.sourceRow).length === 0 ? (
+                    <p className="tiny muted" style={{ margin: 0 }}>还没改过</p>
+                  ) : (
+                    <ul className="hist-list">
+                      {historyOf(current.rec.sourceRow).map((a, i) => (
+                        <li key={a.id ?? i}>
+                          <span className="when mono">
+                            {new Date(a.at).toLocaleString('zh-CN', {
+                              hour12: false,
+                              month: '2-digit',
+                              day: '2-digit',
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })}
+                          </span>
+                          <span className="field">{a.field}</span>
+                          <span>{a.oldValue} → {a.newValue}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+      </Drawer>
+
+      <Modal
+        open={adding}
+        title="新增一笔"
+        onClose={() => setAdding(false)}
+        footer={
+          <div className="row nowrap" style={{ gap: 8 }}>
+            <Button type="primary" style={{ flex: 1 }} onClick={() => void onAdd()}>保存</Button>
+            <Button onClick={() => setAdding(false)}>取消</Button>
+          </div>
+        }
+      >
+        <div className="form-grid">
+          <label>
+            <span>股票</span>
+            <Select
+              options={[{ key: '', label: '选择…' }, ...stocks.map((s) => ({ key: s.name, label: s.name }))]}
+              value={form.stockName}
+              onChange={(v) => setForm({ ...form, stockName: v })}
+              placeholder="选择股票"
+              aria-label="股票"
+            />
+          </label>
+          <label>
+            <span>买入日期</span>
+            <Input value={form.buyDate} placeholder="2026-10-23" onChange={(e) => setForm({ ...form, buyDate: e.target.value })} />
+          </label>
+          <label>
+            <span>买入价</span>
+            <Input value={form.buyPrice} placeholder="8.01" onChange={(e) => setForm({ ...form, buyPrice: e.target.value })} />
+          </label>
+          <label>
+            <span>买入份额</span>
+            <Input value={form.buyQty} placeholder="700" onChange={(e) => setForm({ ...form, buyQty: e.target.value })} />
+          </label>
+          <label>
+            <span>目标售价</span>
+            <Input value={form.targetPrice} placeholder="8.58" onChange={(e) => setForm({ ...form, targetPrice: e.target.value })} />
+          </label>
+          <p className="tiny muted" style={{ margin: 0 }}>
+            手动新增的行号从 100000 起，不打乱 Excel 行号回溯。
+          </p>
         </div>
-      </div>
-    </>
+      </Modal>
+    </div>
   )
 }

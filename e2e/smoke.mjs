@@ -1,6 +1,8 @@
 /**
- * 项目自带 E2E 冒烟：用本机 Chrome/Edge（CDP）走一遍「导入 → 校验 → 挂单 → 概览」主链路。
- * 用法： node e2e/smoke.mjs http://127.0.0.1:5183
+ * 项目自带 E2E 冒烟：用本机 Chrome/Edge（CDP）走一遍「导入 → 校验 → 挂单 → 明细编辑 → 删除恢复」主链路。
+ * 移动端视口 390×844。
+ *
+ *   node e2e/smoke.mjs http://127.0.0.1:5183
  */
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
@@ -38,7 +40,7 @@ const browser = spawn(
     '--no-default-browser-check',
     '--disable-gpu',
     '--disable-extensions',
-    '--window-size=1500,1000',
+    '--window-size=390,844',
     'about:blank',
   ],
   { stdio: 'ignore' },
@@ -48,9 +50,8 @@ const problems = []
 let ok = true
 
 function check(name, cond, extra = '') {
-  if (cond) {
-    console.log(`  PASS  ${name}`)
-  } else {
+  if (cond) console.log(`  PASS  ${name}`)
+  else {
     ok = false
     console.log(`  FAIL  ${name} ${extra}`)
   }
@@ -111,6 +112,12 @@ try {
   await send('Runtime.enable')
   await send('Log.enable')
   await send('Page.enable')
+  await send('Emulation.setDeviceMetricsOverride', {
+    width: 390,
+    height: 844,
+    deviceScaleFactor: 2,
+    mobile: true,
+  })
 
   const evaluate = async (expression) => {
     const r = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true })
@@ -130,113 +137,75 @@ try {
     }
   }
 
-  const clickNav = async (label) => {
+  const bodyText = () => evaluate(`document.body.innerText`)
+  const clickByText = (sel, text) =>
+    evaluate(`(() => {
+      const el = [...document.querySelectorAll(${JSON.stringify(sel)})].find(x => x.textContent.trim().includes(${JSON.stringify(text)}))
+      if (!el) return false
+      el.click(); return true
+    })()`)
+
+  const nav = async (key) => {
     const done = await evaluate(`(() => {
-      const b = [...document.querySelectorAll('.nav-item')].find(x => x.textContent.includes(${JSON.stringify(label)}))
+      const b = document.querySelector('button[data-nav="${key}"]')
       if (!b) return false
       b.click(); return true
     })()`)
-    await settle(3000)
+    await settle(2500)
     return done
   }
 
-  const bodyText = () => evaluate(`document.body.innerText`)
+  const closeDrawer = async () => {
+    await evaluate(`document.querySelector('[aria-label="关闭"]')?.click()`)
+    await sleep(500)
+  }
 
-  console.log(`\n[1] 首屏 ${BASE}`)
-  // Vite 在文件增删时会整页重载，偶发拿到空壳；这里最多重试 3 次
+  console.log(`\n[1] 首屏（移动端 390×844）${BASE}`)
   let text = ''
   for (let attempt = 0; attempt < 3; attempt += 1) {
     await send('Page.navigate', { url: `${BASE}/` })
     await settle()
     text = await bodyText()
-    if (text.includes('网格交易管理')) break
+    if (text.includes('网格交易')) break
     await sleep(1200)
   }
-  check('渲染出侧栏', text.includes('网格交易管理'))
-  check('空态提示', text.includes('还没有导入数据') || text.includes('概览'))
+  check('渲染出头部', text.includes('网格交易'))
+  check('底部导航 5 项', (await evaluate(`document.querySelectorAll('button[data-nav]').length`)) === 5)
+  check('空态引导', text.includes('还没有导入数据') || text.includes('去导入'))
+  check(
+    '没有横向溢出',
+    (await evaluate(`document.documentElement.scrollWidth <= window.innerWidth + 2`)) === true,
+    `scrollWidth=${await evaluate('document.documentElement.scrollWidth')}`,
+  )
 
-  console.log('\n[2] 导入页 → 载入内置示例')
-  check('切到导入页', await clickNav('导入'))
-  const clicked = await evaluate(`(() => {
-    const b = [...document.querySelectorAll('button')].find(x => x.textContent.includes('载入内置示例'))
-    if (!b) return false
-    b.click(); return true
-  })()`)
-  check('点到「载入内置示例」', clicked)
+  console.log('\n[2] 管理 · 导入 → 载入内置示例')
+  check('切到管理页', await nav('manage'))
+  check('导入 tab 默认展开', (await bodyText()).includes('载入内置示例'))
+  check('点到「载入内置示例」', await clickByText('button', '载入内置示例'))
   await sleep(2500)
   await settle()
   text = await bodyText()
-  check('dry-run 出现首股对象', text.includes('柳工'))
-  const pass = await evaluate(`document.body.innerText.split('✓').length - 1`)
-  const fail = await evaluate(`document.body.innerText.split('✗').length - 1`)
-  check('基准校验 16 项全过', pass >= 16 && fail === 0, `(✓${pass} ✗${fail})`)
+  check('dry-run 出现股票名', text.includes('柳工'))
+  check('基准 16 项全中', text.includes('16 项全中'))
   check('dry-run 命中 15,200', text.includes('15,200'))
-  check('dry-run 命中 13,200', text.includes('13,200'))
 
   console.log('\n[3] 写入本地 → 概览')
-  const committed = await evaluate(`(() => {
-    const b = [...document.querySelectorAll('button')].find(x => x.textContent.trim() === '写入本地')
-    if (!b) return false
-    b.click(); return true
-  })()`)
-  check('点到「写入本地」', committed)
+  check('点到「写入本地」', await clickByText('button', '写入本地'))
   await sleep(1500)
   await settle()
-  check('回到概览', await clickNav('概览'))
+  check('回到概览', await nav('overview'))
   text = await bodyText()
   check('三格：可卖 15,200', text.includes('15,200'))
   check('三格：待补 2,000', text.includes('2,000'))
   check('三格：净持仓 13,200', text.includes('13,200'))
-  check('基准全中徽章', text.includes('基准全中') || text.includes('基准 16/16'))
-  check('逐股票总账有 9,830', text.includes('9,830'))
+  check('头部基准全中', text.includes('基准全中'))
 
-  console.log('\n[4] 其余页面渲染')
-  for (const [label, expect] of [
-    ['明细', '明细'],
-    ['挂单', '挂单'],
-    ['股票', '默认间隔'],
-    ['统计', '月度成交'],
-    ['备份', '导出全量 JSON'],
-  ]) {
-    await clickNav(label)
-    const t = await bodyText()
-    check(`${label} 页渲染`, t.includes(expect), `text length=${t.length}`)
-  }
-
-  console.log('\n[5] 挂单页数值与区间')
-  await clickNav('挂单')
-  await evaluate(`(() => {
-    const input = [...document.querySelectorAll('input')].find(i => i.placeholder === '如 8.10')
-    if (!input) return false
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
-    setter.call(input, '8.10')
-    input.dispatchEvent(new Event('input', { bubbles: true }))
-    return true
-  })()`)
-  await sleep(600)
-  text = await bodyText()
-  check('昨收 8.10 → 区间 7.29~8.91', text.includes('7.29') && text.includes('8.91'))
-  check('待买清单有序号 63', text.includes('63'))
-  check('待买标注空头敞口', text.includes('空头敞口'))
-
-  console.log('\n[6] 概览按股票分页')
-  await clickNav('概览')
-  const tabs = await evaluate(`[...document.querySelectorAll('.tab')].map(t => t.textContent.trim())`)
-  check('4 个股票 tab', tabs.length === 4, JSON.stringify(tabs))
-  await evaluate(`(() => {
-    const t = [...document.querySelectorAll('.tab')].find(x => x.textContent.includes('三一重工'))
-    if (!t) return false
-    t.click(); return true
-  })()`)
+  console.log('\n[4] 概览按股票 tab + 价格网格列序')
+  check('切到三一重工', await clickByText('.stock-tabs > *', '三一重工'))
   await sleep(500)
   text = await bodyText()
-  check('切到三一重工，可卖 3,800', text.includes('3,800'))
-  check('三一网格出现', text.includes('20.78') || text.includes('19.88'))
-
-  await evaluate(`(() => {
-    const t = [...document.querySelectorAll('.tab')].find(x => x.textContent.includes('柳工'))
-    if (t) t.click()
-  })()`)
+  check('三一可卖 3,800', text.includes('3,800'))
+  await clickByText('.stock-tabs > *', '柳工')
   await sleep(400)
   const gridDump = await evaluate(`JSON.stringify(
     [...document.querySelectorAll('table.pricegrid')[0].querySelectorAll('tbody tr')]
@@ -245,22 +214,25 @@ try {
   console.log('  网格前 6 行:', gridDump)
   const cells = JSON.parse(gridDump)
   check('网格 4 列且第 2 列是价格', cells.every((c) => c.length === 4 && /^\d+\.\d{2}$/.test(c[1])))
-  check('网格第 3 列出现待卖股数', cells.some((c) => /股$/.test(c[2])))
-  check('网格第 4 列出现已卖出笔数', cells.some((c) => /笔/.test(c[3])))
+  check('第 3 列是待卖股数', cells.some((c) => /股$/.test(c[2])))
+  check('第 4 列是已卖出笔数', cells.some((c) => /笔/.test(c[3])))
 
-  console.log('\n[7] 明细：行内编辑 → 审计 → 删除 → 恢复')
-  await clickNav('明细')
-  const opened = await evaluate(`(() => {
-    const tr = document.querySelector('tr[data-row="63"]')
-    if (!tr) return false
-    const b = [...tr.querySelectorAll('button')].find(x => x.textContent.trim() === '编辑')
-    if (!b) return false
-    b.click(); return true
-  })()`)
-  check('打开第 63 行编辑态', opened)
-  await sleep(300)
+  console.log('\n[5] 明细：卡片 → 抽屉 → 编辑 → 保存')
+  check('切到明细', await nav('trades'))
+  check(
+    '点到第 63 行卡片',
+    await evaluate(`(() => {
+      const el = document.querySelector('[data-row="63"]')
+      if (!el) return false
+      el.click(); return true
+    })()`),
+  )
+  await sleep(700)
+  check('抽屉打开且有「变更历史」', (await bodyText()).includes('变更历史'))
+  check('点编辑', await clickByText('button', '编辑'))
+  await sleep(400)
   await evaluate(`(() => {
-    const input = document.querySelector('tr[data-row="63"] input[data-field="targetPrice"]')
+    const input = document.querySelector('input[data-field="targetPrice"]')
     if (!input) return false
     const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
     setter.call(input, '9.00')
@@ -268,73 +240,50 @@ try {
     return true
   })()`)
   await sleep(300)
-  const saved = await evaluate(`(() => {
-    const tr = document.querySelector('tr[data-row="63"]')
-    const b = [...tr.querySelectorAll('button')].find(x => x.textContent.trim() === '保存')
-    if (!b) return false
-    b.click(); return true
-  })()`)
-  check('点保存', saved)
-  await sleep(800)
+  check('点保存', await clickByText('button', '保存'))
+  await sleep(1000)
+  check('抽屉里能看到改成 9.00', (await bodyText()).includes('9.00'))
+  await closeDrawer()
+  await nav('overview')
   text = await bodyText()
-  check('保存后提示写入变更历史', text.includes('变更历史'))
-  const hist = await evaluate(`(() => {
-    const tr = document.querySelector('tr[data-row="63"]')
-    const b = [...tr.querySelectorAll('button')].find(x => x.textContent.trim() === '历史')
-    if (!b) return false
-    b.click(); return true
-  })()`)
-  await sleep(400)
-  text = await bodyText()
-  check('历史里能看到 目标售价 8.68 → 9.00', hist && text.includes('目标售价') && text.includes('9.00'))
-
-  await clickNav('概览')
-  text = await bodyText()
-  // 第 63 行是「先卖后买」行（无批次）：改目标价 = 改成交价，动的是实现盈利
   check('编辑后盈利重算为 ¥9,990', text.includes('9,990'))
 
-  await clickNav('明细')
-  const deleted = await evaluate(`(() => {
-    window.confirm = () => true
-    const tr = document.querySelector('tr[data-row="63"]')
-    const b = [...tr.querySelectorAll('button')].find(x => x.textContent.trim() === '删除')
-    if (!b) return false
-    b.click(); return true
-  })()`)
-  check('点删除（自动确认）', deleted)
-  await sleep(800)
-  await clickNav('概览')
+  console.log('\n[6] 删除 → 恢复')
+  await nav('trades')
+  await evaluate(`document.querySelector('[data-row="63"]')?.click()`)
+  await sleep(600)
+  await evaluate(`window.confirm = () => true`)
+  check('点删除', await clickByText('button', '删除'))
+  await sleep(900)
+  await nav('overview')
   text = await bodyText()
-  // 删掉一笔卖出：卖出股数 −500，净持仓 +500，敞口 −500
   check('删除后净持仓 13,700', text.includes('13,700'))
   check('删除后敞口 1,500', text.includes('1,500'))
 
-  await clickNav('明细')
-  const restored = await evaluate(`(() => {
-    const cb = [...document.querySelectorAll('input[type="checkbox"]')].find(x => x.closest('label')?.textContent.includes('显示已删除'))
-    if (cb && !cb.checked) cb.click()
-    return true
-  })()`)
-  await sleep(400)
-  const clickedRestore = await evaluate(`(() => {
-    const tr = document.querySelector('tr[data-row="63"]')
-    const b = tr && [...tr.querySelectorAll('button')].find(x => x.textContent.trim() === '恢复')
-    if (!b) return false
-    b.click(); return true
-  })()`)
-  check('恢复第 63 行', restored && clickedRestore)
+  await nav('trades')
+  check(
+    '打开「显示已删除」',
+    await evaluate(`(() => {
+      const sw = document.querySelector('[aria-label="显示已删除"]')
+      if (!sw) return false
+      sw.click(); return true
+    })()`),
+  )
+  await sleep(700)
+  await evaluate(`document.querySelector('[data-row="63"]')?.click()`)
   await sleep(600)
+  check('点恢复', await clickByText('button', '恢复'))
+  await sleep(800)
+  await closeDrawer()
 
-  console.log('\n[8] 把改动改回去（验证编辑可逆）')
+  // 把第 63 行改回 8.68，让最终截图回到「基准全中」
+  await nav('trades')
+  await evaluate(`document.querySelector('[data-row="63"]')?.click()`)
+  await sleep(600)
+  await clickByText('button', '编辑')
+  await sleep(400)
   await evaluate(`(() => {
-    const tr = document.querySelector('tr[data-row="63"]')
-    const b = [...tr.querySelectorAll('button')].find(x => x.textContent.trim() === '编辑')
-    if (!b) return false
-    b.click(); return true
-  })()`)
-  await sleep(300)
-  await evaluate(`(() => {
-    const input = document.querySelector('tr[data-row="63"] input[data-field="targetPrice"]')
+    const input = document.querySelector('input[data-field="targetPrice"]')
     if (!input) return false
     const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
     setter.call(input, '8.68')
@@ -342,24 +291,68 @@ try {
     return true
   })()`)
   await sleep(300)
-  await evaluate(`(() => {
-    const tr = document.querySelector('tr[data-row="63"]')
-    const b = [...tr.querySelectorAll('button')].find(x => x.textContent.trim() === '保存')
-    if (!b) return false
-    b.click(); return true
-  })()`)
-  await sleep(700)
-  await clickNav('概览')
+  await clickByText('button', '保存')
+  await sleep(900)
+  await closeDrawer()
+  await nav('overview')
   text = await bodyText()
   check('改回 8.68 后盈利回到 ¥9,830', text.includes('9,830') && !text.includes('9,990'))
-  check('改回后基准全中', text.includes('基准全中') || text.includes('基准 16/16'))
+  check('改回后基准全中', text.includes('基准全中'))
+
+  console.log('\n[7] 挂单页（区间 + 待买/待卖）')
+  check('切到挂单', await nav('orders'))
+  await evaluate(`(() => {
+    const input = document.querySelector('input[aria-label="昨收价"]')
+    if (!input) return false
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+    setter.call(input, '8.10')
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    return true
+  })()`)
+  await sleep(700)
+  text = await bodyText()
+  check('昨收 8.10 → 区间 7.29~8.91', text.includes('7.29') && text.includes('8.91'))
+  check('待买标注空头敞口', text.includes('空头敞口'))
+  check('有「待卖」tab', text.includes('待卖'))
+
+  console.log('\n[8] 其余页面渲染')
+  for (const [key, expect] of [
+    ['stats', '月度成交'],
+    ['manage', '导入批次'],
+  ]) {
+    await nav(key)
+    const t = await bodyText()
+    check(`${key} 渲染`, t.includes(expect), `text=${t.length}`)
+  }
 
   console.log('\n[9] 截图')
-  const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true })
-  writeFileSync(join(OUT, 'trades-v2.png'), Buffer.from(shot.data, 'base64'))
-  await clickNav('概览')
-  const shot2 = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true })
-  writeFileSync(join(OUT, 'overview.png'), Buffer.from(shot2.data, 'base64'))
+  for (const [key, file] of [
+    ['overview', 'mobile-overview.png'],
+    ['trades', 'mobile-trades.png'],
+    ['orders', 'mobile-orders.png'],
+    ['manage', 'mobile-manage.png'],
+  ]) {
+    await nav(key)
+    await sleep(500)
+    const shot = await send('Page.captureScreenshot', { format: 'png' })
+    writeFileSync(join(OUT, file), Buffer.from(shot.data, 'base64'))
+  }
+  // 抽屉截图（明细详情 + 编辑入口）
+  await nav('trades')
+  await evaluate(`document.querySelector('[data-row="63"]')?.click()`)
+  await sleep(700)
+  const drawerShot = await send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync(join(OUT, 'mobile-drawer.png'), Buffer.from(drawerShot.data, 'base64'))
+  await clickByText('button', '编辑')
+  await sleep(500)
+  const editShot = await send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync(join(OUT, 'mobile-drawer-edit.png'), Buffer.from(editShot.data, 'base64'))
+  await closeDrawer()
+
+  await nav('overview')
+  await sleep(500)
+  const full = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true })
+  writeFileSync(join(OUT, 'mobile-overview-full.png'), Buffer.from(full.data, 'base64'))
   console.log(`  截图已存 ${OUT}`)
 
   console.log('\n[10] 运行时错误')

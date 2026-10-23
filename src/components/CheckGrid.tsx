@@ -1,28 +1,27 @@
+import { Tag } from 'animal-island-ui'
 import type { CheckResult } from '../domain/types'
 
-export function CheckGrid({ checks, compact = false }: { checks: CheckResult[]; compact?: boolean }) {
+export function CheckList({ checks }: { checks: CheckResult[] }) {
   const failed = checks.filter((c) => !c.ok).length
   return (
     <div>
-      {!compact && (
-        <p className="note" style={{ marginTop: 0 }}>
-          {failed === 0 ? '全部命中' : `${failed} 项不符`} · {checks.length} 项基准
-        </p>
-      )}
-      <div className="checks">
-        {checks.map((c) => (
-          <div className="check" key={c.name}>
-            <div style={{ minWidth: 0 }}>
-              <div className="n">{c.name}</div>
-              {!c.ok && <span className="d">应为 {c.expected}</span>}
-              {c.ok && c.detail && <span className="d">{c.detail}</span>}
-            </div>
-            <span className="v" style={{ color: c.ok ? 'var(--jade)' : 'var(--accent)' }}>
-              {c.actual} {c.ok ? '✓' : '✗'}
-            </span>
-          </div>
-        ))}
+      <div className="row" style={{ marginBottom: 8 }}>
+        <Tag size="small" variant="soft" color={failed ? 'app-red' : 'app-green'}>
+          {failed === 0 ? `${checks.length} 项全中` : `${failed} 项不符`}
+        </Tag>
       </div>
+      {checks.map((c) => (
+        <div className="line" key={c.name}>
+          <div className="left">
+            <div className="t1" style={{ fontWeight: 500 }}>{c.name}</div>
+            {!c.ok && <div className="t2">应为 {c.expected}</div>}
+            {c.ok && c.detail && <div className="t2">{c.detail}</div>}
+          </div>
+          <div className="right num" style={{ color: c.ok ? 'var(--down)' : 'var(--up)', fontSize: 13 }}>
+            {c.actual} {c.ok ? '✓' : '✗'}
+          </div>
+        </div>
+      ))}
     </div>
   )
 }

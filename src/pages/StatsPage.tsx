@@ -1,3 +1,4 @@
+import { Card, Tag } from 'animal-island-ui'
 import { useApp } from '../store/useApp'
 import { money, qty, signedMoney, tone } from '../ui/format'
 
@@ -6,139 +7,132 @@ export function StatsPage() {
   const t = ledger.totals
 
   return (
-    <>
-      <div className="page-head">
-        <div>
-          <h2>统计</h2>
-          <p>按卖出日期归月；缺日期的单独一桶，不混入月度（R6）</p>
-        </div>
-        <span className="tag">实现盈利 {signedMoney(t.profitCents)}</span>
+    <div className="stack">
+      <div className="page-title">
+        <h2>统计</h2>
+        <p>按卖出日期归月，缺日期单列</p>
       </div>
 
-      <div className="card">
-        <header>
-          <h3>月度成交</h3>
-          <span className="hint">未扣佣金与印花税</span>
-        </header>
-        <div className="body tight">
-          <table className="grid">
-            <thead>
-              <tr>
-                <th className="l">月份</th>
-                <th>卖出笔数</th>
-                <th>卖出股数</th>
-                <th>卖出金额</th>
-                <th>实现盈利</th>
-                <th>收益率</th>
-              </tr>
-            </thead>
-            <tbody>
-              {ledger.monthly.map((m) => (
-                <tr key={m.month}>
-                  <td className="l">
-                    {m.month}
-                    {m.dateMissing && <span className="tag warn" style={{ marginLeft: 8 }}>待补日期</span>}
-                  </td>
-                  <td className="num">{m.sellCount}</td>
-                  <td className="num">{qty(m.sellQty)}</td>
-                  <td className="num">{money(m.sellAmountCents)}</td>
-                  <td className={`num ${tone(m.profitCents)}`}>{signedMoney(m.profitCents)}</td>
-                  <td className="num muted">
-                    {m.sellAmountCents ? `${((m.profitCents / m.sellAmountCents) * 100).toFixed(2)}%` : '—'}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-            <tfoot>
-              <tr>
-                <td className="l">合计</td>
-                <td className="num">{t.sellCount}</td>
-                <td className="num">{qty(t.sellQty)}</td>
-                <td className="num">{money(t.sellAmountCents)}</td>
-                <td className={`num ${tone(t.profitCents)}`}>{signedMoney(t.profitCents)}</td>
-                <td className="num muted">
-                  {t.sellAmountCents ? `${((t.profitCents / t.sellAmountCents) * 100).toFixed(2)}%` : '—'}
-                </td>
-              </tr>
-            </tfoot>
-          </table>
+      <Card>
+        <div className="metrics">
+          <div>
+            <div className="k">买入</div>
+            <div className="v" style={{ fontSize: 16 }}>{money(t.buyAmountCents)}</div>
+            <div className="s">{qty(t.buyQty)} 股</div>
+          </div>
+          <div>
+            <div className="k">卖出</div>
+            <div className="v" style={{ fontSize: 16 }}>{money(t.sellAmountCents)}</div>
+            <div className="s">{t.sellCount} 笔 / {qty(t.sellQty)} 股</div>
+          </div>
+          <div>
+            <div className="k">实现盈利</div>
+            <div className={`v ${tone(t.profitCents)}`} style={{ fontSize: 16 }}>{signedMoney(t.profitCents)}</div>
+            <div className="s">未扣费用</div>
+          </div>
         </div>
-      </div>
+      </Card>
 
-      <div className="card">
-        <header>
-          <h3>按股票</h3>
-          <span className="hint">买入 / 卖出 / 待卖 / 敞口</span>
-        </header>
-        <div className="body tight">
-          <table className="grid">
-            <thead>
-              <tr>
-                <th className="l">股票</th>
-                <th>买入股数</th>
-                <th>买入金额</th>
-                <th>卖出股数</th>
-                <th>卖出金额</th>
-                <th>实现盈利</th>
-                <th>待卖股数</th>
-                <th>待买股数</th>
-                <th>净持仓</th>
-              </tr>
-            </thead>
-            <tbody>
-              {ledger.byStock.map((s) => (
-                <tr key={s.stockName}>
-                  <td className="l">{s.stockName}</td>
-                  <td className="num">{qty(s.buyQty)}</td>
-                  <td className="num">{money(s.buyAmountCents)}</td>
-                  <td className="num">{qty(s.sellQty)}</td>
-                  <td className="num">{money(s.sellAmountCents)}</td>
-                  <td className={`num ${tone(s.profitCents)}`}>{signedMoney(s.profitCents)}</td>
-                  <td className="num">{qty(s.targetQty)}</td>
-                  <td className="num">{qty(s.rebuyQty)}</td>
-                  <td className="num">{qty(s.netQty)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <Card>
+        <div className="row" style={{ marginBottom: 4 }}>
+          <strong style={{ fontSize: 14 }}>月度成交</strong>
+          <div className="spacer" />
+          <span className="tiny muted">收益率 = 盈利 / 卖出额</span>
         </div>
-      </div>
+        {ledger.monthly.map((m) => (
+          <div key={m.month} className="line">
+            <div className="left">
+              <div className="t1">
+                {m.month}
+                {m.dateMissing && (
+                  <Tag size="small" variant="soft" color="app-yellow" style={{ marginLeft: 6 }}>
+                    待补日期
+                  </Tag>
+                )}
+              </div>
+              <div className="t2 num">{m.sellCount} 笔 · {qty(m.sellQty)} 股 · {money(m.sellAmountCents)}</div>
+            </div>
+            <div className="right">
+              <div className={`num ${tone(m.profitCents)}`} style={{ fontWeight: 700 }}>
+                {signedMoney(m.profitCents)}
+              </div>
+              <div className="tiny muted num">
+                {m.sellAmountCents ? `${((m.profitCents / m.sellAmountCents) * 100).toFixed(2)}%` : '—'}
+              </div>
+            </div>
+          </div>
+        ))}
+      </Card>
 
-      <div className="card">
-        <header>
-          <h3>组池（同股同回补价）</h3>
-          <span className="hint">R4 全部真实卖出入池，含已回补的</span>
-        </header>
-        <div className="body tight">
-          <table className="grid">
-            <thead>
-              <tr>
-                <th className="l">分组</th>
-                <th>组池盈利</th>
-                <th>每手成本</th>
-                <th>容量（手）</th>
-                <th>已授予（手）</th>
-                <th>未动用额度</th>
-              </tr>
-            </thead>
-            <tbody>
-              {ledger.groups.map((g) => (
-                <tr key={g.groupKey}>
-                  <td className="l mono" style={{ fontSize: 12 }}>{g.groupKey.replace('stock:', '')}</td>
-                  <td className={`num ${tone(g.grossProfitCents)}`}>{money(g.grossProfitCents)}</td>
-                  <td className="num">{money(g.lotCostCents)}</td>
-                  <td className="num">{g.capacityHands}</td>
-                  <td className="num">{g.grantedHands}</td>
-                  <td className="num">{money(g.availableCents)}</td>
-                </tr>
-              ))}
-              {ledger.groups.length === 0 && (
-                <tr><td colSpan={6} className="l muted" style={{ padding: 20 }}>没有可分配的组池</td></tr>
-              )}
-            </tbody>
-          </table>
+      <Card>
+        <div className="row" style={{ marginBottom: 4 }}>
+          <strong style={{ fontSize: 14 }}>按股票</strong>
         </div>
-      </div>
-    </>
+        {ledger.byStock.map((s) => (
+          <div key={s.stockName} className="line">
+            <div className="left" style={{ flex: 1 }}>
+              <div className="t1">
+                {s.stockName}
+                <span className="t2" style={{ marginLeft: 6, fontWeight: 400 }}>{s.rows} 行 · {s.sellCount} 笔</span>
+              </div>
+              <div className="grid-4" style={{ marginTop: 4, textAlign: 'left' }}>
+                <div>
+                  <div className="k">买</div>
+                  <div className="v" style={{ fontSize: 13 }}>{qty(s.buyQty)}</div>
+                </div>
+                <div>
+                  <div className="k">卖</div>
+                  <div className="v" style={{ fontSize: 13 }}>{qty(s.sellQty)}</div>
+                </div>
+                <div>
+                  <div className="k">待卖</div>
+                  <div className="v" style={{ fontSize: 13 }}>{qty(s.targetQty)}</div>
+                </div>
+                <div>
+                  <div className="k">净持仓</div>
+                  <div className="v" style={{ fontSize: 13 }}>{qty(s.netQty)}</div>
+                </div>
+              </div>
+            </div>
+            <div className="right">
+              <div className={`num ${tone(s.profitCents)}`} style={{ fontWeight: 700 }}>
+                {signedMoney(s.profitCents)}
+              </div>
+              {s.exposureQty > 0 && <div className="tiny" style={{ color: 'var(--up)' }}>敞口 {s.exposureQty}</div>}
+            </div>
+          </div>
+        ))}
+        <div className="line">
+          <div className="left t1">合计</div>
+          <div className={`right num ${tone(t.profitCents)}`} style={{ fontWeight: 700 }}>{signedMoney(t.profitCents)}</div>
+        </div>
+      </Card>
+
+      <Card>
+        <div className="row" style={{ marginBottom: 4 }}>
+          <strong style={{ fontSize: 14 }}>组池（同股同回补价）</strong>
+          <div className="spacer" />
+          <span className="tiny muted">R4 全部卖出入池</span>
+        </div>
+        {ledger.groups.length === 0 ? (
+          <div className="empty-box">没有可分配的组池</div>
+        ) : (
+          ledger.groups.map((g) => (
+            <div key={g.groupKey} className="line">
+              <div className="left">
+                <div className="t1 mono" style={{ fontSize: 12.5 }}>{g.groupKey.replace('stock:', '')}</div>
+                <div className="t2">
+                  每手 {money(g.lotCostCents)} · 容量 {g.capacityHands} 手 · 已授予 {g.grantedHands} 手
+                </div>
+              </div>
+              <div className="right">
+                <div className={`num ${tone(g.grossProfitCents)}`} style={{ fontWeight: 600 }}>{money(g.grossProfitCents)}</div>
+                <div className="tiny muted num">可动用 {money(g.availableCents)}</div>
+              </div>
+            </div>
+          ))
+        )}
+      </Card>
+    </div>
   )
 }

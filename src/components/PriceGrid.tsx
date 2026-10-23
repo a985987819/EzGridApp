@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
-import { useApp } from '../store/useApp'
 import { money, qty } from '../ui/format'
+import { useApp } from '../store/useApp'
 import type { StockSummary } from '../domain/types'
 
 interface Level {
@@ -11,7 +11,7 @@ interface Level {
   rebuyQty: number
 }
 
-/** 价格网格：左买（绿）中价右卖（红），价格从高到低（P12） */
+/** 价格网格：左买（绿）右卖（红），价格高 → 低（P12） */
 export function PriceGrid({
   stock,
   onPick,
@@ -48,16 +48,10 @@ export function PriceGrid({
     return [...map.values()].sort((a, b) => b.priceCents - a.priceCents)
   }, [ledger, stock.stockName])
 
-  if (levels.length === 0) return null
+  if (levels.length === 0) return <div className="empty-box">这只票还没有价格档位</div>
 
   return (
-    <div className="grid-stock">
-      <h4>
-        {stock.stockName}
-        <span className="sub">
-          可卖 {qty(stock.targetQty)} · 待补 {qty(stock.exposureQty)} · 净持仓 {qty(stock.netQty)}
-        </span>
-      </h4>
+    <>
       <table className="pricegrid">
         <thead>
           <tr>
@@ -69,20 +63,18 @@ export function PriceGrid({
         </thead>
         <tbody>
           {levels.map((l) => (
-            <tr key={l.priceCents} className="clickable" onClick={() => onPick(l.priceCents)}>
+            <tr key={l.priceCents} onClick={() => onPick(l.priceCents)}>
               <td className="c down">{l.rebuyQty ? `${qty(l.rebuyQty)} 股` : '—'}</td>
-              <td className="price">{(l.priceCents / 100).toFixed(2)}</td>
+              <td className="px">{(l.priceCents / 100).toFixed(2)}</td>
               <td className="c up">{l.targetQty ? `${qty(l.targetQty)} 股` : '—'}</td>
-              <td className="c muted">
-                {l.soldCount ? `${l.soldCount} 笔 / ${qty(l.soldQty)}` : '—'}
-              </td>
+              <td className="c muted">{l.soldCount ? `${l.soldCount} 笔 / ${qty(l.soldQty)}` : '—'}</td>
             </tr>
           ))}
         </tbody>
       </table>
-      <p className="note" style={{ margin: '6px 0 0' }}>
-        目标金额 {money(stock.targetAmountCents)} · 预期收益 {money(stock.expectProfitCents)} · 点任意价格跳到明细
+      <p className="tiny muted" style={{ margin: '8px 0 0' }}>
+        目标金额 {money(stock.targetAmountCents)} · 预期收益 {money(stock.expectProfitCents)} · 点价格看明细
       </p>
-    </div>
+    </>
   )
 }
