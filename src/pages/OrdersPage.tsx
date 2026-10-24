@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { Button, Card, Input, Modal, Select, Tag, notificationOpen } from 'animal-island-ui'
 import { useApp } from '../store/useApp'
 import { activeStocks } from '../domain/stocks'
-import { LIMIT_PCT, limitRange } from '../domain/limit'
+import { limitRange } from '../domain/limit'
 import { toCents } from '../domain/money'
 import { buildNanoIdIndex } from '../ui/nanoid'
 import { downloadText, toCsv } from '../ui/csv'
@@ -44,14 +44,6 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
   const confirmed = confirmedCents != null ? { stock: effectiveStock, closeCents: confirmedCents } : null
   const ov = ordersSession.overrides[effectiveStock]
   const limitOverride = ov ? { stock: effectiveStock, up: ov.up, down: ov.down } : null
-
-  const limitLabel = !cfg
-    ? '未配置'
-    : cfg.priceLimitType === 'custom'
-      ? `自定义 ${cfg.customLimitPct ?? 0}%`
-      : cfg.priceLimitType === 'unknown'
-        ? '未设置'
-        : `${LIMIT_PCT[cfg.priceLimitType]}%`
 
   const computedRange =
     confirmedCents != null
@@ -302,49 +294,45 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
             <Button type="primary" onClick={confirmClose}>确认</Button>
           </div>
 
-          <div className="row divider-top" style={{ gap: 6 }}>
-            <Tag size="medium" variant="soft" color="app-blue">涨跌幅 {limitLabel}</Tag>
-            {range ? (
-              <>
-                <span data-tag="limit-up">
-                  <Tag size="medium" variant="soft" color="app-red">涨停价 {price(range.upCents)}</Tag>
-                </span>
-                <span data-tag="limit-down">
-                  <Tag size="medium" variant="soft" color="app-green">跌停价 {price(range.downCents)}</Tag>
-                </span>
-                {limitOverride && limitOverride.stock === effectiveStock ? (
-                  <>
-                    <Tag size="small" variant="soft" color="purple" data-tag="limit-manual">手工区间</Tag>
-                    <Button
-                      size="small"
-                      type="text"
-                    onClick={() => {
-                      patchOrdersSession({ overrides: dropStock(ordersSession.overrides, effectiveStock) })
-                      setEditingLimit(false)
-                        notificationOpen({ message: '已回到按涨跌幅算的区间', type: 'info' })
-                      }}
-                    >
-                      恢复
-                    </Button>
-                  </>
-                ) : (
+          {/* V9.13：涨跌幅档位是配置细节、确认引导是自明的——都不再占界面；有区间才显示这一行 */}
+          {range && (
+            <div className="row divider-top" style={{ gap: 6 }}>
+              <span data-tag="limit-up">
+                <Tag size="medium" variant="soft" color="app-red">涨停价 {price(range.upCents)}</Tag>
+              </span>
+              <span data-tag="limit-down">
+                <Tag size="medium" variant="soft" color="app-green">跌停价 {price(range.downCents)}</Tag>
+              </span>
+              {limitOverride && limitOverride.stock === effectiveStock ? (
+                <>
+                  <Tag size="small" variant="soft" color="purple" data-tag="limit-manual">手工区间</Tag>
                   <Button
                     size="small"
                     type="text"
                     onClick={() => {
-                      setUpText(price(range.upCents))
-                      setDownText(price(range.downCents))
-                      setEditingLimit(true)
+                      patchOrdersSession({ overrides: dropStock(ordersSession.overrides, effectiveStock) })
+                      setEditingLimit(false)
+                      notificationOpen({ message: '已回到按涨跌幅算的区间', type: 'info' })
                     }}
                   >
-                    手工调整
+                    恢复
                   </Button>
-                )}
-              </>
-            ) : (
-              <span className="tiny muted">填完昨收点「确认」，才算涨停/跌停</span>
-            )}
-          </div>
+                </>
+              ) : (
+                <Button
+                  size="small"
+                  type="text"
+                  onClick={() => {
+                    setUpText(price(range.upCents))
+                    setDownText(price(range.downCents))
+                    setEditingLimit(true)
+                  }}
+                >
+                  手工调整
+                </Button>
+              )}
+            </div>
+          )}
 
           {editingLimit && range && (
             <div className="stack tight divider-top">
@@ -528,12 +516,6 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
                 )}
               </>
             )}
-
-            {(buyOut > 0 || sellOut > 0) && (
-              <p className="tiny" style={{ margin: '8px 0 0', color: 'var(--up)' }}>
-                有 {buyOut} 条待买、{sellOut} 条待卖在今日区间外（涨跌停之外挂不进去），下面列表里标红。
-              </p>
-            )}
           </>
         )}
       </Card>
@@ -543,8 +525,6 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
         <div className="sec-head">
           <strong>待买</strong>
           <Tag size="small" variant="soft" color="purple">{orders.length} 条</Tag>
-          <div className="spacer" />
-          <span className="sec-sub">空头敞口要一直看得见</span>
         </div>
         {orders.length === 0 ? (
           <div className="empty-box">该股没有待买单</div>
@@ -609,8 +589,6 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
         <div className="sec-head">
           <strong>待卖</strong>
           <Tag size="small" variant="soft" color="app-teal">{targets.length} 条</Tag>
-          <div className="spacer" />
-          <span className="sec-sub">量不超批次剩余</span>
         </div>
         {targets.length === 0 ? (
           <div className="empty-box">该股批次已全部卖完</div>
@@ -662,9 +640,6 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
             </div>
           </div>
         )}
-        <p className="tiny muted" style={{ margin: '10px 0 0' }}>
-          待卖合计 {money(targetTotal)}
-        </p>
       </Card>
 
       {summary && summary.exposureQty > 0 && (
@@ -693,7 +668,7 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
           <div className="stack tight">
             <p className="hint-block" style={{ margin: 0 }}>
               {planRef.title} · 建议 {price(planRef.suggestPrice)}。计划价只用于显示和导出，
-              <b>不参与盈亏、清单与守恒式的任何计算</b>（P8）。
+              <b>不参与盈亏、清单与守恒式的任何计算</b>。
             </p>
             <div className="form-grid">
               <label>

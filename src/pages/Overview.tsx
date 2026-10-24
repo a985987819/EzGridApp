@@ -135,9 +135,9 @@ export function Overview({
       </Card>
       </div>
 
-      {/* §04：三格指标点开看构成（移动端没有悬停，用点击代替） */}
+      {/* §04：三格指标点开看构成（移动端没有悬停，用点击代替）；key 换目标时重放进场动画 */}
       {openMetric !== null && (
-        <Card>
+        <Card key={openMetric} className="reveal">
           <div className="sec-head">
             <strong>
               {openMetric === 'target' ? '可卖批次构成' : openMetric === 'exposure' ? '待回补构成' : '净持仓构成'}
@@ -285,7 +285,7 @@ export function Overview({
 
       <p className="tiny muted" style={{ textAlign: 'center', margin: '0 0 4px' }}>
         {hiddenCount > 0 && `已隐藏 ${hiddenCount} 只停用股票（数据仍计入上方合计） · `}
-        数据只存在本机浏览器 · 每周记得去「管理 · 备份」导一份
+        数据只存在本机浏览器
       </p>
     </div>
   )

@@ -178,6 +178,11 @@ try {
   check('底部导航 5 项', (await evaluate(`document.querySelectorAll('button[data-nav]').length`)) === 5)
   check('空态引导', text.includes('还没有导入数据') || text.includes('去导入'))
   check('没有横向溢出', (await evaluate(`document.documentElement.scrollWidth <= window.innerWidth + 2`)) === true)
+  // V9.13：切页有轻浮现动画
+  check(
+    '页面进场动画生效',
+    (await evaluate(`getComputedStyle(document.querySelector('.app-main > *')).animationName`)) === 'page-in',
+  )
 
   console.log('\n[2] 管理 · 股票（第一个 tab）+ 拖动排序')
   check('切到管理页', await nav('manage'))
@@ -647,6 +652,27 @@ try {
   check('月累计盈利（¥196）', text.includes('196'), '')
   // 日历格 = 左当日总盈利（+196）· 右成交笔数（1笔）
   check('日历格聚合成「盈利+笔数」', text.includes('+196') && text.includes('1笔'), '')
+  // V9.13：统计条占格子高度一半、内容水平居中（事件条定位有一帧量测，短重试兜底）
+  let calStat = null
+  for (let i = 0; i < 6 && !calStat; i += 1) {
+    await sleep(300)
+    calStat = await evaluate(`(() => {
+      const stat = document.querySelector('.cal-day-stat')
+      const bar = stat && stat.closest('[class*="animal-event-"]')
+      // 事件条挂在绝对定位的 eventsLayer 里，不是 td 后代——格子高度直接从表格取
+      const cell = document.querySelector('td[class*="animal-cell-"]')
+      if (!bar || !cell) return null
+      return JSON.stringify({
+        bh: bar.getBoundingClientRect().height,
+        ch: cell.getBoundingClientRect().height,
+        jc: getComputedStyle(stat).justifyContent,
+      })
+    })()`)
+  }
+  check('日历统计条存在', Boolean(calStat), '')
+  const cs = JSON.parse(calStat ?? '{}')
+  check('统计条高度 = 格子一半', Math.abs(cs.bh - cs.ch / 2) < 3, calStat)
+  check('统计条内容水平居中', cs.jc === 'center', calStat)
   const dayClicked = await evaluate(`(() => {
     const el = [...document.querySelectorAll('div,span,button,td')].find((x) => x.textContent?.trim() === '13' && x.children.length === 0)
     if (!el) return false
@@ -699,9 +725,9 @@ try {
   check('切到挂单', await nav('orders'))
   check('挂单顶部吸顶', (await stickyOf('orders')) === 'sticky')
   text = await bodyText()
-  check('页面显示「涨跌幅 10%」', text.includes('涨跌幅 10%'))
+  // V9.13：涨跌幅档位与确认引导整行删除（自明信息不占界面），只看涨跌停价
   check('没有涨跌幅选择器', !text.includes('创业板 20%'))
-  check('未确认时提示要确认', text.includes('才算涨停/跌停'))
+  check('涨跌幅档位不再显示', !text.includes('涨跌幅'))
 
   // 选柳工（待卖价多落在区间内）
   await evaluate(`document.querySelector('.app-main [role="combobox"]')?.click()`)
@@ -740,7 +766,7 @@ try {
   // 待买/待卖必须常驻，不能藏在页签后面（§04）
   const tabCount = await evaluate(`document.querySelectorAll('[role="tab"]').length`)
   check('挂单页不再用页签藏待买', Number(tabCount) === 0, String(tabCount))
-  check('待买清单常驻', /待买\s*\d+\s*条/.test(text) && text.includes('空头敞口要一直看得见'))
+  check('待买清单常驻', /待买\s*\d+\s*条/.test(text))
 
   console.log('\n[8.1] 涨跌停手工覆盖')
   check('点「手工调整」', await clickByText('button', '手工调整'))

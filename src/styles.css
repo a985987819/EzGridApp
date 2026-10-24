@@ -613,19 +613,25 @@ button { font-family: inherit; }
   overflow: hidden;
 }
 /* V9.7：日历事件条撑满格宽（库里 chip 是收缩布局），聚合条才能左右分布 */
-/* chip 默认一列宽 -10px，向两侧各借 4px 放下「金额 + 数量」两段 */
+/* V9.13：统计条占格子高度一半——bar-top 库里已算到格子垂直中点，从这起落到格底 */
 [class*='animal-event-'] {
   left: calc(var(--animal-calendar-bar-left, 0px) - 6px);
   width: calc(var(--animal-calendar-bar-width, 100%) + 12px);
-  padding-left: 2px;
-  padding-right: 2px;
+  top: var(--animal-calendar-bar-top, 0px);
+  height: calc(var(--animal-calendar-cell-height) / 2);
+  transform: none;
+  display: flex;
+  align-items: stretch;
+  line-height: normal;
+  padding: 3px 4px;
 }
 /* 日历格内的按天聚合条（V9.7）：左合计金额 / 右成交数量 */
 .cal-day-stat {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 2px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
   width: 100%;
   min-width: 0;
 }
@@ -662,3 +668,40 @@ button { font-family: inherit; }
 /* 数据块里可点的行（跨数据跳转）：按下有反馈，扫一眼知道能点 */
 .line.clickable { cursor: pointer; }
 .line.clickable:active { background: rgba(25, 200, 185, 0.07); }
+
+/* ————— V9.13 轻动效：进出场统一 200ms 档，只动透明度与位移，跟手不拖沓 ————— */
+@keyframes page-in {
+  from { opacity: 0; transform: translateY(10px); }
+}
+@keyframes reveal-in {
+  from { opacity: 0; transform: translateY(-8px); }
+}
+@keyframes chip-in {
+  from { opacity: 0; transform: scale(0.92); }
+}
+
+/* 底部导航切页：整页轻浮现（各 tab 内容本来就地重挂，key 相同时不重放） */
+.app-main > * {
+  animation: page-in 0.24s cubic-bezier(0.22, 0.61, 0.36, 1) backwards;
+}
+/* 管理页 tab 切换：面板内容轻浮现 */
+[class*='animal-tabContentInner'] > * {
+  animation: page-in 0.22s cubic-bezier(0.22, 0.61, 0.36, 1) backwards;
+}
+/* 条件展开（概览三格构成等）：从上方滑入 */
+.reveal {
+  animation: reveal-in 0.22s cubic-bezier(0.22, 0.61, 0.36, 1) backwards;
+}
+/* 筛选/排序 chips 新增一颗时的小弹入（已有的不重放） */
+.filter-chips .filter-chip {
+  animation: chip-in 0.18s ease-out backwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-main > *,
+  [class*='animal-tabContentInner'] > *,
+  .reveal,
+  .filter-chips .filter-chip {
+    animation: none;
+  }
+}

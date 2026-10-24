@@ -50,7 +50,7 @@ export function StatsPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) 
         <div className="sec-head">
           <strong>月度成交</strong>
           <div className="spacer" />
-          <span className="sec-sub">收益率 = 盈利 / 卖出额 · 年 / 月累计在上方日历区</span>
+          <span className="sec-sub">收益率 = 盈利 / 卖出额</span>
         </div>
         <div className="data-block">
         {ledger.monthly.map((m) => (
@@ -88,9 +88,6 @@ export function StatsPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) 
           </div>
         ))}
         </div>
-        <p className="tiny muted" style={{ margin: '8px 0 0' }}>
-          点某个月 → 明细按该月日期区间过滤；「未填日期」→ 明细里看全部缺卖出日期的行。
-        </p>
       </Card>
 
       <Card>
@@ -172,9 +169,6 @@ export function StatsPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) 
           ))}
           </div>
         )}
-        <p className="tiny muted" style={{ margin: '8px 0 0' }}>
-          点某个价组 → 明细按该股 + 该价格档过滤。
-        </p>
       </Card>
     </div>
   )
