@@ -230,7 +230,11 @@ export function Overview({
               <p className="tiny muted" style={{ margin: '8px 0 0' }}>
                 {qty(t.buyQty)} − {qty(t.sellQty)}
                 {t.rebuyExecQty > 0 ? ` + ${qty(t.rebuyExecQty)}` : ''} = {qty(t.netQty)}
-                {' · '}可卖 {qty(t.targetQty)} − 待补 {qty(t.exposureQty)} 也应等于这个数
+                {' · '}可卖 {qty(t.targetQty)} − 待补 {qty(t.exposureQty)}
+                {t.lotBackedExecQty + t.rewardedExecQty > 0
+                  ? ` + 批次内回补 ${qty(t.lotBackedExecQty)} + 已成交奖励 ${qty(t.rewardedExecQty)}`
+                  : ''}
+                也应等于这个数
               </p>
             </>
           )}

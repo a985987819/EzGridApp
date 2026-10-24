@@ -343,4 +343,54 @@ describe('§09 测试矩阵', () => {
     const others = l.orders.filter((o) => o.sourceRow !== 63)
     for (const o of others) expect(o.rewardSourceOrderIds).toEqual([])
   })
+
+  it('稳健性：范围外的回补成交不进净持仓、不消耗奖励预算', () => {
+    // ¥560 + ¥435 = ¥995 → 7.81 组容量 1 手；若范围外的成交泄漏进来，
+    // usedProfit 会吃掉 78100 → 容量归 0
+    const records = [
+      rec({ stockName: '柳工', sourceRow: 1, buyPriceCents: 781, buyQtyRaw: 1000, targetPriceCents: 837, soldQty: 1000 }),
+      rec({ stockName: '柳工', sourceRow: 2, soldQty: 500, targetPriceCents: 868, earlyBuyPriceCents: 781 }),
+    ]
+    // 一笔挂在不存在行上的成交（比如别的账户的），groupKey 相同——不能泄漏进来
+    const stray: RebuyExecution = { ...exec('rb:sell:999', 500, 781, 100), sellExecId: 'sell:999' }
+    const l = buildLedger(records, DEFAULT_STOCKS, { executions: [stray] })
+    expect(l.totals.rebuyExecQty).toBe(0)
+    expect(l.totals.netQty).toBe(-500)
+    expect(l.orders[0].execQty).toBe(0)
+    expect(l.orders[0].rewardQty).toBe(100)
+    expect(l.groups[0].usedProfitCents).toBe(0)
+    for (const c of l.checks) expect(c.ok, `${c.name}: ${c.actual}`).toBe(true)
+  })
+
+  it('稳健性：全部回补完的挂单不再领新奖励，额度顺延给组内后面的单子', () => {
+    const records = [
+      rec({ stockName: '柳工', sourceRow: 1, buyPriceCents: 781, buyQtyRaw: 1000, targetPriceCents: 837, soldQty: 1000, earlyBuyPriceCents: 781 }),
+      rec({ stockName: '柳工', sourceRow: 2, buyPriceCents: 781, buyQtyRaw: 1000, targetPriceCents: 837, soldQty: 1000, earlyBuyPriceCents: 781 }),
+    ]
+    const before = buildLedger(records, DEFAULT_STOCKS)
+    const after = buildLedger(records, DEFAULT_STOCKS, {
+      executions: [exec(before.orders[0].id, 1000, 781, 0)],
+    })
+    expect(after.orders[0].status).toBe('closed')
+    expect(after.orders[0].rewardQty).toBe(0)
+    expect(after.orders[1].rewardQty).toBe(100)
+    // 批次内回补计入净持仓，补全后的守恒式仍成立
+    expect(after.totals.netQty).toBe(1000)
+    for (const c of after.checks) expect(c.ok, `${c.name}: ${c.actual}`).toBe(true)
+  })
+
+  it('稳健性：每股汇总与总计同口径（回补成交摊到股）', () => {
+    const records = [
+      rec({ stockName: '柳工', sourceRow: 1, soldQty: 500, targetPriceCents: 868, earlyBuyPriceCents: 781 }),
+    ]
+    const before = buildLedger(records, DEFAULT_STOCKS)
+    const after = buildLedger(records, DEFAULT_STOCKS, {
+      executions: [exec(before.orders[0].id, 200, 781, 0)],
+    })
+    const s = after.byStock[0]
+    expect(s.netQty).toBe(-300)
+    expect(s.exposureQty).toBe(300)
+    expect(s.netQty).toBe(after.totals.netQty)
+    expect(s.exposureQty).toBe(after.totals.exposureQty)
+  })
 })

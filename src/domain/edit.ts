@@ -103,7 +103,11 @@ export function applyEdits(rec: RawRecord, draft: Partial<Record<EditableKey, st
         errors.push(`${LABEL[key]} 不是合法金额：${text}`)
         continue
       }
-      if (cents !== null && cents <= 0) errors.push(`${LABEL[key]} 必须大于 0`)
+      if (cents !== null && cents <= 0) {
+        // 有错就不写值：调用方必须先清掉错误才能保存，草稿不该半合法地落进记录
+        errors.push(`${LABEL[key]} 必须大于 0`)
+        continue
+      }
       const before = fieldText(rec, key)
       const after = cents === null ? '' : centsToYuan(cents)
       push(key, before, after)
@@ -127,7 +131,10 @@ export function applyEdits(rec: RawRecord, draft: Partial<Record<EditableKey, st
           continue
         }
         q = n
-        if (q < 0) errors.push(`${LABEL[key]} 不能为负`)
+        if (q < 0) {
+          errors.push(`${LABEL[key]} 不能为负`)
+          continue
+        }
       }
       const before = fieldText(rec, key)
       const after = q === null ? '' : String(q)

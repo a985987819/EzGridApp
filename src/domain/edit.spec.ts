@@ -75,6 +75,18 @@ describe('行内编辑（P10）', () => {
   it('负数价格被拒', () => {
     expect(applyEdits(base, { buyPrice: '-8' }).errors.length).toBe(1)
   })
+
+  it('负价格不仅报错，也不写入记录', () => {
+    const bad = applyEdits(base, { buyPrice: '-8' })
+    expect(bad.changes).toHaveLength(0)
+    expect(bad.record.buyPriceCents).toBe(800)
+  })
+
+  it('负数量不仅报错，也不写入记录', () => {
+    const bad = applyEdits(base, { soldQty: '-5' })
+    expect(bad.errors).toHaveLength(1)
+    expect(bad.record.soldQty).toBeNull()
+  })
 })
 
 describe('编辑后重算仍然自洽', () => {

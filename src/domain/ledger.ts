@@ -67,12 +67,6 @@ export function buildLedger(
     if (list) list.push(t)
     else extraByLot.set(t.lotId, [t])
   }
-  const execByOrder = new Map<string, RebuyExecution[]>()
-  for (const e of executions) {
-    const list = execByOrder.get(e.orderId)
-    if (list) list.push(e)
-    else execByOrder.set(e.orderId, [e])
-  }
   // 软删除的行不参与任何计算
   const live = records.filter((r) => !r.deletedAt)
   const byRow = new Map(live.map((r) => [r.sourceRow, r]))
@@ -205,6 +199,17 @@ export function buildLedger(
     }
   }
 
+  // 回补成交只认当前范围内的卖出行：executions 是全局表，账户筛选时
+  // 别的账户的成交不该算进净持仓、也不该消耗本组的奖励预算（P4）
+  const sellIdSet = new Set(sells.map((s) => s.id))
+  const scopedExecs = executions.filter((e) => sellIdSet.has(e.sellExecId))
+  const execByOrder = new Map<string, RebuyExecution[]>()
+  for (const e of scopedExecs) {
+    const list = execByOrder.get(e.orderId)
+    if (list) list.push(e)
+    else execByOrder.set(e.orderId, [e])
+  }
+
   // R1 待卖：有剩余持仓的批次 × E；手动拆分的先占额度，剩下的才走自动目标
   const targets: SellTarget[] = []
   for (const lot of lots) {
@@ -304,7 +309,7 @@ export function buildLedger(
   }
 
   // R4/R5 组池与奖励
-  const groups = computeGroups(sells, orders, executions)
+  const groups = computeGroups(sells, orders, scopedExecs)
   for (const o of orders) {
     const g = groups.get(o.groupKey)
     if (g) {
@@ -318,6 +323,7 @@ export function buildLedger(
   }
 
   // 汇总
+  const orderById = new Map(orders.map((o) => [o.id, o]))
   const totals = {
     rows: live.length,
     buyQty: sumBy(lots, (l) => l.qty),
@@ -336,7 +342,17 @@ export function buildLedger(
     rebuyQty: sumBy(orders, (o) => o.baseQty + o.rewardQty),
     rebuyAmountCents: sumBy(orders, (o) => mulCents(o.rebuyPriceCents, o.baseQty + o.rewardQty)),
     rewardQty: sumBy(orders, (o) => o.rewardQty),
-    rebuyExecQty: sumBy(executions, (e) => e.qty),
+    rebuyExecQty: sumBy(scopedExecs, (e) => e.qty),
+    /** 其中有买入批次挂单的回补（计入净持仓、不新增待卖、不占敞口） */
+    lotBackedExecQty: sumBy(
+      scopedExecs.filter((e) => orderById.get(e.orderId)?.exposure === false),
+      (e) => e.qty,
+    ),
+    /** 其中空头挂单已成交的奖励股数（额外买入，不减敞口） */
+    rewardedExecQty: sumBy(
+      scopedExecs.filter((e) => orderById.get(e.orderId)?.exposure === true),
+      (e) => e.rewardQty,
+    ),
     rebuyRemainingQty: sumBy(orders, (o) => o.remainingQty),
     netQty: 0,
     // 只算真空头敞口：无买入批次、且还没回补掉的那部分（D5）。
@@ -349,7 +365,7 @@ export function buildLedger(
   // 回补成交是真实买入，计入净持仓
   totals.netQty = totals.buyQty - totals.sellQty + totals.rebuyExecQty
 
-  const byStock = summarizeByStock(live, lots, sells, targets, orders)
+  const byStock = summarizeByStock(live, lots, sells, targets, orders, scopedExecs)
   const monthly = summarizeMonthly(sells)
   const daily = summarizeDaily(sells)
 
@@ -361,11 +377,16 @@ export function buildLedger(
       expected: '等式成立',
     },
     {
-      name: 'Σ待卖量 − 待补敞口 = 净持仓',
-      ok: totals.targetQty - totals.exposureQty === totals.netQty,
-      actual: `${totals.targetQty} − ${totals.exposureQty} = ${totals.targetQty - totals.exposureQty}`,
+      name: 'Σ待卖量 − 待补敞口 + 批次内回补 + 已成交奖励 = 净持仓',
+      ok:
+        totals.targetQty - totals.exposureQty + totals.lotBackedExecQty + totals.rewardedExecQty ===
+        totals.netQty,
+      actual: `${totals.targetQty} − ${totals.exposureQty} + ${totals.lotBackedExecQty} + ${totals.rewardedExecQty} = ${
+        totals.targetQty - totals.exposureQty + totals.lotBackedExecQty + totals.rewardedExecQty
+      }`,
       expected: `= ${totals.netQty}`,
-      detail: '待补只算无买入批次的卖出；有批次的回补只是再买入，不占敞口',
+      detail:
+        '待补只算无买入批次的卖出；有批次的回补是再买入——批次内回补与已成交奖励计入净持仓，但按 D5 不新增待卖',
     },
     {
       name: 'Σ待卖量 = Σ批次剩余',
@@ -455,12 +476,10 @@ function computeGroups(
     for (const o of groupOrders) {
       chain.push(o.id)
       const keep = Math.floor(o.doneRewardQty / 100) // 已成交不可撤
-      if (left <= 0) {
-        o.rewardQty = keep * 100
-        o.rewardSourceOrderIds = o.rewardQty > 0 ? [...chain] : []
-        continue
-      }
-      const grant = Math.min(left, g.capacityHands)
+      // 已经买满的单子（剩余 0）不再领新奖励——否则容量被永远不会执行的
+      // 幻影奖励吃掉，组里排在后面的单子永远轮不到
+      const need = o.baseQty + keep * 100 - o.execQty
+      const grant = need > 0 && left > 0 ? Math.min(left, g.capacityHands) : 0
       o.rewardQty = (keep + grant) * 100
       o.rewardSourceOrderIds = o.rewardQty > 0 ? [...chain] : []
       left -= grant
@@ -478,8 +497,14 @@ function summarizeByStock(
   sells: SellExecution[],
   targets: SellTarget[],
   orders: RebuyOrder[],
+  executions: RebuyExecution[],
 ): StockSummary[] {
   const names = [...new Set(records.map((r) => r.stockName))]
+  // 每股净持仓要与 totals 同口径：回补成交按单归属到股
+  const execQtyByOrder = new Map<string, number>()
+  for (const e of executions) {
+    execQtyByOrder.set(e.orderId, (execQtyByOrder.get(e.orderId) ?? 0) + e.qty)
+  }
   return names.map((name) => {
     const ls = lots.filter((l) => l.stockName === name)
     const ss = sells.filter((s) => s.stockName === name)
@@ -501,8 +526,14 @@ function summarizeByStock(
       expectProfitCents: sumBy(ts, (t) => t.expectProfitCents),
       rebuyCount: os.length,
       rebuyQty: sumBy(os, (o) => o.baseQty + o.rewardQty),
-      netQty: sumBy(ls, (l) => l.qty) - sumBy(ss, (s) => s.qty),
-      exposureQty: sumBy(os.filter((o) => o.exposure), (o) => o.baseQty),
+      netQty:
+        sumBy(ls, (l) => l.qty) -
+        sumBy(ss, (s) => s.qty) +
+        sumBy(os, (o) => execQtyByOrder.get(o.id) ?? 0),
+      exposureQty: sumBy(
+        os.filter((o) => o.exposure),
+        (o) => Math.max(0, o.baseQty - Math.max(0, o.execQty - o.doneRewardQty)),
+      ),
     }
   })
 }

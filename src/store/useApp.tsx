@@ -619,6 +619,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (data.plans) await db.plans.bulkPut(data.plans)
         await db.extraTargets.clear()
         if (data.extraTargets) await db.extraTargets.bulkPut(data.extraTargets)
+        // 回补成交与计划/拆分目标同级的派生输入：恢复时同样整表替换，
+        // 否则旧库里残留的成交会污染恢复后的净持仓与奖励预算
+        await db.rebuyExecutions.clear()
+        if (data.rebuyExecutions) await db.rebuyExecutions.bulkPut(data.rebuyExecutions)
         await db.auditLogs.clear()
         if (data.auditLogs) {
           // 去掉自增 id，让 Dexie 重新分配
