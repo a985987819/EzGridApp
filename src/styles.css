@@ -548,6 +548,14 @@ button { font-family: inherit; }
   color: var(--animal-error-color, #e05a5a);
   background: transparent;
 }
+/* 状态 chips 单行横滑：7 颗在 390px 下不换行，吸顶高度省一行 */
+.filter-chips.scroll {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.filter-chips.scroll::-webkit-scrollbar { display: none; }
+.filter-chips.scroll > * { flex: 0 0 auto; }
 
 /* 数据块里可点的行（跨数据跳转）：按下有反馈，扫一眼知道能点 */
 .line.clickable { cursor: pointer; }

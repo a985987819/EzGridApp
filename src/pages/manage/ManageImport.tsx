@@ -17,6 +17,17 @@ const ANOMALY_LABEL: Record<string, string> = {
   negativeProfit: '负盈利',
 }
 
+/** 参与「同 key 内容 diff」的文件来源字段（本地才有的 deletedAt/批次等不参与） */
+const DIFF_FIELDS: { key: 'buyDateSerial' | 'buyPriceCents' | 'buyQtyRaw' | 'targetPriceCents' | 'soldQty' | 'sellDateSerial' | 'earlyBuyPriceCents'; label: string }[] = [
+  { key: 'buyDateSerial', label: '买入日期' },
+  { key: 'buyPriceCents', label: '买入价' },
+  { key: 'buyQtyRaw', label: '份额' },
+  { key: 'targetPriceCents', label: '目标售价' },
+  { key: 'soldQty', label: '卖出数量' },
+  { key: 'sellDateSerial', label: '卖出日期' },
+  { key: 'earlyBuyPriceCents', label: '回补价' },
+]
+
 export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
   const {
     stocks,
@@ -39,6 +50,21 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
     [preview, stocks, deriveSellPrice],
   )
   const previewChecks = useMemo(() => (previewLedger ? compareBaseline(previewLedger) : []), [previewLedger])
+
+  // P9 幂等：同 importKey 不覆盖。这里把「key 相同但文件内容改过」的行挑出来，
+  // 不然用户在 Excel 里改了错字重导，被静默跳过还以为同步成功了
+  const conflicts = useMemo(() => {
+    if (!preview) return []
+    const localByKey = new Map(records.map((r) => [r.importKey, r]))
+    const out: { row: number; fields: string[] }[] = []
+    for (const r of preview.records) {
+      const local = localByKey.get(r.importKey)
+      if (!local) continue
+      const fields = DIFF_FIELDS.filter((f) => (local[f.key] ?? null) !== (r[f.key] ?? null)).map((f) => f.label)
+      if (fields.length > 0) out.push({ row: r.sourceRow, fields })
+    }
+    return out
+  }, [preview, records])
 
   async function handleFile(file: File) {
     setBusy(true)
@@ -184,6 +210,14 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
                 </div>
               )
             })()}
+            {conflicts.length > 0 && (
+              <div className="hint-block" style={{ borderTop: '1px solid var(--line)', paddingTop: 8 }}>
+                <b>与本地同 key 但内容有差异：{conflicts.length} 行</b>
+                （{conflicts.slice(0, 6).map((c) => `R${c.row}：${c.fields.join('、')}`).join('；')}
+                {conflicts.length > 6 && '…'}）。
+                按 P9 写入不会覆盖本地行——要让文件版生效，请到明细里手工改，或回滚对应批次后重新导入。
+              </div>
+            )}
             <CheckList checks={previewChecks} />
             <div className="row" style={{ marginTop: 12 }}>
               <Button type="primary" block loading={busy} onClick={() => void onCommit()}>
@@ -290,7 +324,7 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
                   size="small"
                   danger
                   onClick={() => {
-                    if (!window.confirm(`回滚「${b.fileName}」这一批（${b.addedCount} 行）？`)) return
+                    if (!window.confirm(`回滚会物理删除「${b.fileName}」这一批 ${b.addedCount} 行（不可恢复，审计日志保留）；之后可重新导入同一文件。确定回滚？`)) return
                     void rollbackBatch(b.id).then((n) =>
                       notificationOpen({ message: `已回滚 ${n} 行`, type: 'info' }),
                     )

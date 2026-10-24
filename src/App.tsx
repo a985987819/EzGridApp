@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import 'animal-island-ui/style'
 import { Select } from 'animal-island-ui'
 import { AppProvider, useApp } from './store/useApp'
@@ -8,7 +8,7 @@ import { OrdersPage } from './pages/OrdersPage'
 import { StatsPage } from './pages/StatsPage'
 import { ManagePage } from './pages/ManagePage'
 import { IconChart, IconGear, IconGrid, IconList, IconTag } from './ui/icons'
-import { navigate, parseHash, type TradesQuery } from './ui/nav'
+import { navigate, parseHash, type Tab, type TradesQuery } from './ui/nav'
 import './styles.css'
 
 const TABS: { key: 'overview' | 'trades' | 'orders' | 'stats' | 'manage'; label: string; Icon: typeof IconGrid }[] = [
@@ -30,6 +30,18 @@ function Shell() {
   const { ready, ledger, activeAccountId, accounts, setActiveAccount } = useApp()
 
   const goTrades = (q: TradesQuery) => navigate('trades', q)
+
+  // 底部导航：已在明细时只回顶部、不动筛选；从其他 tab 回明细时恢复上次离开时的筛选
+  const lastTradesRef = useRef<TradesQuery>({})
+  const onNavClick = (key: Tab) => {
+    if (key === 'trades') {
+      navigate('trades', route.tab === 'trades' ? parseHash().query : lastTradesRef.current)
+    } else {
+      if (route.tab === 'trades') lastTradesRef.current = parseHash().query
+      navigate(key)
+    }
+    window.scrollTo({ top: 0 })
+  }
   const pendingOrders = ledger.orders.length
   const accountOptions = [
     { key: 'all', label: '全部账户' },
@@ -80,10 +92,7 @@ function Shell() {
             <button
               key={key}
               className={`nav-btn${route.tab === key ? ' active' : ''}`}
-              onClick={() => {
-                navigate(key)
-                window.scrollTo({ top: 0 })
-              }}
+              onClick={() => onNavClick(key)}
               aria-current={route.tab === key ? 'page' : undefined}
               data-nav={key}
             >

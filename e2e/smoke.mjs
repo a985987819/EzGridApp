@@ -591,14 +591,14 @@ try {
   const dayHash = await evaluate('location.hash')
   check('落在明细并带单日区间', /from=\d{4}-\d{2}-\d{2}/.test(dayHash) && /to=\d{4}-\d{2}-\d{2}/.test(dayHash) && dayHash.match(/from=([^&]+)/)?.[1] === dayHash.match(/to=([^&]+)/)?.[1], dayHash)
 
-  // 挂单 · 待卖条目 → 行号定位
+  // 挂单 · 待卖条目（整行可点）→ 行号定位
   await nav('orders')
   check(
-    '点待卖「明细」按钮',
+    '点待卖清单行',
     await evaluate(`(() => {
-      const btn = [...document.querySelectorAll('.app-main button')].find(b => b.textContent.trim() === '明细')
-      if (!btn) return false
-      btn.click(); return true
+      const line = [...document.querySelectorAll('.data-block .line')].find(l => l.textContent.includes('批次'))
+      if (!line) return false
+      line.click(); return true
     })()`),
   )
   await sleep(600)
@@ -607,6 +607,10 @@ try {
   check('落在明细并带行号', Number.isInteger(rowNo) && rowNo > 0, rowHash)
   check('行号定位 1 行', (await headCount()) === 1, String(await headCount()))
   check('行号条件 chip 显示', (await bodyText()).includes(`行 ${rowNo}`))
+
+  // 收尾清掉筛选，让后面的章节拿到干净的明细页（V9.2 起导航会恢复上次筛选）
+  check('清空筛选收尾', await clickByText('[data-testid="active-chips"] .filter-chip', '清空筛选'))
+  await sleep(400)
 
   console.log('\n[8] 挂单：确认昨收 → 涨停/跌停 → 今日挂单')
   check('切到挂单', await nav('orders'))

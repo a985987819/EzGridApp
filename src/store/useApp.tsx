@@ -15,6 +15,7 @@ import { applyEdits, type EditableKey } from '../domain/edit'
 import { applyOrder, normalizeStocks } from '../domain/stocks'
 import { filterByAccount } from '../domain/accounts'
 import { buildManualRecord, MANUAL_ROW_BASE, type ManualInput } from '../domain/manual'
+import { validateBackup } from '../domain/backup'
 import { DEFAULT_ACCOUNT_ID } from '../domain/types'
 import type {
   Account,
@@ -540,6 +541,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       const version = data.schemaVersion ?? 1
       if (version > 5) throw new Error('备份版本高于当前程序，拒绝导入（P11）')
+      // P11 之外的第二道闸：结构坏掉的备份整包拒绝，不让半截 JSON 污染本地库
+      const problem = validateBackup(data)
+      if (problem) throw new Error(`备份内容校验失败：${problem}`)
       await db.transaction(
         'rw',
         [db.stocks, db.records, db.batches, db.auditLogs, db.rebuyExecutions, db.plans, db.extraTargets, db.accounts],

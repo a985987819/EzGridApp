@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Button, Card, Input, Modal, Select, Tag, notificationOpen } from 'animal-island-ui'
 import { useApp } from '../store/useApp'
+import { db } from '../store/db'
 import { activeStocks } from '../domain/stocks'
 import { LIMIT_PCT, limitRange } from '../domain/limit'
 import { toCents } from '../domain/money'
@@ -8,6 +9,14 @@ import { downloadText, toCsv } from '../ui/csv'
 import { money, price, qty, signedMoney } from '../ui/format'
 import type { TradesQuery } from '../ui/nav'
 import type { RebuyOrder } from '../domain/types'
+
+/** 行内按钮不让冒泡到整行的「跳明细」点击上 */
+function stopWith(fn: () => void) {
+  return (e: { stopPropagation: () => void }) => {
+    e.stopPropagation()
+    fn()
+  }
+}
 
 export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
   const { ledger, stocks, executions, recordRebuy, removeRebuy, setPlan, clearPlan } = useApp()
@@ -20,6 +29,24 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
 
   const effectiveStock = stockNames.includes(stockName) ? stockName : stockNames[0] ?? ''
   const cfg = stocks.find((s) => s.name === effectiveStock)
+
+  // 上次确认过的昨收按股票记在本地，进页自动带入输入框；算区间仍要点「确认」
+  // （昨收按天变，不自动确认，防止拿昨天的区间判断今天）
+  const cfgId = cfg?.id
+  useEffect(() => {
+    let alive = true
+    if (!cfgId) {
+      setLastClose('')
+      return
+    }
+    void db.meta.get(`lastClose:${cfgId}`).then((m) => {
+      if (alive) setLastClose(m ? String(m.value) : '')
+    })
+    return () => {
+      alive = false
+    }
+  }, [cfgId])
+
   const limitLabel = !cfg
     ? '未配置'
     : cfg.priceLimitType === 'custom'
@@ -153,6 +180,8 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
       })
       return
     }
+    // 记住这只票最后确认的昨收，下次进页自动带入
+    void db.meta.put({ key: `lastClose:${cfg.id}`, value: (cents / 100).toFixed(2) })
     setLimitOverride(null)
     setEditingLimit(false)
     setConfirmed({ stock: effectiveStock, closeCents: cents })
@@ -160,7 +189,11 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
 
   function copyList() {
     const lines: string[] = [`${effectiveStock} 挂单清单`]
-    if (range) lines.push(`昨收 ${(range.downCents / 100).toFixed(2)}~${(range.upCents / 100).toFixed(2)}？区间 ${(range.downCents / 100).toFixed(2)}~${(range.upCents / 100).toFixed(2)}`)
+    if (range && confirmed && confirmed.stock === effectiveStock) {
+      lines.push(
+        `昨收 ${(confirmed.closeCents / 100).toFixed(2)} · 区间 ${(range.downCents / 100).toFixed(2)}~${(range.upCents / 100).toFixed(2)}`,
+      )
+    }
     if (buyToday.length) {
       lines.push('【今日可挂买】')
       for (const o of buyToday) {
@@ -409,7 +442,11 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
                     <div className="group-label">可挂买 · {buyToday.length} 条</div>
                     <div className="data-block">
                       {buyToday.map((o) => (
-                        <div key={`t-${o.id}`} className="line wrap-row">
+                        <div
+                          key={`t-${o.id}`}
+                          className="line wrap-row clickable"
+                          onClick={() => goTrades({ row: o.sourceRow, stock: o.stockName })}
+                        >
                           <div className="left">
                             <div className="t1 num">买 {price(o.rebuyPriceCents)} × {qty(o.remainingQty)}</div>
                             <div className="t2">
@@ -431,14 +468,11 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
                           <div className="acts">
                             <Button
                               size="small"
-                              onClick={() => openPlan('buy', o.id, `买 ${o.stockName}`, o.rebuyPriceCents, o.planPriceCents, o.planQty)}
+                              onClick={stopWith(() => openPlan('buy', o.id, `买 ${o.stockName}`, o.rebuyPriceCents, o.planPriceCents, o.planQty))}
                             >
                               计划
                             </Button>
-                            <Button size="small" onClick={() => openExec(o)}>记成交</Button>
-                            <Button size="small" type="text" onClick={() => goTrades({ row: o.sourceRow, stock: o.stockName })}>
-                              明细
-                            </Button>
+                            <Button size="small" onClick={stopWith(() => openExec(o))}>记成交</Button>
                           </div>
                         </div>
                       ))}
@@ -451,7 +485,16 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
                     <div className="group-label">可挂卖 · {sellToday.length} 条</div>
                     <div className="data-block">
                       {sellToday.map((t) => (
-                        <div key={`s-${t.id}`} className="line wrap-row">
+                        <div
+                          key={`s-${t.id}`}
+                          className="line wrap-row clickable"
+                          onClick={() =>
+                            goTrades({
+                              row: ledger.lots.find((l) => l.id === t.lotId)?.sourceRow ?? Number(t.lotId.replace('lot:', '')),
+                              stock: t.stockName,
+                            })
+                          }
+                        >
                           <div className="left">
                             <div className="t1 num">卖 {price(t.priceCents)} × {qty(t.qty)}</div>
                             <div className="t2">批次 {t.lotId.replace('lot:', '')} · 预期 {signedMoney(t.expectProfitCents)}</div>
@@ -467,17 +510,11 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
                             {money(t.amountCents)}
                           </div>
                           <div className="acts">
-                            <Button size="small" onClick={() => openPlan('sell', t.id, `卖 ${t.stockName}`, t.priceCents, t.planPriceCents, t.planQty)}>
-                              计划
-                            </Button>
                             <Button
                               size="small"
-                              type="text"
-                              onClick={() =>
-                                goTrades({ row: ledger.lots.find((l) => l.id === t.lotId)?.sourceRow ?? Number(t.lotId.replace('lot:', '')), stock: t.stockName })
-                              }
+                              onClick={stopWith(() => openPlan('sell', t.id, `卖 ${t.stockName}`, t.priceCents, t.planPriceCents, t.planQty))}
                             >
-                              明细
+                              计划
                             </Button>
                           </div>
                         </div>
@@ -512,7 +549,11 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
             {orders.map((o) => {
               const z = zone(o.rebuyPriceCents)
               return (
-                <div key={o.id} className="line">
+                <div
+                  key={o.id}
+                  className="line clickable"
+                  onClick={() => goTrades({ row: o.sourceRow, stock: o.stockName })}
+                >
                   <div className="left">
                     <div className="t1 num">
                       {price(o.rebuyPriceCents)}
@@ -541,15 +582,8 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
                         {z}
                       </Tag>
                       {o.execQty > 0 && (
-                        <Button size="small" type="text" onClick={() => void undoExec(o.id)}>撤销最后一笔</Button>
+                        <Button size="small" type="text" onClick={stopWith(() => void undoExec(o.id))}>撤销最后一笔</Button>
                       )}
-                      <Button
-                        size="small"
-                        type="text"
-                        onClick={() => goTrades({ row: o.sourceRow, stock: o.stockName })}
-                      >
-                        明细
-                      </Button>
                     </div>
                   </div>
                   <div className="right num" style={{ fontWeight: 600 }}>
@@ -582,7 +616,13 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
               const z = zone(t.priceCents)
               const lot = ledger.lots.find((l) => l.id === t.lotId)
               return (
-                <div key={t.id} className="line">
+                <div
+                  key={t.id}
+                  className="line clickable"
+                  onClick={() =>
+                    goTrades({ row: lot?.sourceRow ?? Number(t.lotId.replace('lot:', '')), stock: t.stockName })
+                  }
+                >
                   <div className="left">
                     <div className="t1 num">
                       {price(t.priceCents)}
@@ -597,15 +637,6 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
                       >
                         {z}
                       </Tag>
-                      <Button
-                        size="small"
-                        type="text"
-                        onClick={() =>
-                          goTrades({ row: lot?.sourceRow ?? Number(t.lotId.replace('lot:', '')), stock: t.stockName })
-                        }
-                      >
-                        明细
-                      </Button>
                     </div>
                   </div>
                   <div className="right">

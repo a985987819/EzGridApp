@@ -202,33 +202,38 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     }))
   }, [scopedRecords, ledger])
 
-  const filtered = useMemo(
-    () =>
-      rows.filter((r) => {
-        if (!showDeleted && r.rec.deletedAt) return false
-        if (stockFilter === 'all') {
-          // 停用的股票不出现在明细里
-          if (!enabledSet.has(r.rec.stockName)) return false
-        } else if (r.rec.stockName !== stockFilter) return false
-        if (keyword && !String(r.rec.sourceRow).includes(keyword) && !r.rec.stockName.includes(keyword)) return false
-        if (priceFilter !== null) {
-          const prices = [r.rec.targetPriceCents, r.rec.buyPriceCents, r.sell?.priceCents ?? null, r.rec.earlyBuyPriceCents]
-          if (!prices.includes(priceFilter)) return false
+  // 过滤 + 顺带统计「没有日期、被日期区间条件排除」的行数（空态时提示用）
+  const { filtered, noDateHidden } = useMemo(() => {
+    let hidden = 0
+    const list = rows.filter((r) => {
+      // row 深链要能命中已软删的行，showDeleted 的门对目标行放行
+      if (!showDeleted && r.rec.deletedAt && r.rec.sourceRow !== rowFilter) return false
+      if (stockFilter === 'all') {
+        // 停用的股票不出现在明细里
+        if (!enabledSet.has(r.rec.stockName)) return false
+      } else if (r.rec.stockName !== stockFilter) return false
+      if (keyword && !String(r.rec.sourceRow).includes(keyword) && !r.rec.stockName.includes(keyword)) return false
+      if (priceFilter !== null) {
+        const prices = [r.rec.targetPriceCents, r.rec.buyPriceCents, r.sell?.priceCents ?? null, r.rec.earlyBuyPriceCents]
+        if (!prices.includes(priceFilter)) return false
+      }
+      if (rowFilter !== null && r.rec.sourceRow !== rowFilter) return false
+      // 状态多选取交集：勾了几个状态，行必须全都满足
+      if (statuses.length > 0 && !statuses.every((k) => statusMatch(r, k))) return false
+      // 日期区间：卖出日期优先，其次买入日期；没日期的行在有区间条件时直接排除
+      if (fromDate || toDate) {
+        const d = tradeDate(r)
+        if (d === null) {
+          hidden += 1
+          return false
         }
-        // 日期区间：卖出日期优先，其次买入日期；没日期的行在有区间条件时直接排除
-        if (fromDate || toDate) {
-          const d = tradeDate(r)
-          if (d === null) return false
-          if (fromDate && d < fromDate) return false
-          if (toDate && d > toDate) return false
-        }
-        if (rowFilter !== null && r.rec.sourceRow !== rowFilter) return false
-        // 状态多选取交集：勾了几个状态，行必须全都满足
-        if (statuses.length > 0 && !statuses.every((k) => statusMatch(r, k))) return false
-        return true
-      }),
-    [rows, stockFilter, keyword, priceFilter, statuses, showDeleted, enabledSet, fromDate, toDate, rowFilter],
-  )
+        if (fromDate && d < fromDate) return false
+        if (toDate && d > toDate) return false
+      }
+      return true
+    })
+    return { filtered: list, noDateHidden: hidden }
+  }, [rows, stockFilter, keyword, priceFilter, statuses, showDeleted, enabledSet, fromDate, toDate, rowFilter])
 
   /** 已生效的条件 chips：每颗都能单独点掉 */
   const activeChips = useMemo(() => {
@@ -402,8 +407,8 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
           aria-label="搜索"
         />
 
-        {/* 状态可多选（V9 可叠加）：命中的行要满足每个勾选的状态 */}
-        <div className="filter-chips status-chips" role="group" aria-label="按状态筛选">
+        {/* 状态可多选（V9 可叠加）：命中的行要满足每个勾选的状态；单行横滑省吸顶高度 */}
+        <div className="filter-chips status-chips scroll" role="group" aria-label="按状态筛选">
           {STATUS_KEYS.map((k) => (
             <button
               key={k}
@@ -501,7 +506,14 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
 
       {visible.length === 0 ? (
         <Card>
-          <div className="empty-box">没有匹配的行</div>
+          <div className="empty-box">
+            没有匹配的行
+            {noDateHidden > 0 && (
+              <span className="tiny" style={{ display: 'block', marginTop: 4 }}>
+                另有 {noDateHidden} 行没有任何日期，被日期区间条件排除
+              </span>
+            )}
+          </div>
         </Card>
       ) : (
         visible.map((r) => {
