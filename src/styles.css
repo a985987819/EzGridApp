@@ -17,6 +17,10 @@
 
 * { box-sizing: border-box; }
 
+/* 全屏宽度下的横向滚动条修复：顶栏账户下拉（min-width 140px）比容器宽，
+   在视口右缘探出几 px。clip 不产生滚动容器，position: sticky 不受影响。 */
+html, body { overflow-x: clip; }
+
 html, body, #root { height: 100%; }
 
 body {
@@ -576,6 +580,68 @@ button { font-family: inherit; }
 }
 .filter-chips.scroll::-webkit-scrollbar { display: none; }
 .filter-chips.scroll > * { flex: 0 0 auto; }
+
+/* 3D 价格树干（V9.6）：手绘插画风的价格纵轴 */
+.tree-wrap {
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: #f7f0dd;
+  overflow: hidden;
+}
+.tree-host {
+  height: 400px;
+  position: relative;
+}
+.tree-host canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+}
+.tree-host canvas:active { cursor: grabbing; }
+.tree-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--line-soft);
+  font-size: 11.5px;
+  color: var(--animal-text-color-secondary, #9f927d);
+}
+.tree-legend .dot { display: inline-flex; align-items: center; gap: 5px; }
+.tree-legend .dot::before {
+  content: '';
+  width: 10px;
+  height: 10px;
+  border-radius: 50% 50% 50% 4px;
+  display: inline-block;
+}
+.tree-legend .dot.buy::before { background: #5b8fd9; }
+.tree-legend .dot.sell::before { background: #d95f57; }
+.tree-legend .dot.fallen::before { background: #d9b56a; }
+.tree-legend .hint { margin-left: auto; }
+/* 价格标签：HTML 覆盖层，任何缩放下都清晰 */
+.tree-labels {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+.tree-label {
+  position: absolute;
+  top: 0;
+  left: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #6b4a2e;
+  background: rgba(255, 250, 238, 0.85);
+  border: 1px solid rgba(203, 191, 169, 0.6);
+  border-radius: 999px;
+  padding: 1px 7px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
 
 /* 数据块里可点的行（跨数据跳转）：按下有反馈，扫一眼知道能点 */
 .line.clickable { cursor: pointer; }

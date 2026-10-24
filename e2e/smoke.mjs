@@ -285,38 +285,54 @@ try {
   await sleep(400)
   check('收起后面板消失', !(await bodyText()).includes('净持仓构成'))
 
-  console.log('\n[5] 价格网格列序')
+  console.log('\n[5] 3D 价格树干（V9.6，替代价格表格）')
   await clickByText('.stock-tabs > *', '柳工')
-  await sleep(400)
-  const gridDump = await evaluate(`JSON.stringify(
-    [...document.querySelectorAll('table.pricegrid')[0].querySelectorAll('tbody tr')]
-      .slice(0, 5).map(tr => [...tr.children].map(td => td.textContent.trim()))
-  )`)
-  const cells = JSON.parse(gridDump)
-  console.log('  网格前 5 行:', gridDump)
-  check('4 列且第 2 列价格', cells.every((c) => c.length === 4 && /^\d+\.\d{2}$/.test(c[1])))
-  check('第 3 列待卖 / 第 4 列已卖出', cells.some((c) => /股$/.test(c[2])) && cells.some((c) => /笔/.test(c[3])))
-
-  // 表头必须自己带底色 + 分隔线，否则和数据行糊在一起
-  const headStyle = await evaluate(`(() => {
-    const th = document.querySelector('table.pricegrid thead th')
-    const td = document.querySelector('table.pricegrid tbody td')
-    if (!th || !td) return null
-    const hs = getComputedStyle(th)
-    const ts = getComputedStyle(td)
-    return JSON.stringify({
-      headBg: hs.backgroundColor,
-      bodyBg: ts.backgroundColor,
-      headBorder: hs.borderBottomWidth + ' ' + hs.borderBottomStyle,
-      wrapBorder: getComputedStyle(document.querySelector('.table-wrap')).borderTopWidth,
-      inWrap: Boolean(th.closest('.table-wrap')),
-    })
+  await sleep(1400) // three 动态 chunk + 首帧
+  check(
+    '树干画布出现',
+    Boolean(await evaluate(`Boolean(document.querySelector('canvas[data-tree="price"]'))`)),
+  )
+  const treeInfo = await evaluate(`(() => {
+    const c = document.querySelector('canvas[data-tree="price"]')
+    if (!c || !c.__tree) return null
+    const r = c.getBoundingClientRect()
+    const lv = c.__tree.levels()
+    lv.sort((a, b) => b.sell - a.sell)
+    return JSON.stringify({ w: Math.round(r.width), h: Math.round(r.height), levels: lv.length, topSell: lv[0] })
   })()`)
-  console.log('  表头样式:', headStyle)
-  const hs = JSON.parse(headStyle)
-  check('表头在带边框的容器里', hs.inWrap === true && hs.wrapBorder !== '0px')
-  check('表头有底色（与数据行不同）', hs.headBg !== hs.bodyBg && hs.headBg !== 'rgba(0, 0, 0, 0)')
-  check('表头有下边线', hs.headBorder.startsWith('1px solid'))
+  console.log('  树干:', treeInfo)
+  const tree = treeInfo ? JSON.parse(treeInfo) : null
+  check('画布有尺寸且解析出档位', Boolean(tree && tree.w > 150 && tree.h > 150 && tree.levels >= 10), treeInfo)
+  const treeShot = await send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync(join(OUT, 'mobile-tree.png'), Buffer.from(treeShot.data, 'base64'))
+
+  // 先在概览页验滚轮缩放（点击会跳走，缩放要放在跳转前）
+  const span0 = await evaluate(`document.querySelector('canvas[data-tree="price"]').__tree.span()`)
+  await evaluate(`(() => {
+    const c = document.querySelector('canvas[data-tree="price"]')
+    c.dispatchEvent(new WheelEvent('wheel', { deltaY: -600, bubbles: true, cancelable: true }))
+  })()`)
+  await sleep(400)
+  const span1 = await evaluate(`document.querySelector('canvas[data-tree="price"]').__tree.span()`)
+  check('滚轮缩放生效（span 变小）', span1 < span0 * 0.9, `${span0} → ${span1}`)
+
+  // 点最密的待卖叶团 → 明细带价格档
+  const topCents = tree.topSell.cents
+  const pj = await evaluate(`(() => {
+    const c = document.querySelector('canvas[data-tree="price"]')
+    return JSON.stringify(c.__tree.projectPrice(${topCents}))
+  })()`)
+  const clickAt = JSON.parse(pj)
+  check('档位能投影到屏幕', clickAt && clickAt.x > 0 && clickAt.y > 0, pj)
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: clickAt.x, y: clickAt.y })
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: clickAt.x, y: clickAt.y, button: 'left', clickCount: 1 })
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: clickAt.x, y: clickAt.y, button: 'left', clickCount: 1 })
+  await sleep(700)
+  const treeHash = await evaluate('location.hash')
+  check('点叶跳明细带价格档', treeHash.startsWith('#/trades') && treeHash.includes(`price=${topCents}`), treeHash)
+  // V9.2 起导航回明细会恢复上次筛选：当场清掉价格筛选，让 [6] 从干净明细开始
+  check('清空树干点击留下的筛选', await clickByText('[data-testid="active-chips"] .filter-chip', '清空筛选'))
+  await sleep(400)
 
   console.log('\n[6] 明细：股票 tab + 抽屉编辑')
   check('切到明细', await nav('trades'))
@@ -517,21 +533,28 @@ try {
   const onChips = await evaluate(`JSON.stringify([...document.querySelectorAll('.status-chips .filter-chip.on')].map(e => e.textContent.trim()))`)
   check('状态 chip 处于激活态', JSON.parse(onChips).join(',').includes('待回补'), onChips)
 
-  // 概览 · 价格网格 → 明细（股票 + 价格档）
+  // 概览 · 价格树干 → 明细（股票 + 价格档）：点最密的待卖叶团
   await nav('overview')
   await clickByText('.stock-tabs > *', '柳工')
-  await sleep(400)
-  check(
-    '点价格网格行',
-    await evaluate(`(() => {
-      const tr = document.querySelector('table.pricegrid tbody tr')
-      if (!tr) return false
-      tr.click(); return true
-    })()`),
-  )
+  await sleep(1200)
+  const gridPos = await evaluate(`(() => {
+    const c = document.querySelector('canvas[data-tree="price"]')
+    if (!c || !c.__tree) return null
+    const lv = c.__tree.levels().filter((l) => l.sell > 0).sort((a, b) => b.sell - a.sell)
+    return lv.length ? JSON.stringify({ cents: lv[0].cents, p: c.__tree.projectPrice(lv[0].cents) }) : null
+  })()`)
+  const gridTarget = gridPos ? JSON.parse(gridPos) : null
+  check('树干给出可点击档位', Boolean(gridTarget && gridTarget.p), gridPos)
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: gridTarget.p.x, y: gridTarget.p.y })
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: gridTarget.p.x, y: gridTarget.p.y, button: 'left', clickCount: 1 })
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: gridTarget.p.x, y: gridTarget.p.y, button: 'left', clickCount: 1 })
   await sleep(600)
   const gridHash = await evaluate('location.hash')
-  check('网格跳转带股票和价格档', gridHash.startsWith('#/trades') && /price=\d+/.test(gridHash) && decodeURIComponent(gridHash).includes('stock=柳工'), gridHash)
+  check(
+    '树干跳转带股票和价格档',
+    gridHash.startsWith('#/trades') && gridHash.includes(`price=${gridTarget.cents}`) && decodeURIComponent(gridHash).includes('stock=柳工'),
+    gridHash,
+  )
 
   // 概览 · 待补日期标签 → 缺卖出日期
   await nav('overview')
@@ -872,6 +895,17 @@ try {
   writeFileSync(join(OUT, 'mobile-dropdown.png'), Buffer.from(ddShot.data, 'base64'))
   await evaluate(`document.body.click()`)
   await sleep(300)
+
+  console.log('\n[11.8] 桌面全屏宽度：无横向滚动条')
+  await send('Emulation.setDeviceMetricsOverride', { width: 1920, height: 1080, deviceScaleFactor: 1, mobile: false })
+  await send('Page.navigate', { url: `${BASE}/#/overview` })
+  await settle(2500)
+  const ovf = await evaluate(`JSON.stringify({ sw: document.documentElement.scrollWidth, iw: window.innerWidth })`)
+  check('1920 宽无横向溢出', JSON.parse(ovf).sw <= JSON.parse(ovf).iw, ovf)
+  // 还原移动端视口，让后面的截图保持 390 尺寸
+  await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true })
+  await send('Page.navigate', { url: `${BASE}/#/overview` })
+  await settle(2000)
 
   console.log('\n[12] 截图')
   await sleep(4800) // 等轻提示消失，截干净的图

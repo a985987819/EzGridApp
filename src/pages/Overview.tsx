@@ -4,7 +4,7 @@ import { activeStockNames } from '../domain/stocks'
 import type { StockSummary } from '../domain/types'
 import { useApp } from '../store/useApp'
 import { CheckList } from '../components/CheckGrid'
-import { PriceGrid } from '../components/PriceGrid'
+import { TreeTrunk } from '../components/TreeTrunk'
 import { money, price, qty, signedMoney, tone } from '../ui/format'
 import type { TradesQuery } from '../ui/nav'
 
@@ -238,9 +238,9 @@ export function Overview({
       <Card>
         <div className="sec-head" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
           <div className="row">
-            <strong>股票价格网格</strong>
+            <strong>价格树干</strong>
             <div className="spacer" />
-            <span className="sec-sub">高 → 低</span>
+            <span className="sec-sub">纵轴 = 价格 · 每 0.1 元一圈</span>
           </div>
           <div className="stock-tabs">
             {withRows.map((s) => (
@@ -276,7 +276,7 @@ export function Overview({
                 <div className={`v long ${tone(current.profitCents)}`}>{signedMoney(current.profitCents)}</div>
               </div>
             </div>
-            <PriceGrid stock={current} onPick={(p) => goTrades({ stock: current.stockName, price: p })} />
+            <TreeTrunk stockName={current.stockName} onPick={(p) => goTrades({ stock: current.stockName, price: p })} />
           </div>
         )}
       </Card>
