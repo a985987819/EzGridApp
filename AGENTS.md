@@ -61,7 +61,7 @@ store/useApp（唯一写库入口，全部动作写 auditLogs）
 | 计划价 P8 | plans 只影响展示/导出，永不参与计算 |
 | 软删除 | `deletedAt` 非空的行不参与一切派生；导入幂等按 importKey，同 key 不覆盖 |
 | 基准 | `defaults.ts` BASELINE 只对「26年网格记录」fixture 成立，金额 ±1 元容差（E 列三位小数取整）；改任何派生逻辑跑 `io/baseline.spec.ts` 是红线 |
-| 价格树 | `components/TreeTrunk.tsx` = Canvas 2D 单画布「图鉴素雅风」（V9.22 做减法：删云/装饰叶/树皮排线/树轮/「沸腾」抖动动画；细锥双线勾边干+极淡水彩、同侧统一仰角弧线枝、整元价签泡牌钉干上、单行衬线注记）。合并粒度由 `CARD_ROW_PX=27`（单行注记行高）按当前缩放推算——放大时聚合枝自动分散回原档位数，无固定 0.5 元下限；聚合档数=枝上小点（叶痕）；注记内容 买/卖 价×份额、枯枝「已盈利±¥xx」=该价位 soldProfitCents 合计，同侧纵向避让不重叠；e2e 桥 `canvas.__tree`：levels/span/center/panX/panXBy/setView/pickAt/zoomBy/projectPrice（projectPrice 返回所在合并组的 repCents——点击跳的是组内代表档，不是所选档）。命中检测按圆心距离最近者胜、等距才按 待卖→待买→枯枝 |
+| 价格树 | **逻辑层** `TreeTrunk.tsx`（数据聚合 aggregate → groupLevels、视野/交互/命中/e2e 桥/风格注册切换）+ **样式层** `treeStyleAtlas.ts`（图鉴素雅风，默认：细锥双线干+淡水彩、统一弧线枝、干上泡牌价签、单行衬线注记）与 `treeStyleSketch.ts`（手绘抖动风，V9.18~21 存档：木色粗干+树皮排线+树轮+装饰叶+云+沸腾）。V9.23：滚轮/捏合缩放**锚定指针**（`zoomToSpan`；桥 `zoomBy` 保持正中缩放旧语义）；图例按钮切风格，偏好存 localStorage `ezgrid.treeStyle`（不落台账库）。合并粒度由风格 `cardRowPx`（图鉴 27 / 手绘 34）按缩放推算——放大时聚合枝自动分散回原档位数；注记 买/卖 价×份额、枯枝「已盈利±¥xx」=该价位 soldProfitCents 合计；e2e 桥 `canvas.__tree`：levels/span/center/panX/panXBy/setView/pickAt/zoomBy/projectPrice/**style**（projectPrice 返回所在合并组的 repCents——点击跳的是组内代表档）。命中检测按圆心距离最近者胜、等距才按 待卖→待买→枯枝 |
 
 ## ID 前缀约定
 

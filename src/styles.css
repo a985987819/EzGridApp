@@ -605,6 +605,23 @@ button { font-family: inherit; }
 .tree-legend .dot.sell::before { background: #b0685c; }
 .tree-legend .dot.agg::before { background: #8d7f68; width: 6px; height: 6px; }
 .tree-legend .dot.fallen::before { background: #a38f70; }
+.tree-legend .dot.leaf::before { background: #5f9a4a; }
+/* 手绘插画风（V9.18~21 存档）的图例沿用旧配色 */
+.tree-legend[data-style="sketch"] .dot.buy::before { background: #5b8fd9; }
+.tree-legend[data-style="sketch"] .dot.sell::before { background: #d95f57; }
+.tree-legend[data-style="sketch"] .dot.fallen::before { background: #d9b56a; }
+/* 风格切换：低调的文字按钮，藏在图例条里 */
+.tree-legend .style-toggle {
+  border: 1px solid rgba(120, 104, 78, 0.35);
+  background: #faf5e8;
+  color: inherit;
+  border-radius: 6px;
+  padding: 2px 9px;
+  font-size: 11px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.tree-legend .style-toggle:hover { background: #f3ecdb; }
 .tree-legend .hint { margin-left: auto; }
 /* V9.7：日历事件条撑满格宽（库里 chip 是收缩布局），聚合条才能左右分布 */
 /* V9.13：统计条占格子高度一半——bar-top 库里已算到格子垂直中点，从这起落到格底 */

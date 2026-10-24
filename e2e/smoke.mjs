@@ -291,7 +291,7 @@ try {
   await sleep(400)
   check('收起后面板消失', !(await bodyText()).includes('净持仓构成'))
 
-  console.log('\n[5] 2D 价格树（V9.18 Canvas 手绘线条风，替代价格表格）')
+  console.log('\n[5] 2D 价格树（Canvas 双风格：图鉴素雅/手绘插画，替代价格表格）')
   await clickByText('.stock-tabs > *', '柳工')
   await sleep(800) // 首帧（Canvas 直绘，无需等 chunk）
   check(
@@ -313,14 +313,38 @@ try {
   writeFileSync(join(OUT, 'mobile-tree.png'), Buffer.from(treeShot.data, 'base64'))
 
   // 先在概览页验滚轮缩放（点击会跳走，缩放要放在跳转前）
-  const span0 = await evaluate(`document.querySelector('canvas[data-tree="price"]').__tree.span()`)
+  // V9.23 缩放锚定光标：真实滚轮打在画布下沿——span 变小的同时视野中心向下沿
+  // 靠拢，而不是从画面正中放大。CDP 坐标要画布在视口内 + 藏掉吸顶层才落得准
   await evaluate(`(() => {
     const c = document.querySelector('canvas[data-tree="price"]')
-    c.dispatchEvent(new WheelEvent('wheel', { deltaY: -600, bubbles: true, cancelable: true }))
+    c.scrollIntoView({ block: 'center' })
+    window.scrollBy(0, -80)
+    const st = document.querySelector('[data-sticky="overview"]')
+    if (st) st.style.visibility = 'hidden'
   })()`)
   await sleep(400)
-  const span1 = await evaluate(`document.querySelector('canvas[data-tree="price"]').__tree.span()`)
-  check('滚轮缩放生效（span 变小）', span1 < span0 * 0.9, `${span0} → ${span1}`)
+  const wheelInfo0 = await evaluate(`(() => {
+    const c = document.querySelector('canvas[data-tree="price"]')
+    const r = c.getBoundingClientRect()
+    return JSON.stringify({
+      span: c.__tree.span(), center: c.__tree.center(),
+      x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height * 0.85),
+    })
+  })()`)
+  const w0 = JSON.parse(wheelInfo0)
+  await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: w0.x, y: w0.y, deltaX: 0, deltaY: -600 })
+  await sleep(400)
+  const wheelInfo1 = await evaluate(`(() => {
+    const c = document.querySelector('canvas[data-tree="price"]')
+    return JSON.stringify({ span: c.__tree.span(), center: c.__tree.center() })
+  })()`)
+  const w1 = JSON.parse(wheelInfo1)
+  check('滚轮缩放生效（span 变小）', w1.span < w0.span * 0.9, `${w0.span} → ${w1.span}`)
+  check('缩放锚定光标（下沿缩放中心下移）', w1.center < w0.center - 0.1, `${w0.center} → ${w1.center}`)
+  await evaluate(`(() => {
+    const st = document.querySelector('[data-sticky="overview"]')
+    if (st) st.style.visibility = ''
+  })()`)
 
   // 放大状态截图：聚合枝应分散回原档位数、枝梢数据牌互不重叠（V9.21）
   const zoomInShot = await send('Page.captureScreenshot', { format: 'png' })
@@ -339,6 +363,22 @@ try {
   const { span: v0span, center: v0center } = JSON.parse(view0)
   await evaluate(`document.querySelector('canvas[data-tree="price"]').__tree.setView(${v0span}, ${v0center})`)
   await sleep(200)
+
+  // V9.23 双风格切换：图鉴素雅（默认）↔ 手绘插画（V9.18~21 存档），偏好落 localStorage
+  await evaluate(`document.querySelector('[data-testid="tree-style-toggle"]').click()`)
+  await sleep(700) // 重挂 effect + 首帧
+  const style1 = await evaluate(`(() => {
+    const c = document.querySelector('canvas[data-tree="price"]')
+    return JSON.stringify({ style: c.__tree.style(), stored: localStorage.getItem('ezgrid.treeStyle') })
+  })()`)
+  const s1 = JSON.parse(style1)
+  check('切到手绘插画并落 localStorage', s1.style === 'sketch' && s1.stored === 'sketch', style1)
+  const sketchShot = await send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync(join(OUT, 'mobile-tree-sketch.png'), Buffer.from(sketchShot.data, 'base64'))
+  await evaluate(`document.querySelector('[data-testid="tree-style-toggle"]').click()`)
+  await sleep(600)
+  const style2 = await evaluate(`document.querySelector('canvas[data-tree="price"]').__tree.style()`)
+  check('切回图鉴素雅', style2 === 'atlas', String(style2))
 
   // V9.18 左右拖动平移：真实鼠标拖（按下→横移 120px→松手；dragMoved>7 不触发拾取）
   // 画布多半在视口外/被吸顶层盖住：滚到位并临时藏掉吸顶层，否则 CDP 坐标落空
