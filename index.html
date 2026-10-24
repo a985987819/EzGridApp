@@ -2,11 +2,16 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <link
       rel="icon"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='5' fill='%23faf7f2'/%3E%3Cpath d='M5 10h22M5 16h22M5 22h22M10 5v22M16 5v22M22 5v22' stroke='%238c2f2f' stroke-width='1.6'/%3E%3C/svg%3E"
     />
+    <!-- iOS 主屏：加到主屏幕后全屏独立运行（Safari 不认 manifest 的部分由这些补齐） -->
+    <link rel="apple-touch-icon" href="/pwa-192.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="网格交易" />
     <title>网格交易管理</title>
   </head>
   <body>
