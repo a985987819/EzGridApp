@@ -29,6 +29,8 @@ export interface TradesQuery {
   sort?: string
   /** 显示已删除行 */
   del?: boolean
+  /** 放开「隐藏已完成」：默认隐藏已完成行，勾上 = 已完成的也显示 */
+  showDone?: boolean
 }
 
 export interface Route {
@@ -47,6 +49,7 @@ export function serializeTradesQuery(q: TradesQuery): string {
   if (q.id) p.set('id', q.id)
   if (q.sort) p.set('sort', q.sort)
   if (q.del) p.set('del', '1')
+  if (q.showDone) p.set('showDone', '1')
   return p.toString()
 }
 
@@ -70,6 +73,7 @@ export function parseTradesQuery(search: string): TradesQuery {
   const sort = p.get('sort')
   if (sort) q.sort = sort
   if (p.get('del') === '1') q.del = true
+  if (p.get('showDone') === '1') q.showDone = true
   return q
 }
 

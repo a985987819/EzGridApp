@@ -103,6 +103,11 @@ function statusMatch(r: Row, key: StatusKey): boolean {
   }
 }
 
+/** 已完成：卖出已落袋（有卖出、没有剩余持仓），也没有待回补挂着——这类行默认从明细里藏起来 */
+function isDone(r: Row): boolean {
+  return r.sell !== null && r.sell.rebuyStatus !== 'pending' && (r.lot === null || r.lot.remainingQty === 0)
+}
+
 const BLANK_DRAFT = Object.fromEntries(EDITABLE.map((f) => [f.key, ''])) as Record<EditableKey, string>
 
 const BLANK_FORM: ManualInput = {
@@ -146,6 +151,8 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     SORT_KEYS.includes(urlQuery.sort ?? '') ? (urlQuery.sort as SortBy) : 'rowDesc',
   )
   const [showDeleted, setShowDeleted] = useState(urlQuery.del === true)
+  // V9.5：默认隐藏「已完成」行（卖完且无待回补），URL 带 showDone=1 时放开
+  const [hideDone, setHideDone] = useState(urlQuery.showDone !== true)
   const [openRow, setOpenRow] = useState<number | null>(null)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState<Record<EditableKey, string>>(BLANK_DRAFT)
@@ -167,6 +174,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     setIdFilter(typeof q.id === 'string' && q.id ? q.id : null)
     setSortBy(SORT_KEYS.includes(q.sort ?? '') ? (q.sort as SortBy) : 'rowDesc')
     setShowDeleted(q.del === true)
+    setHideDone(q.showDone !== true)
   }, [urlKey])
 
   // 反向同步：筛选变化写回 hash（replaceState，不产生历史条目）
@@ -181,8 +189,9 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       id: idFilter ?? undefined,
       sort: sortBy === 'rowDesc' ? undefined : sortBy,
       del: showDeleted || undefined,
+      showDone: !hideDone || undefined,
     })
-  }, [stockFilter, statuses, keyword, priceFilter, fromDate, toDate, idFilter, sortBy, showDeleted])
+  }, [stockFilter, statuses, keyword, priceFilter, fromDate, toDate, idFilter, sortBy, showDeleted, hideDone])
 
   // nanoId 索引：展示 / 筛选 / 跳转的唯一行级 id（V9.4）
   const nano = useMemo(() => buildNanoIdIndex(scopedRecords), [scopedRecords])
@@ -225,6 +234,8 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       if (idFilter !== null && rId !== idFilter) return false
       // 状态多选取交集：勾了几个状态，行必须全都满足
       if (statuses.length > 0 && !statuses.every((k) => statusMatch(r, k))) return false
+      // V9.5：默认隐藏已完成；勾「已卖完」或深链带该状态时自动放开，避免空列表陷阱
+      if (hideDone && !statuses.includes('soldout') && isDone(r)) return false
       // 日期区间：卖出日期优先，其次买入日期；没日期的行在有区间条件时直接排除
       if (fromDate || toDate) {
         const d = tradeDate(r)
@@ -238,7 +249,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       return true
     })
     return { filtered: list, noDateHidden: hidden }
-  }, [rows, stockFilter, keyword, priceFilter, statuses, showDeleted, enabledSet, fromDate, toDate, idFilter, nano])
+  }, [rows, stockFilter, keyword, priceFilter, statuses, showDeleted, enabledSet, fromDate, toDate, idFilter, nano, hideDone])
 
   /** 已生效的条件 chips：每颗都能单独点掉 */
   const activeChips = useMemo(() => {
@@ -266,7 +277,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     return chips
   }, [stockFilter, statuses, priceFilter, fromDate, toDate, keyword, idFilter, nano])
 
-  /** 一键复位：股票 / 状态 / 日期 / 价格 / 关键词 / nanoId 全清（排序与已删除开关不动） */
+  /** 一键复位：股票 / 状态 / 日期 / 价格 / 关键词 / nanoId 全清（排序与已删除开关不动），已完成恢复默认隐藏 */
   function resetFilters() {
     setStockFilter('all')
     setStatuses([])
@@ -275,6 +286,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     setToDate('')
     setKeyword('')
     setIdFilter(null)
+    setHideDone(true)
   }
 
   /** 排序后的可见列表（S3：行号 / 买入日期 / 卖出日期 / 盈利，各升降一档） */
@@ -423,11 +435,25 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
               type="button"
               className={`filter-chip toggle${statuses.includes(k) ? ' on' : ''}`}
               aria-pressed={statuses.includes(k)}
-              onClick={() => setStatuses((s) => (s.includes(k) ? s.filter((x) => x !== k) : [...s, k]))}
+              onClick={() => {
+                // 「已卖完」和「隐藏已完成」天然互斥：勾已卖完时自动放开隐藏，避免空列表
+                if (k === 'soldout' && !statuses.includes(k)) setHideDone(false)
+                setStatuses((s) => (s.includes(k) ? s.filter((x) => x !== k) : [...s, k]))
+              }}
             >
               {STATUS_LABEL[k]}
             </button>
           ))}
+          {/* V9.5：已完成默认排除，点一下找回（URL 记住 showDone=1） */}
+          <button
+            type="button"
+            className={`filter-chip toggle${hideDone ? ' on' : ''}`}
+            aria-pressed={hideDone}
+            data-action="hide-done"
+            onClick={() => setHideDone((v) => !v)}
+          >
+            隐藏已完成
+          </button>
         </div>
 
         {/* S3：日期区间筛选（卖出日期优先，其次买入日期） */}
@@ -558,14 +584,24 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                   {r.sell ? signedMoney(r.sell.profitCents) : '—'}
                 </span>
               </div>
+              {/* 蓝买红卖（V9.5）：买价/买量蓝色，卖量红色并加粗；日期行弱化 */}
               <div className="mid">
                 <span className="path num">
-                  {r.rec.buyPriceCents !== null ? `买 ${price(r.rec.buyPriceCents)}` : '无买入批次'}
-                  {r.lot ? ` × ${qty(r.lot.qty)}` : r.rec.soldQty ? ` · 卖 ${qty(r.rec.soldQty)}` : ''}
+                  {r.rec.buyPriceCents !== null ? (
+                    <span className="c-buy">
+                      买 {price(r.rec.buyPriceCents)}
+                      {r.lot ? <b> × {qty(r.lot.qty)}</b> : ''}
+                    </span>
+                  ) : (
+                    '无买入批次'
+                  )}
+                  {r.rec.soldQty ? (
+                    <span className="c-sell"> · 卖 <b>{qty(r.rec.soldQty)}</b></span>
+                  ) : ''}
                   {' → '}
                   目标 {price(r.lot?.targetPriceCents ?? r.rec.targetPriceCents)}
                 </span>
-                <span className="tiny muted num">
+                <span className="right-qty num">
                   {r.lot ? `剩余 ${qty(r.lot.remainingQty)}` : r.rec.soldQty ? `已卖 ${qty(r.rec.soldQty)}` : ''}
                 </span>
               </div>

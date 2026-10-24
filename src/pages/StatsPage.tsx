@@ -58,7 +58,12 @@ export function StatsPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) 
             key={m.month}
             className="line clickable"
             onClick={() =>
-              goTrades(m.dateMissing ? { status: ['sellDateMissing'] } : { from: monthRange(m.month).from, to: monthRange(m.month).to })
+              // 月度成交本身就是已成交数据的汇总：跳明细时放开「隐藏已完成」，行数才对得上标签
+              goTrades(
+                m.dateMissing
+                  ? { status: ['sellDateMissing'], showDone: true }
+                  : { from: monthRange(m.month).from, to: monthRange(m.month).to, showDone: true },
+              )
             }
           >
             <div className="left">
@@ -151,7 +156,7 @@ export function StatsPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) 
             <div
               key={g.groupKey}
               className="line clickable"
-              onClick={() => goTrades({ stock: stockNameOf(g.stockId), price: g.rebuyPriceCents })}
+              onClick={() => goTrades({ stock: stockNameOf(g.stockId), price: g.rebuyPriceCents, showDone: true })}
             >
               <div className="left">
                 <div className="t1 mono" style={{ fontSize: 12.5 }}>{g.groupKey.replace('stock:', '')}</div>
@@ -206,7 +211,7 @@ function CalendarCard({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
         <strong>成交日历</strong>
         <div className="spacer" />
         {missing > 0 && (
-          <Tag size="small" variant="soft" color="app-yellow" onClick={() => goTrades({ status: ['sellDateMissing'] })}>
+          <Tag size="small" variant="soft" color="app-yellow" onClick={() => goTrades({ status: ['sellDateMissing'], showDone: true })}>
             {missing} 笔缺日期
           </Tag>
         )}
@@ -225,7 +230,7 @@ function CalendarCard({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
           <span className="tiny muted">{selected}</span>
           <div className="spacer" />
           <span className="tiny muted">{daySells.length} 笔</span>
-          <Button size="small" type="text" onClick={() => goTrades({ from: selected, to: selected })}>
+          <Button size="small" type="text" onClick={() => goTrades({ from: selected, to: selected, showDone: true })}>
             看这天明细
           </Button>
         </div>

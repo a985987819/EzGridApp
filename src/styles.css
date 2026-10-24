@@ -5,6 +5,8 @@
   --header-h: calc(63px + env(safe-area-inset-top));
   --up: #d0453f;
   --down: #2f8f5b;
+  /* 明细行的方向色（V9.5）：蓝买红卖 */
+  --buy: #2f6fd6;
   /* 分隔线三档：line 用于行间，line-strong 用于区块/表头，line-soft 用于内部分组 */
   --line: #e4dccd;
   --line-strong: #cbbfa9;
@@ -201,6 +203,22 @@ button { font-family: inherit; }
 .trade-item .path { font-size: 12.5px; color: var(--animal-text-color-secondary, #9f927d); }
 .trade-item .profit { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .trade-item.deleted { opacity: 0.5; }
+
+/* 方向色（V9.5）：买蓝卖红，数量加粗；目标价维持中性色不抢视线 */
+.trade-item .c-buy { color: var(--buy, #2f6fd6); }
+.trade-item .c-sell { color: var(--up, #d0453f); }
+.trade-item .c-buy b,
+.trade-item .c-sell b { font-weight: 700; }
+
+/* 右侧「剩余 / 已卖」是扫读时最关心的数字，加大加粗、卖方向红 */
+.trade-item .right-qty {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--up, #d0453f);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.trade-item .right-qty:empty { display: none; }
 
 .tag-row { display: flex; gap: 4px; flex-wrap: wrap; }
 
@@ -493,14 +511,16 @@ button { font-family: inherit; }
   font-size: 11.5px;
   color: var(--animal-text-color-secondary, #9f927d);
   font-variant-numeric: tabular-nums;
+  /* V9.5：日期是辅助信息，整体弱化一档 */
+  opacity: 0.82;
 }
 .trade-item .dates .sep { opacity: 0.5; }
 .trade-item .dates .missing { color: var(--animal-text-color-secondary, #9f927d); opacity: 0.75; }
 
-/* 日期值比标签稍重一点，扫读时能抓住 */
+/* 日期值不再比标签重：弱化后与辅助信息同色 */
 .trade-item .dates b {
-  font-weight: 600;
-  color: var(--animal-text-color, #794f27);
+  font-weight: 500;
+  color: var(--animal-text-color-secondary, #9f927d);
 }
 .trade-item .dates .missing b { color: var(--animal-text-color-secondary, #9f927d); font-weight: 500; }
 .trade-item .dates .sep {

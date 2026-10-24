@@ -370,8 +370,22 @@ try {
   check('卡片显示买入/卖出日期', cardText.includes('买入') && cardText.includes('卖出'))
   check('R63 买入日期为空显示 —（先卖后买）', /买入\s*—/.test(cardText), cardText)
   check('R63 卖出日期为空显示 —', /卖出\s*—/.test(cardText), cardText)
+  // R2 是已完成行，默认被「隐藏已完成」藏起来：临时放开再验证双日期显示与买卖配色
+  const toggleHideDoneHere = async () => {
+    const ok = await clickByText('.status-chips .filter-chip', '隐藏已完成')
+    await sleep(400)
+    return ok
+  }
+  check('临时放开「隐藏已完成」', await toggleHideDoneHere())
   const r2Text = await evaluate(`document.querySelector('[data-row="2"] .dates')?.textContent.trim() ?? ''`)
   check('R2 两个日期都有值', /买入 \d{4}-\d{2}-\d{2}/.test(r2Text) && /卖出 \d{4}-\d{2}-\d{2}/.test(r2Text), r2Text)
+  check(
+    'R2 买蓝卖红配色',
+    Boolean(
+      await evaluate(`Boolean(document.querySelector('[data-row="2"] .c-buy') && document.querySelector('[data-row="2"] .c-sell'))`),
+    ),
+  )
+  check('恢复「隐藏已完成」', await toggleHideDoneHere())
 
   // 状态多选 chips（V9）：可叠加取交集，已生效条件 chip 可点掉，一键复位
   const toggleStatus = async (label) => {
@@ -381,7 +395,8 @@ try {
   }
   check('筛选「缺卖出日期」', await toggleStatus('缺卖出日期'))
   const sellMissingCount = await headCount()
-  check('缺卖出日期 9 行', sellMissingCount === 9, String(sellMissingCount))
+  // V9.5 起默认隐藏已完成：9 笔缺日期里的 5 笔（R44-50/57 中已卖完的）被排除，只剩待回补的 4 行
+  check('缺卖出日期 4 行（已完成的被默认隐藏）', sellMissingCount === 4, String(sellMissingCount))
   const hashWithStatus = await evaluate('location.hash')
   check('筛选写进 URL（S7）', hashWithStatus.includes('status=sellDateMissing'), hashWithStatus)
   check('叠加「缺买入日期」', await toggleStatus('缺买入日期'))
@@ -397,6 +412,16 @@ try {
   await sleep(400)
   check('复位后行数恢复', (await headCount()) === allCount, `${await headCount()}/${allCount}`)
   check('复位后 URL 不带筛选', (await evaluate('location.hash')) === '#/trades', await evaluate('location.hash'))
+
+  // V9.5：默认隐藏已完成，chip 一键找回，URL 记住 showDone=1
+  check('默认隐藏已完成（62 行里可见 33 行）', allCount === 33, String(allCount))
+  check('点「隐藏已完成」chip 放开', await toggleStatus('隐藏已完成'))
+  const withDone = await headCount()
+  check('放开后已完成行回来（62 行）', withDone === 62, String(withDone))
+  check('URL 记住 showDone=1', (await evaluate('location.hash')).includes('showDone=1'), await evaluate('location.hash'))
+  check('已完成行出现（R2 已卖完）', Boolean(await evaluate(`Boolean(document.querySelector('[data-row="2"]'))`)))
+  check('再点恢复隐藏', await toggleStatus('隐藏已完成'))
+  check('恢复隐藏后回到 33 行', (await headCount()) === allCount, String(await headCount()))
   check('明细顶部吸顶', (await stickyOf('trades')) === 'sticky')
   const tradePills = await evaluate(`JSON.stringify([...document.querySelectorAll('.stock-tabs > *')].map(e => e.textContent.trim()))`)
   check('明细也有股票药丸（含「全部」）', JSON.parse(tradePills)[0] === '全部' && JSON.parse(tradePills).length === 5, tradePills)
@@ -490,7 +515,7 @@ try {
   check('深链落在明细页', (await evaluate('location.hash')).includes('#/trades'))
   check('深链筛选生效：柳工待回补 4 行', (await headCount()) === 4, String(await headCount()))
   const onChips = await evaluate(`JSON.stringify([...document.querySelectorAll('.status-chips .filter-chip.on')].map(e => e.textContent.trim()))`)
-  check('状态 chip 处于激活态', JSON.parse(onChips).join(',') === '待回补', onChips)
+  check('状态 chip 处于激活态', JSON.parse(onChips).join(',').includes('待回补'), onChips)
 
   // 概览 · 价格网格 → 明细（股票 + 价格档）
   await nav('overview')
@@ -520,7 +545,8 @@ try {
   )
   await sleep(600)
   check('跳到明细并带缺卖出日期筛选', (await evaluate('location.hash')).includes('status=sellDateMissing'))
-  check('缺卖出日期 9 行', (await headCount()) === 9, String(await headCount()))
+  // 执行类跳转自带 showDone=1 放开隐藏，行数与来源标签一致
+  check('缺卖出日期 9 行（跳转自动放开隐藏）', (await headCount()) === 9, String(await headCount()))
 
   // 概览 · 敞口标签 → 空头敞口（口径与标签数字一致：待回补 ∧ 无买入批次）
   await nav('overview')
@@ -578,7 +604,7 @@ try {
   await sleep(600)
   const groupHash = await evaluate('location.hash')
   check('组池跳转带股票和价格档', groupHash.startsWith('#/trades') && /price=\d+/.test(groupHash) && decodeURIComponent(groupHash).includes('stock=柳工'), groupHash)
-  check('组池[0]=柳工|7.81 命中 2 行', (await headCount()) === 2, String(await headCount()))
+  check('组池[0]=柳工|7.81 命中 2 行（跳转自动放开隐藏）', (await headCount()) === 2, String(await headCount()))
 
   // 统计 · 成交日历 → 那一天
   await nav('stats')

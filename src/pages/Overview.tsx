@@ -119,7 +119,7 @@ export function Overview({
               size="small"
               variant="soft"
               color="app-yellow"
-              onClick={() => goTrades({ status: ['sellDateMissing'] })}
+              onClick={() => goTrades({ status: ['sellDateMissing'], showDone: true })}
             >
               待补日期 {missingDateCount} 笔
             </Tag>

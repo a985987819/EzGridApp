@@ -13,6 +13,7 @@ describe('明细筛选的 URL 序列化（S7）', () => {
       id: 'k3x09v2f',
       sort: 'profitDesc',
       del: true,
+      showDone: true,
     }
     expect(parseTradesQuery(serializeTradesQuery(q))).toEqual(q)
   })
