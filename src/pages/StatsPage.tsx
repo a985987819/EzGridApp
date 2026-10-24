@@ -16,6 +16,14 @@ export function StatsPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) 
   const groups = ledger.groups.filter((g) => enabledIds.has(g.stockId))
   const hiddenCount = ledger.byStock.length - byStock.length
   const stockNameOf = (id: string) => stocks.find((s) => s.id === id)?.name ?? ''
+  // 年 / 月累计盈利：从月度桶里取（未填日期的卖出不进累计）
+  const now = new Date()
+  const curYear = String(now.getFullYear())
+  const curMonth = `${curYear}-${String(now.getMonth() + 1).padStart(2, '0')}`
+  const yearProfit = ledger.monthly
+    .filter((m) => m.month.startsWith(curYear))
+    .reduce((a, m) => a + m.profitCents, 0)
+  const monthProfit = ledger.monthly.find((m) => m.month === curMonth)?.profitCents ?? 0
 
   return (
     <div className="stack">
@@ -51,6 +59,17 @@ export function StatsPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) 
           <strong>月度成交</strong>
           <div className="spacer" />
           <span className="sec-sub">收益率 = 盈利 / 卖出额</span>
+        </div>
+        {/* V9.7：年 / 月累计盈利——把有日期的卖出按年 / 按月累加（未填日期的只单列，不进累计） */}
+        <div className="grid-4 metric-strip two-col" style={{ marginBottom: 8 }}>
+          <div>
+            <div className="k">年累计盈利（{curYear}）</div>
+            <div className={`v ${tone(yearProfit)}`}>{signedMoney(yearProfit)}</div>
+          </div>
+          <div>
+            <div className="k">月累计盈利（{curMonth}）</div>
+            <div className={`v ${tone(monthProfit)}`}>{signedMoney(monthProfit)}</div>
+          </div>
         </div>
         <div className="data-block">
         {ledger.monthly.map((m) => (
@@ -181,6 +200,16 @@ export function StatsPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) 
 }
 
 
+/** 日历格用的紧凑盈利：+196 / -120（元，四舍五入到整数） */
+function compactYuan(cents: number): string {
+  const yuan = Math.round(Math.abs(cents) / 100)
+  return `${cents >= 0 ? '+' : '-'}${yuan}`
+}
+
+function price2(cents: number | null): string {
+  return cents === null ? '—' : (cents / 100).toFixed(2)
+}
+
 /** 成交日历：按月看每天卖出了什么、赚了多少（红盈绿亏） */
 function CalendarCard({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
   const { ledger, scopedRecords } = useApp()
@@ -189,18 +218,32 @@ function CalendarCard({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
   const [panel, setPanel] = useState(`${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`)
   const [selected, setSelected] = useState(today.toISOString().slice(0, 10))
 
-  const events = useMemo(
-    () =>
-      ledger.sells
-        .filter((s) => s.soldAt !== null && s.profitCents !== null)
-        .map((s) => ({
-          // 日历格子很窄，用「+196」这种紧凑写法，避免被裁掉
-          title: compactYuan(s.profitCents ?? 0),
-          start: s.soldAt as string,
-          color: (s.profitCents ?? 0) >= 0 ? ('coral' as const) : ('green' as const),
-        })),
-    [ledger.sells],
-  )
+  // 按天聚合：一个格子一条「左当日总盈利 / 右成交笔数」（V9.7 修正口径）
+  const events = useMemo(() => {
+    const byDay = new Map<string, { count: number; qty: number; profit: number }>()
+    for (const s of ledger.sells) {
+      if (s.soldAt === null) continue
+      const old = byDay.get(s.soldAt)
+      const next = old ?? { count: 0, qty: 0, profit: 0 }
+      next.count += 1
+      next.qty += s.qty
+      next.profit += s.profitCents ?? 0
+      byDay.set(s.soldAt, next)
+    }
+    return [...byDay.entries()].map(([day, b]) => ({
+      start: day,
+      color: b.profit >= 0 ? ('coral' as const) : ('green' as const),
+      title: (
+        <span
+          className="cal-day-stat"
+          title={`当日盈利 ${signedMoney(b.profit)} · ${b.qty} 股`}
+        >
+          <span className="amt">{compactYuan(b.profit)}</span>
+          <span className="q">{b.count}笔</span>
+        </span>
+      ),
+    }))
+  }, [ledger.sells])
 
   const daySells = ledger.sells.filter((s) => s.soldAt === selected)
   const missing = ledger.sells.filter((s) => s.dateMissing).length
@@ -238,32 +281,26 @@ function CalendarCard({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
           <p className="tiny muted" style={{ margin: 0 }}>这天没有成交</p>
         ) : (
           <div className="data-block">
-          {daySells.map((s) => (
-            <div key={s.id} className="line clickable" onClick={() => goTrades({ id: nano.rowToId.get(s.sourceRow), stock: s.stockName })}>
-              <div className="left">
-                <div className="t1" style={{ fontSize: 13 }}>
-                  {s.stockName} · {price2(s.priceCents)} × {s.qty}
+            {daySells.map((s) => (
+              <div
+                key={s.id}
+                className="line clickable"
+                onClick={() => goTrades({ id: nano.rowToId.get(s.sourceRow), stock: s.stockName })}
+              >
+                <div className="left">
+                  <div className="t1" style={{ fontSize: 13 }}>
+                    {s.stockName} · {price2(s.priceCents)} × {s.qty}
+                  </div>
+                  <div className="t2">行 {s.sourceRow} · 成本 {price2(s.costCents)}</div>
                 </div>
-                <div className="t2">行 {s.sourceRow} · 成本 {price2(s.costCents)}</div>
+                <div className={`right num ${tone(s.profitCents)}`} style={{ fontWeight: 700 }}>
+                  {signedMoney(s.profitCents)}
+                </div>
               </div>
-              <div className={`right num ${tone(s.profitCents)}`} style={{ fontWeight: 700 }}>
-                {signedMoney(s.profitCents)}
-              </div>
-            </div>
-          ))}
+            ))}
           </div>
         )}
       </div>
     </Card>
   )
-}
-
-/** 日历格用的紧凑金额：+196 / -120（元，四舍五入到整数） */
-function compactYuan(cents: number): string {
-  const yuan = Math.round(Math.abs(cents) / 100)
-  return `${cents >= 0 ? '+' : '-'}${yuan}`
-}
-
-function price2(cents: number | null): string {
-  return cents === null ? '—' : (cents / 100).toFixed(2)
 }

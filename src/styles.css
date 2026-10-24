@@ -628,6 +628,38 @@ button { font-family: inherit; }
   pointer-events: none;
   overflow: hidden;
 }
+/* V9.7：日历事件条撑满格宽（库里 chip 是收缩布局），聚合条才能左右分布 */
+/* chip 默认一列宽 -10px，向两侧各借 4px 放下「金额 + 数量」两段 */
+[class*='animal-event-'] {
+  left: calc(var(--animal-calendar-bar-left, 0px) - 6px);
+  width: calc(var(--animal-calendar-bar-width, 100%) + 12px);
+  padding-left: 2px;
+  padding-right: 2px;
+}
+/* 日历格内的按天聚合条（V9.7）：左合计金额 / 右成交数量 */
+.cal-day-stat {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 2px;
+  width: 100%;
+  min-width: 0;
+}
+.cal-day-stat .amt {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cal-day-stat .q {
+  opacity: 0.72;
+  white-space: nowrap;
+  font-size: 0.92em;
+  flex: 0 0 auto;
+}
+.cal-day-stat { font-size: 9px; letter-spacing: -0.1px; }
+.cal-day-stat .amt { font-weight: 400; }
 .tree-label {
   position: absolute;
   top: 0;

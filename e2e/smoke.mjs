@@ -629,6 +629,30 @@ try {
   check('组池跳转带股票和价格档', groupHash.startsWith('#/trades') && /price=\d+/.test(groupHash) && decodeURIComponent(groupHash).includes('stock=柳工'), groupHash)
   check('组池[0]=柳工|7.81 命中 2 行（跳转自动放开隐藏）', (await headCount()) === 2, String(await headCount()))
 
+  // V9.7：年 / 月累计盈利 + 日历按天聚合
+  await nav('stats')
+  text = await bodyText()
+  // 基准数据：全部盈利 ¥9,830，其中 9 笔缺日期 ¥2,869 不进累计 → 年累计 ¥6,961；10 月只有 R56 → ¥196
+  check('年累计盈利（¥6,961）', text.includes('6,961'), '')
+  check('月累计盈利（¥196）', text.includes('196'), '')
+  // 日历格 = 左当日总盈利（+196）· 右成交笔数（1笔）
+  check('日历格聚合成「盈利+笔数」', text.includes('+196') && text.includes('1笔'), '')
+  const dayClicked = await evaluate(`(() => {
+    const el = [...document.querySelectorAll('div,span,button,td')].find((x) => x.textContent?.trim() === '13' && x.children.length === 0)
+    if (!el) return false
+    el.click()
+    return true
+  })()`)
+  await sleep(500)
+  check('点日历 13 日', dayClicked)
+  text = await bodyText()
+  // 选中日后，下方恢复当日成交明细（每笔可点）
+  check(
+    '当日明细恢复（三一重工 · 17.99 × 200）',
+    text.includes('17.99 × 200') && text.includes('行 56'),
+    '',
+  )
+
   // 统计 · 成交日历 → 那一天
   await nav('stats')
   check(

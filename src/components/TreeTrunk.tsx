@@ -1,13 +1,21 @@
 /**
- * 3D 价格树干（V9.6）：概览页的纵轴从表格变成一棵手绘插画风立体树。
+ * 3D 价格树干（V9.6→V9.8）：概览页的纵轴是一棵手绘插画风立体树。
  *
- * - 纵轴 = 价格轴，1 元 = 1 个世界单位，每 0.1 元一圈树轮（近看 0.1 一圈，拉远自动
- *   稀疏到 0.5 / 1 元并换粗细档）；
- * - 待买（蓝）挂左侧、待卖（红）挂右侧，已卖出（米黄）贴着树干；叶子按「屏幕近似
- *   恒定」的 LOD 缩放——拉远看整条价格轴时，单子密集的价格区域是一团团色块；
- * - 滚轮 / 双指捏合缩放，拖动上下攀爬，树干向上「无限」延展（覆盖 -20 ~ 300 元，
- *   远处用雾隐去）；价格标签是 HTML 覆盖层，任何缩放下都清晰；
- * - 点叶团跳到该价格的明细；three.js 动态导入（与 xlsx 同套路），主包不背 3D 引擎。
+ * 渲染 = 两遍管线（风格化与场景内容解耦，任意模型/相机运动都有一致手绘感）：
+ *   pass 1  数据缓冲：所有网格用同一个 GBufferMaterial 输出
+ *           RGBA 半浮点 (r=半球明暗 shade, gba=墨色) + FloatType 深度纹理，
+ *           无任何风格化；RT 用 NearestFilter、无 mipmap。
+ *   pass 2  全屏后处理（独立 scene + 正交相机）逐像素作画：
+ *           ① 手抖采样（值噪声偏移，颜色/深度同一偏移防轮廓错位）
+ *           ② 轮廓 = 逆深度 Laplacian（平面内二阶差分恒 0，只在真实深度不连续处
+ *              有响应；除以 iw 归一化，任意距离轮廓强度一致）+ 法线突变补边
+ *           ③ 阴影线 = 深度重建世界坐标/法线，条纹钉在表面上；间距按 2 的幂分级
+ *              防摩尔纹；三方向（45°/-45°/15°）排线，密度随明暗递减，最暗涂黑
+ *           ④ 纸面 = 双层值噪声纸纹 + 淡蓝横线（画布高 / 13.5）
+ *           ⑤ 合成 paper → mix(墨色, hatch*0.72) → mix(轮廓墨*0.92, edge*ew)
+ *
+ * 交互不变：滚轮 / 双指捏合缩放、拖动攀爬、点叶跳明细；价格标签为 HTML 覆盖层。
+ * three.js 动态导入（与 xlsx 同套路），主包不背 3D 引擎。
  */
 import { useEffect, useMemo, useRef } from 'react'
 import { useApp } from '../store/useApp'
@@ -28,17 +36,18 @@ const CAM_MAX = 288
 const SPAN_MIN = 0.5
 const SPAN_MAX = 150
 
-/** 手绘风配色（与 styles.css 的插画底色一致） */
-const C = {
-  bg: '#f7f0dd',
-  barkBase: '#9a6b45',
-  outline: 0x4a3020,
-  ring: 0x6f4530,
-  buy: [0x5b8fd9, 0x7fa9e3, 0x4a7cc4] as const,
-  sell: [0xd95f57, 0xe4796d, 0xc04f48] as const,
-  fallen: [0xd9b56a, 0xcba75c, 0xc39a4e] as const,
-  twig: 0x6f4530,
-  moss: 0x9db06e,
+/** 墨色盘：每个物体一种墨（pass1 写进 gba，pass2 取出排线/填色/勾边） */
+const INK = {
+  trunk: '#75492c',
+  twig: '#75492c',
+  buy: '#4a7cc4',
+  sell: '#c04f48',
+  fallen: '#c39a4e',
+  moss: '#7f9455',
+  ring: '#a08056',
+  ground: '#e9e6c8',
+  cloud: '#fdfbf2',
+  mountain: '#d9dcc0',
 }
 
 interface BlobLevel extends TreeLevel {
@@ -88,10 +97,181 @@ function trunkRadiusAt(y: number): number {
   return 0.55 - 0.19 * t
 }
 
-/** 价格 → 描边外表面半径（树轮 / 青苔 / 叶团的锚点都贴它，避免被描边吞掉） */
+/** 价格 → 树干外表面半径（树轮 / 青苔 / 叶团的锚点） */
 function outlineRadiusAt(y: number): number {
-  return trunkRadiusAt(y) + 0.065
+  return trunkRadiusAt(y) + 0.03
 }
+
+// ---------------- shader 源码 ----------------
+
+const GBUFFER_VERT = /* glsl */ `
+out vec3 vN;
+void main() {
+  vec3 n = normal;
+  vec4 wp = modelMatrix * vec4(position, 1.0);
+  #ifdef USE_INSTANCING
+    wp = modelMatrix * instanceMatrix * vec4(position, 1.0);
+    n = mat3(instanceMatrix) * normal;
+  #endif
+  vN = normalize(mat3(modelMatrix) * n);
+  gl_Position = projectionMatrix * viewMatrix * wp;
+}
+`
+
+const GBUFFER_FRAG = /* glsl */ `
+precision highp float;
+in vec3 vN;
+uniform vec3 uInk;
+uniform float uFill; // 1 = 纯色填充（云 / 山 / 地面），pass2 整片涂纯色
+out vec4 outColor;
+void main() {
+  float shade = dot(normalize(vN), normalize(vec3(0.45, 0.8, 0.55))) * 0.5 + 0.5;
+  if (uFill > 0.5) shade = -1.0;
+  outColor = vec4(shade, uInk);
+}
+`
+
+const POST_VERT = /* glsl */ `
+out vec2 vUv;
+void main() {
+  vUv = uv;
+  gl_Position = vec4(position.xy, 0.0, 1.0);
+}
+`
+
+const POST_FRAG = /* glsl */ `
+precision highp float;
+in vec2 vUv;
+out vec4 outColor;
+
+uniform sampler2D tColor;
+uniform sampler2D tDepth;
+uniform vec2 uRes;
+uniform float uNear;
+uniform float uFar;
+uniform mat4 uInvProj;
+uniform mat4 uInvView;
+
+float hash(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+float vnoise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  vec2 u2 = f * f * (3.0 - 2.0 * f);
+  float a = hash(i);
+  float b = hash(i + vec2(1.0, 0.0));
+  float c = hash(i + vec2(0.0, 1.0));
+  float d = hash(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, u2.x), mix(c, d, u2.x), u2.y);
+}
+/** 窗口深度 → 线性距离 */
+float linDepth(vec2 uv) {
+  float d = texture(tDepth, uv).x;
+  float viewZ = (uNear * uFar) / ((uFar - uNear) * d - uFar);
+  return -viewZ;
+}
+vec3 viewPosAt(vec2 uv, float depth01) {
+  vec4 clip = vec4(uv * 2.0 - 1.0, depth01 * 2.0 - 1.0, 1.0);
+  vec4 vp = uInvProj * clip;
+  return vp.xyz / vp.w;
+}
+/** 排线：p 为表面锚定坐标，dir 条纹方向 */
+float stripes(vec2 p, vec2 dir, float spacing, float width) {
+  float t = dot(p, vec2(-dir.y, dir.x));
+  float f = abs(fract(t / spacing) - 0.5) * spacing;
+  float soft = width * 0.6;
+  return 1.0 - smoothstep(width * 0.5 - soft, width * 0.5 + soft, f);
+}
+
+void main() {
+  vec2 px = 1.0 / uRes;
+  // ① 手抖采样：整幅笔触同步微抖；颜色与深度用同一偏移（错位会轮廓错边）
+  vec2 wob = (vec2(vnoise(vUv * uRes.y * 0.09 + 3.1), vnoise(vUv * uRes.y * 0.09 + 7.7)) - 0.5)
+    * 2.0 * 1.4 * px;
+  vec2 suv = vUv + wob;
+  float o = 1.6;
+
+  vec4 g = texture(tColor, suv);
+  float shade = g.r;
+  vec3 ink = g.gba;
+  float dz = linDepth(suv);
+  bool isBg = dz >= uFar * 0.995;
+
+  // ② 轮廓：逆深度 Laplacian（平面内二阶差分恒 0 → 只在真实不连续处响应）
+  float zl = linDepth(suv - vec2(o * px.x, 0.0));
+  float zr = linDepth(suv + vec2(o * px.x, 0.0));
+  float zu = linDepth(suv + vec2(0.0, o * px.y));
+  float zd = linDepth(suv - vec2(0.0, o * px.y));
+  float iw = 1.0 / max(dz, 1e-4);
+  float lap = abs(1.0 / max(zl, 1e-4) + 1.0 / max(zr, 1e-4) - 2.0 * iw)
+    + abs(1.0 / max(zu, 1e-4) + 1.0 / max(zd, 1e-4) - 2.0 * iw);
+  float edge = smoothstep(0.07, 0.30, lap / (iw + 1e-7));
+
+  // 由深度重建视空间坐标 → 面法线（导数），法线突变补一条贴面物体的轮廓
+  vec3 vp = viewPosAt(suv, texture(tDepth, suv).x);
+  vec3 vpL = viewPosAt(suv - vec2(o * px.x, 0.0), texture(tDepth, suv - vec2(o * px.x, 0.0)).x);
+  vec3 vpU = viewPosAt(suv + vec2(0.0, o * px.y), texture(tDepth, suv + vec2(0.0, o * px.y)).x);
+  vec3 nV = normalize(cross(dFdx(vp), dFdy(vp)));
+  vec3 nL = normalize(cross(dFdx(vpL), dFdy(vpL)));
+  vec3 nU = normalize(cross(dFdx(vpU), dFdy(vpU)));
+  float nEdge = max(length(nV - nL), length(nV - nU));
+  edge = max(edge, smoothstep(0.55, 0.85, nEdge));
+
+  // 轮廓墨色取最近深度物体的墨
+  vec4 gL = texture(tColor, suv - vec2(o * px.x, 0.0));
+  vec4 gR = texture(tColor, suv + vec2(o * px.x, 0.0));
+  vec4 gU = texture(tColor, suv + vec2(0.0, o * px.y));
+  vec4 gD = texture(tColor, suv - vec2(0.0, o * px.y));
+  float best = dz;
+  vec3 nearestInk = ink;
+  if (zl < best) { best = zl; nearestInk = gL.gba; }
+  if (zr < best) { best = zr; nearestInk = gR.gba; }
+  if (zu < best) { best = zu; nearestInk = gU.gba; }
+  if (zd < best) { best = zd; nearestInk = gD.gba; }
+
+  // ③ 阴影线：世界坐标 / 法线，法线最朝外的轴决定投影面 → 条纹钉在表面上
+  vec3 wPos = (uInvView * vec4(vp, 1.0)).xyz;
+  vec3 wN = normalize(mat3(uInvView) * nV);
+  vec3 a = abs(wN);
+  vec2 p2;
+  if (a.x >= a.y && a.x >= a.z) p2 = wPos.yz;
+  else if (a.y >= a.z) p2 = wPos.xz;
+  else p2 = wPos.xy;
+  float dist = length(vp.xyz);
+  // 间距 2 的幂分级（对数域线性混合，避免分档边界抖动出噪点）
+  float lf = log2(0.016 * dist / 0.5);
+  float i0 = floor(lf);
+  float sp = 0.5 * exp2(i0 + smoothstep(0.75, 1.0, lf - i0));
+  float w = sp * 0.17;
+  // 树干以竖描为主（参考图笔触），亮面留稀疏线、暗面逐层加密，最暗处涂黑
+  float h1 = stripes(p2, vec2(0.0, 1.0), sp, w) * (1.0 - smoothstep(0.88, 0.99, shade));
+  float h2 = stripes(p2, normalize(vec2(1.0, 1.0)), sp, w) * (1.0 - smoothstep(0.42, 0.58, shade));
+  float h3 = stripes(p2, normalize(vec2(1.0, -1.0)), sp, w) * (1.0 - smoothstep(0.2, 0.3, shade));
+  float hatch = clamp(h1 + h2 + h3 + (1.0 - smoothstep(0.06, 0.14, shade)), 0.0, 1.0);
+
+  // ④ 纸面：双层值噪声纸纹 + 淡蓝横线
+  vec3 paper = vec3(0.965, 0.937, 0.863);
+  paper *= 0.965 + 0.05 * vnoise(vUv * uRes.y * 0.55) + 0.028 * vnoise(vUv * uRes.y * 3.1);
+  float ruleT = mod(gl_FragCoord.y, uRes.y / 13.5);
+  float rule = 1.0 - smoothstep(0.0, 1.4, ruleT);
+  paper = mix(paper, vec3(0.58, 0.70, 0.92), rule * 0.16);
+
+  // ⑤ 合成：paper → 墨色排线 → 轮廓
+  vec3 col = paper;
+  if (!isBg) {
+    if (shade < -0.5) {
+      col = ink; // fill：整片纯色（云 / 山 / 地面）
+    } else {
+      // 6% 墨色打底给物体一个体色，排线叠在上面
+      col = mix(paper, ink, hatch * 0.72 + 0.06);
+    }
+  }
+  float ew = 0.75 + 0.35 * vnoise(vUv * uRes.y * 0.42);
+  col = mix(col, nearestInk * 0.92, edge * ew);
+  outColor = vec4(col, 1.0);
+}
+`
 
 export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (priceCents: number) => void }) {
   const { ledger } = useApp()
@@ -114,8 +294,8 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
       const THREE = await import('three')
       if (disposed) return
 
-      // ---------- 渲染器 / 场景 / 相机 ----------
-      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false })
+      // ---------- 渲染器 / 两遍管线的 RT ----------
+      const renderer = new THREE.WebGLRenderer({ antialias: false })
       renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
       const canvas = renderer.domElement
       canvas.dataset.tree = 'price'
@@ -123,8 +303,8 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
       host.appendChild(canvas)
 
       const scene = new THREE.Scene()
-      scene.background = new THREE.Color(C.bg)
-      scene.fog = new THREE.Fog(C.bg, 14, 34)
+      const postScene = new THREE.Scene()
+      const postCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1)
 
       const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 900)
       const camX = 1.6
@@ -142,64 +322,18 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
         const dist = view.span / (2 * Math.tan((camera.fov * Math.PI) / 360)) + trunkRadiusAt(view.camY) + 0.6
         camera.position.set(camX, view.camY, dist)
         camera.lookAt(0, view.camY, 0)
-        const fog = scene.fog as import('three').Fog
-        fog.near = dist * 0.6
-        fog.far = dist * 1.7
+        camera.updateMatrixWorld()
       }
 
-      scene.add(new THREE.HemisphereLight(0xfff4dd, 0x8a6a4a, 1.35))
-      const sun = new THREE.DirectionalLight(0xffffff, 1.5)
-      sun.position.set(-6, 10, 8)
-      scene.add(sun)
+      const inkOf = (hex: string, fill = false) =>
+        new THREE.ShaderMaterial({
+          vertexShader: GBUFFER_VERT,
+          fragmentShader: GBUFFER_FRAG,
+          glslVersion: THREE.GLSL3,
+          uniforms: { uInk: { value: new THREE.Color(hex) }, uFill: { value: fill ? 1 : 0 } },
+        })
 
-      // ---------- 赛璐璐明暗 + 手绘树皮纹理 ----------
-      const gradData = new Uint8Array([90, 150, 205, 255])
-      const gradientMap = new THREE.DataTexture(gradData, 4, 1, THREE.RedFormat)
-      gradientMap.minFilter = THREE.NearestFilter
-      gradientMap.magFilter = THREE.NearestFilter
-      gradientMap.needsUpdate = true
-
-      const makeBarkTexture = () => {
-        const cv = document.createElement('canvas')
-        cv.width = 256
-        cv.height = 512
-        const g = cv.getContext('2d')!
-        g.fillStyle = C.barkBase
-        g.fillRect(0, 0, 256, 512)
-        let seed = 7
-        const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647)
-        for (let i = 0; i < 110; i += 1) {
-          const x = rnd() * 256
-          const dark = rnd() > 0.5
-          g.strokeStyle = dark ? 'rgba(111,69,48,0.34)' : 'rgba(196,150,104,0.30)'
-          g.lineWidth = 2 + rnd() * 6
-          g.beginPath()
-          let px = x
-          g.moveTo(px, -20)
-          for (let yy = 0; yy <= 532; yy += 40) {
-            px += (rnd() - 0.5) * 14
-            g.quadraticCurveTo(px + (rnd() - 0.5) * 10, yy - 20, px, yy)
-          }
-          g.stroke()
-        }
-        for (let i = 0; i < 14; i += 1) {
-          g.fillStyle = 'rgba(111,69,48,0.28)'
-          g.beginPath()
-          g.ellipse(rnd() * 256, rnd() * 512, 5 + rnd() * 9, 2.5 + rnd() * 4, 0, 0, Math.PI * 2)
-          g.fill()
-        }
-        const tex = new THREE.CanvasTexture(cv)
-        tex.wrapS = THREE.RepeatWrapping
-        tex.wrapT = THREE.RepeatWrapping
-        tex.repeat.set(3, 34)
-        tex.anisotropy = 4
-        return tex
-      }
-      const barkTex = makeBarkTexture()
-      const barkMat = new THREE.MeshToonMaterial({ map: barkTex, gradientMap })
-      const outlineMat = new THREE.MeshBasicMaterial({ color: C.outline, side: THREE.BackSide })
-
-      // ---------- 树干 + 描边 + 根 + 地面 + 青苔 ----------
+      // ---------- 树干 + 根 ----------
       const trunkGeo = new THREE.CylinderGeometry(0.36, 0.55, TRUNK_MAX - TRUNK_MIN, 28, 90)
       {
         const pos = trunkGeo.attributes.position
@@ -216,38 +350,68 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
         }
         trunkGeo.computeVertexNormals()
       }
-      const trunk = new THREE.Mesh(trunkGeo, barkMat)
+      const trunkMat = inkOf(INK.trunk)
+      const trunk = new THREE.Mesh(trunkGeo, trunkMat)
       trunk.position.y = (TRUNK_MIN + TRUNK_MAX) / 2
       scene.add(trunk)
-      const outlineGeo = new THREE.CylinderGeometry(
-        trunkRadiusAt(TRUNK_MAX) + 0.065,
-        trunkRadiusAt(TRUNK_MIN) + 0.065,
-        TRUNK_MAX - TRUNK_MIN + 0.4,
-        28,
-        40,
-      )
-      const outline = new THREE.Mesh(outlineGeo, outlineMat)
-      outline.position.copy(trunk.position)
-      scene.add(outline)
 
       const rootGeo = new THREE.ConeGeometry(0.34, 2.6, 10)
       for (let i = 0; i < 6; i += 1) {
-        const root = new THREE.Mesh(rootGeo, barkMat)
+        const root = new THREE.Mesh(rootGeo, trunkMat)
         const ang = (i / 6) * Math.PI * 2 + 0.4
         root.position.set(Math.cos(ang) * 0.55, -1.6 + (i % 2) * 0.3, Math.sin(ang) * 0.55)
         root.rotation.z = Math.cos(ang) * 0.9
         root.rotation.x = -Math.sin(ang) * 0.9
         scene.add(root)
       }
+
+      // ---------- 地面（纯色填充）----------
       const groundGeo = new THREE.CircleGeometry(40, 40)
-      const groundMat = new THREE.MeshBasicMaterial({ color: 0xe4e2bd })
+      const groundMat = inkOf(INK.ground, true)
       const ground = new THREE.Mesh(groundGeo, groundMat)
       ground.rotation.x = -Math.PI / 2
       ground.position.y = -2.6
       scene.add(ground)
 
+      // ---------- 远山（纯色填充，钉在地平线上）----------
+      const mountMat = inkOf(INK.mountain, true)
+      for (const [mx, mz, mr, mh] of [
+        [-14, -18, 9, 4.2],
+        [2, -22, 12, 5.4],
+        [16, -19, 8, 3.6],
+      ] as const) {
+        const m = new THREE.Mesh(new THREE.ConeGeometry(mr, mh, 4), mountMat)
+        m.position.set(mx, -2.6 + mh / 2, mz)
+        m.rotation.y = mx
+        scene.add(m)
+      }
+
+      // ---------- 云（纯色填充，沿轴散布，呼应「向上无限」）----------
+      const cloudMat = inkOf(INK.cloud, true)
+      const cloudBallGeo = new THREE.SphereGeometry(1, 18, 12)
+      for (const [cy, cx0, cz, s] of [
+        [16, -4.4, -4, 1.0],
+        [44, 4.8, -5, 0.85],
+        [92, -5.2, -4, 1.1],
+        [150, 4.4, -6, 0.95],
+        [215, -4.6, -5, 1.05],
+      ] as const) {
+        for (const [dx, dy, r] of [
+          [0, 0, 0.62],
+          [0.55, -0.08, 0.44],
+          [-0.52, -0.1, 0.4],
+          [0.12, 0.26, 0.4],
+        ] as const) {
+          const ball = new THREE.Mesh(cloudBallGeo, cloudMat)
+          ball.position.set(cx0 + dx * s, cy + dy * s, cz)
+          ball.scale.set(r * s * 1.25, r * s * 0.8, r * s)
+          scene.add(ball)
+        }
+      }
+
+      // ---------- 青苔 ----------
       const mossGeo = new THREE.IcosahedronGeometry(0.06, 0)
-      const mossMat = new THREE.MeshToonMaterial({ color: C.moss, gradientMap })
+      const mossMat = inkOf(INK.moss)
       const moss = new THREE.InstancedMesh(mossGeo, mossMat, 160)
       {
         const m = new THREE.Matrix4()
@@ -267,21 +431,24 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
       scene.add(moss)
 
       // ---------- 树轮刻度：三档粗细，按缩放换挡（0.1 一圈只在近景出现） ----------
-      const makeRingSet = (tube: number, opacity: number) => {
+      const makeRingSet = (tube: number) => {
         const geo = new THREE.TorusGeometry(1, tube, 6, 44)
-        const mat = new THREE.MeshBasicMaterial({ color: C.ring, transparent: true, opacity })
-        const mesh = new THREE.InstancedMesh(geo, mat, 420)
+        const mesh = new THREE.InstancedMesh(geo, inkOf(INK.ring), 420)
         mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
         mesh.visible = false
         scene.add(mesh)
-        return { geo, mat, mesh }
+        return { geo, mesh }
       }
-      const ringSets = [makeRingSet(0.018, 0.38), makeRingSet(0.06, 0.34), makeRingSet(0.17, 0.3)]
-      const majorSets = [makeRingSet(0.03, 0.55), makeRingSet(0.09, 0.5), makeRingSet(0.26, 0.45)]
+      const ringSets = [makeRingSet(0.012), makeRingSet(0.05), makeRingSet(0.15)]
+      const majorSets = [makeRingSet(0.024), makeRingSet(0.08), makeRingSet(0.24)]
 
       // ---------- 数据叶子：买蓝（左）/ 卖红（右）/ 已卖米黄（贴干） ----------
       const blobGeo = new THREE.IcosahedronGeometry(1, 1)
-      const twigGeo = new THREE.CylinderGeometry(0.03, 0.045, 1, 6)
+      const twigGeo = new THREE.CylinderGeometry(0.02, 0.032, 1, 6)
+      const buyMat = inkOf(INK.buy)
+      const sellMat = inkOf(INK.sell)
+      const fallenMat = inkOf(INK.fallen)
+      const twigMat = inkOf(INK.twig)
       const dummy = new THREE.Matrix4()
       const zeroM = new THREE.Matrix4().makeScale(0, 0, 0)
       const quat = new THREE.Quaternion()
@@ -307,7 +474,6 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
         }
       }
 
-      // 叶团基础尺寸（世界单位，近景口径）
       const buildBlobs = () => {
         disposeBlobMeshes()
         work.levels = levels.map((l) => ({
@@ -318,23 +484,11 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
         }))
         const n = work.levels.length
         if (n === 0) return
-
-        const mkLeaves = (colors: readonly number[]) => {
-          const mat = new THREE.MeshToonMaterial({ gradientMap })
-          const mesh = new THREE.InstancedMesh(blobGeo, mat, n * 3)
-          for (let i = 0; i < n * 3; i += 1) {
-            mesh.setColorAt(i, new THREE.Color(colors[i % colors.length]))
-          }
-          mesh.instanceColor!.needsUpdate = true
-          scene.add(mesh)
-          return mesh
-        }
-        work.buyMesh = mkLeaves(C.buy)
-        work.sellMesh = mkLeaves(C.sell)
-        work.fallenMesh = mkLeaves(C.fallen)
-        const twigMat = new THREE.MeshToonMaterial({ color: C.twig, gradientMap })
+        work.buyMesh = new THREE.InstancedMesh(blobGeo, buyMat, n * 3)
+        work.sellMesh = new THREE.InstancedMesh(blobGeo, sellMat, n * 3)
+        work.fallenMesh = new THREE.InstancedMesh(blobGeo, fallenMat, n * 3)
         work.twigMesh = new THREE.InstancedMesh(twigGeo, twigMat, n * 2)
-        scene.add(work.twigMesh)
+        scene.add(work.buyMesh, work.sellMesh, work.fallenMesh, work.twigMesh)
         for (let i = 0; i < n * 3; i += 1) {
           work.buyMesh.setMatrixAt(i, zeroM)
           work.sellMesh.setMatrixAt(i, zeroM)
@@ -345,7 +499,7 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
       buildBlobs()
 
       // 每帧按 LOD 系数重排叶团：拉远时叶子按「屏幕近似恒定」放大（封顶 4 倍），
-      // 左缘始终离描边 0.42，绝不吞掉树干；密度在拉远时自然聚成色块
+      // 左缘始终离树干 0.42，绝不吞掉树干；密度在拉远时自然聚成色块
       let lastK = 0
       const layoutBlobs = () => {
         const n = work.levels.length
@@ -536,13 +690,52 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
       canvas.addEventListener('pointerup', onUp)
       canvas.addEventListener('pointercancel', onUp)
 
-      // ---------- 尺寸 / e2e 桥 ----------
+      // ---------- 尺寸 / RT / 后处理 ----------
+      const sizeV = new THREE.Vector2()
+      const getBufSize = () => {
+        renderer.getDrawingBufferSize(sizeV)
+        return { w: Math.max(2, Math.round(sizeV.x)), h: Math.max(2, Math.round(sizeV.y)) }
+      }
+      const { w: bw0, h: bh0 } = getBufSize()
+      const depthTex = new THREE.DepthTexture(bw0, bh0)
+      depthTex.type = THREE.FloatType
+      const rt = new THREE.WebGLRenderTarget(bw0, bh0, {
+        minFilter: THREE.NearestFilter,
+        magFilter: THREE.NearestFilter,
+        format: THREE.RGBAFormat,
+        type: THREE.HalfFloatType,
+        depthBuffer: true,
+        depthTexture: depthTex,
+      })
+      const postUniforms = {
+        tColor: { value: rt.texture },
+        tDepth: { value: depthTex },
+        uRes: { value: new THREE.Vector2(bw0, bh0) },
+        uNear: { value: camera.near },
+        uFar: { value: camera.far },
+        uInvProj: { value: new THREE.Matrix4() },
+        uInvView: { value: new THREE.Matrix4() },
+      }
+      const postMat = new THREE.ShaderMaterial({
+        vertexShader: POST_VERT,
+        fragmentShader: POST_FRAG,
+        glslVersion: THREE.GLSL3,
+        uniforms: postUniforms,
+        depthTest: false,
+        depthWrite: false,
+      })
+      const postQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), postMat)
+      postScene.add(postQuad)
+
       const resize = () => {
         const w = host.clientWidth || 320
         const h = host.clientHeight || 380
         renderer.setSize(w, h, false)
         camera.aspect = w / h
         camera.updateProjectionMatrix()
+        const { w: bw, h: bh } = getBufSize()
+        rt.setSize(bw, bh)
+        postUniforms.uRes.value.set(bw, bh)
       }
       const ro = new ResizeObserver(resize)
       ro.observe(host)
@@ -557,7 +750,7 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
         center: () => view.camY,
         zoomBy,
         projectPrice: (cents: number, side: 1 | -1 = 1) => {
-          // 投影到叶团位置（描边外表面外 0.85）——e2e 用它定位点击点
+          // 投影到叶团位置（树干外表面外 0.85）——e2e 用它定位点击点
           const y = cents / 100
           projV.set(side * (outlineRadiusAt(y) + 0.85), y, 0).project(camera)
           if (projV.z > 1 || projV.z < -1) return null
@@ -610,7 +803,13 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
         activeMajors.count = mi
         activeMajors.instanceMatrix.needsUpdate = true
 
+        // pass 1：数据缓冲 → pass 2：全屏后处理上屏
+        postUniforms.uInvProj.value.copy(camera.projectionMatrixInverse)
+        postUniforms.uInvView.value.copy(camera.matrixWorld)
+        renderer.setRenderTarget(rt)
         renderer.render(scene, camera)
+        renderer.setRenderTarget(null)
+        renderer.render(postScene, postCam)
       }
       tick()
 
@@ -625,23 +824,29 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
         delete (canvas as HTMLCanvasElement & { __tree?: unknown }).__tree
         labelHost.remove()
         disposeBlobMeshes()
-        barkTex.dispose()
-        gradientMap.dispose()
+        rt.dispose()
+        depthTex.dispose()
+        postQuad.geometry.dispose()
+        postMat.dispose()
         trunkGeo.dispose()
-        outlineGeo.dispose()
-        outlineMat.dispose()
-        barkMat.dispose()
-        for (const set of [...ringSets, ...majorSets]) {
-          set.geo.dispose()
-          set.mat.dispose()
-        }
+        trunkMat.dispose()
         groundGeo.dispose()
         groundMat.dispose()
         rootGeo.dispose()
+        mountMat.dispose()
+        cloudMat.dispose()
         mossGeo.dispose()
         mossMat.dispose()
         blobGeo.dispose()
         twigGeo.dispose()
+        buyMat.dispose()
+        sellMat.dispose()
+        fallenMat.dispose()
+        twigMat.dispose()
+        for (const set of [...ringSets, ...majorSets]) {
+          set.geo.dispose()
+          ;(set.mesh.material as import('three').ShaderMaterial).dispose()
+        }
         renderer.dispose()
         canvas.remove()
       }
