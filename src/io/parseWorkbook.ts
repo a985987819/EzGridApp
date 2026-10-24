@@ -4,10 +4,27 @@
  * 规则派生全部留给 domain/ledger.ts，这样改间隔能立即重算。
  */
 
-import * as XLSX from 'xlsx'
 import { toCents } from '../domain/money'
 import { makeImportKey } from '../domain/defaults'
 import type { RawRecord } from '../domain/types'
+
+type XlsxModule = typeof import('xlsx')
+type WorkSheet = import('xlsx').WorkSheet
+type CellObject = import('xlsx').CellObject
+
+/**
+ * SheetJS 动态导入：只有导入页真正解析文件时才下载这个 chunk（xlsx 约占主包一半体积）。
+ * 模块级 XLSX 只在 parseWorkbook 内 await loadXlsx() 之后才会被触达，helpers 可以直接读。
+ */
+let XLSX: XlsxModule
+let xlsxReady: Promise<XlsxModule> | null = null
+function loadXlsx(): Promise<XlsxModule> {
+  xlsxReady ??= import('xlsx').then((m) => {
+    XLSX = m
+    return m
+  })
+  return xlsxReady
+}
 
 export interface ParseResult {
   sheetName: string
@@ -34,25 +51,25 @@ const COL = {
 
 type ColKey = keyof typeof COL
 
-function rawCell(sheet: XLSX.WorkSheet, r: number, c: number): XLSX.CellObject | undefined {
-  return sheet[XLSX.utils.encode_cell({ r, c })] as XLSX.CellObject | undefined
+function rawCell(sheet: WorkSheet, r: number, c: number): CellObject | undefined {
+  return sheet[XLSX.utils.encode_cell({ r, c })] as CellObject | undefined
 }
 
 /** 空单元格 / 只有公式没有缓存值 → SheetJS 给的 stub（t='z'，v=0） */
-function isBlank(cell: XLSX.CellObject | undefined): boolean {
+function isBlank(cell: CellObject | undefined): boolean {
   if (!cell) return true
   if (cell.t === 'z') return true
   return cell.v === undefined || cell.v === null || cell.v === ''
 }
 
-function cellText(sheet: XLSX.WorkSheet, r: number, c: number): string {
+function cellText(sheet: WorkSheet, r: number, c: number): string {
   const cell = rawCell(sheet, r, c)
   if (isBlank(cell)) return ''
   return String(cell!.v).trim()
 }
 
 /** 只有「真公式」才算公式；Excel 里损坏成 '=' 的一律当空 */
-function cellFormula(sheet: XLSX.WorkSheet, r: number, c: number): string | null {
+function cellFormula(sheet: WorkSheet, r: number, c: number): string | null {
   const cell = rawCell(sheet, r, c)
   if (!cell || typeof cell.f !== 'string') return null
   const f = cell.f.trim()
@@ -60,7 +77,7 @@ function cellFormula(sheet: XLSX.WorkSheet, r: number, c: number): string | null
   return f
 }
 
-function numOrNull(sheet: XLSX.WorkSheet, r: number, c: number): number | null {
+function numOrNull(sheet: WorkSheet, r: number, c: number): number | null {
   const cell = rawCell(sheet, r, c)
   if (isBlank(cell)) return null
   if (typeof cell!.v === 'number') return Number.isFinite(cell!.v) ? cell!.v : null
@@ -70,13 +87,13 @@ function numOrNull(sheet: XLSX.WorkSheet, r: number, c: number): number | null {
   return Number.isFinite(n) ? n : null
 }
 
-function centsOrNull(sheet: XLSX.WorkSheet, r: number, c: number): number | null {
+function centsOrNull(sheet: WorkSheet, r: number, c: number): number | null {
   const cell = rawCell(sheet, r, c)
   if (isBlank(cell)) return null
   return toCents(typeof cell!.v === 'number' ? cell!.v : String(cell!.v))
 }
 
-function resolveHeader(sheet: XLSX.WorkSheet, aliases: readonly string[]): number | null {
+function resolveHeader(sheet: WorkSheet, aliases: readonly string[]): number | null {
   const range = XLSX.utils.decode_range(sheet['!ref'] as string)
   for (let c = range.s.c; c <= range.e.c; c += 1) {
     if (aliases.includes(cellText(sheet, range.s.r, c))) return c
@@ -84,7 +101,8 @@ function resolveHeader(sheet: XLSX.WorkSheet, aliases: readonly string[]): numbe
   return null
 }
 
-export function parseWorkbook(buffer: ArrayBuffer | Uint8Array): ParseResult {
+export async function parseWorkbook(buffer: ArrayBuffer | Uint8Array): Promise<ParseResult> {
+  await loadXlsx()
   // sheetStubs: 只有公式、没有缓存值的单元格也会保留（否则整格丢失）
   const wb = XLSX.read(buffer, {
     type: 'array',

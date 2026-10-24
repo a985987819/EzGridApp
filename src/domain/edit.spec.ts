@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { applyEdits, fieldText, isoToSerial } from './edit'
@@ -129,7 +129,10 @@ describe('编辑后重算仍然自洽', () => {
 
 describe('真实文件上的编辑', () => {
   const buf = readFileSync(resolve(process.cwd(), 'tests/fixtures/26年网格记录.xlsx'))
-  const parsed = parseWorkbook(new Uint8Array(buf))
+  let parsed: Awaited<ReturnType<typeof parseWorkbook>>
+  beforeAll(async () => {
+    parsed = await parseWorkbook(new Uint8Array(buf))
+  })
 
   it('给 R44 补一个目标售价：盈利补算，守恒仍成立', () => {
     const r44 = parsed.records.find((r) => r.sourceRow === 44)!

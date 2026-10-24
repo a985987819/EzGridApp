@@ -6,7 +6,7 @@ import { buildLedger } from './ledger'
 import { DEFAULT_STOCKS } from './defaults'
 
 const buf = readFileSync(resolve(process.cwd(), 'tests/fixtures/26年网格记录.xlsx'))
-const parsed = parseWorkbook(new Uint8Array(buf))
+const parsed = await parseWorkbook(new Uint8Array(buf))
 const ledger = buildLedger(parsed.records, DEFAULT_STOCKS)
 
 describe('真实文件的日期完整性', () => {

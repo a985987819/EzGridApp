@@ -31,7 +31,7 @@ function rec(over: Partial<RawRecord> & { stockName: string }): RawRecord {
   }
 }
 
-const fixture = parseWorkbook(
+const fixture = await parseWorkbook(
   new Uint8Array(readFileSync(resolve(process.cwd(), 'tests/fixtures/26年网格记录.xlsx'))),
 )
 
@@ -251,14 +251,14 @@ describe('§09 测试矩阵', () => {
     expect(limitRange(1000, 'unknown')).toBeNull()
   })
 
-  it('#19 重复导入 / 公式字段 / 错误日期', () => {
+  it('#19 重复导入 / 公式字段 / 错误日期', async () => {
     // 公式字段：D 列 FLOOR 派生、E 列按间隔派生
     const derived = fixture.records.filter((r) => r.qtyNeedsDerive || r.targetNeedsDerive)
     expect(derived.length).toBeGreaterThan(0)
     // 幂等：importKey 稳定，同文件导两次不会产生新 key
     const keys = new Set(fixture.records.map((r) => r.importKey))
     expect(keys.size).toBe(fixture.records.length)
-    const again = parseWorkbook(
+    const again = await parseWorkbook(
       new Uint8Array(readFileSync(resolve(process.cwd(), 'tests/fixtures/26年网格记录.xlsx'))),
     )
     expect(again.records.every((r) => keys.has(r.importKey))).toBe(true)

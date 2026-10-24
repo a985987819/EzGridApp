@@ -137,7 +137,7 @@ describe('V7 账户', () => {
 })
 
 describe('V7 导入模板兼容（英文表头）', () => {
-  it('英文表头也能解析出记录', () => {
+  it('英文表头也能解析出记录', async () => {
     const rows = [
       ['stock', 'date', 'buy price', 'shares', 'target price', 'sold qty', 'sell date', 'rebuy'],
       ['柳工', 46050, 11.48, 500, 11.98, 500, 46080, ''],
@@ -148,7 +148,7 @@ describe('V7 导入模板兼容（英文表头）', () => {
     XLSX.utils.book_append_sheet(wb, ws, '交易记录')
     const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer
 
-    const parsed = parseWorkbook(new Uint8Array(buf))
+    const parsed = await parseWorkbook(new Uint8Array(buf))
     expect(parsed.missingColumns).toHaveLength(0)
     expect(parsed.records).toHaveLength(2)
     expect(parsed.records[0].stockName).toBe('柳工')

@@ -7,7 +7,7 @@ import { BASELINE, DEFAULT_STOCKS } from '../domain/defaults'
 import { compareBaseline } from '../domain/baseline'
 
 const buf = readFileSync(resolve(process.cwd(), 'tests/fixtures/26年网格记录.xlsx'))
-const parsed = parseWorkbook(new Uint8Array(buf))
+const parsed = await parseWorkbook(new Uint8Array(buf))
 const ledger = buildLedger(parsed.records, DEFAULT_STOCKS)
 
 describe('真实文件 dry-run：8 个基准数（文档 §03 / S2 验收）', () => {
