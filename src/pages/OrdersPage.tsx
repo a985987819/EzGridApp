@@ -6,9 +6,10 @@ import { LIMIT_PCT, limitRange } from '../domain/limit'
 import { toCents } from '../domain/money'
 import { downloadText, toCsv } from '../ui/csv'
 import { money, price, qty, signedMoney } from '../ui/format'
+import type { TradesQuery } from '../ui/nav'
 import type { RebuyOrder } from '../domain/types'
 
-export function OrdersPage() {
+export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
   const { ledger, stocks, executions, recordRebuy, removeRebuy, setPlan, clearPlan } = useApp()
   // 顺序与启停都跟随「管理 · 股票」
   const stockNames = useMemo(() => activeStocks(stocks).map((s) => s.name), [stocks])
@@ -435,6 +436,9 @@ export function OrdersPage() {
                               计划
                             </Button>
                             <Button size="small" onClick={() => openExec(o)}>记成交</Button>
+                            <Button size="small" type="text" onClick={() => goTrades({ row: o.sourceRow, stock: o.stockName })}>
+                              明细
+                            </Button>
                           </div>
                         </div>
                       ))}
@@ -465,6 +469,15 @@ export function OrdersPage() {
                           <div className="acts">
                             <Button size="small" onClick={() => openPlan('sell', t.id, `卖 ${t.stockName}`, t.priceCents, t.planPriceCents, t.planQty)}>
                               计划
+                            </Button>
+                            <Button
+                              size="small"
+                              type="text"
+                              onClick={() =>
+                                goTrades({ row: ledger.lots.find((l) => l.id === t.lotId)?.sourceRow ?? Number(t.lotId.replace('lot:', '')), stock: t.stockName })
+                              }
+                            >
+                              明细
                             </Button>
                           </div>
                         </div>
@@ -530,6 +543,13 @@ export function OrdersPage() {
                       {o.execQty > 0 && (
                         <Button size="small" type="text" onClick={() => void undoExec(o.id)}>撤销最后一笔</Button>
                       )}
+                      <Button
+                        size="small"
+                        type="text"
+                        onClick={() => goTrades({ row: o.sourceRow, stock: o.stockName })}
+                      >
+                        明细
+                      </Button>
                     </div>
                   </div>
                   <div className="right num" style={{ fontWeight: 600 }}>
@@ -577,6 +597,15 @@ export function OrdersPage() {
                       >
                         {z}
                       </Tag>
+                      <Button
+                        size="small"
+                        type="text"
+                        onClick={() =>
+                          goTrades({ row: lot?.sourceRow ?? Number(t.lotId.replace('lot:', '')), stock: t.stockName })
+                        }
+                      >
+                        明细
+                      </Button>
                     </div>
                   </div>
                   <div className="right">

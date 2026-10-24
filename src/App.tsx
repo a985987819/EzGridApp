@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import 'animal-island-ui/style'
 import { Select } from 'animal-island-ui'
 import { AppProvider, useApp } from './store/useApp'
@@ -8,11 +8,10 @@ import { OrdersPage } from './pages/OrdersPage'
 import { StatsPage } from './pages/StatsPage'
 import { ManagePage } from './pages/ManagePage'
 import { IconChart, IconGear, IconGrid, IconList, IconTag } from './ui/icons'
+import { navigate, parseHash, type TradesQuery } from './ui/nav'
 import './styles.css'
 
-type Tab = 'overview' | 'trades' | 'orders' | 'stats' | 'manage'
-
-const TABS: { key: Tab; label: string; Icon: typeof IconGrid }[] = [
+const TABS: { key: 'overview' | 'trades' | 'orders' | 'stats' | 'manage'; label: string; Icon: typeof IconGrid }[] = [
   { key: 'overview', label: '概览', Icon: IconGrid },
   { key: 'trades', label: '明细', Icon: IconList },
   { key: 'orders', label: '挂单', Icon: IconTag },
@@ -21,10 +20,16 @@ const TABS: { key: Tab; label: string; Icon: typeof IconGrid }[] = [
 ]
 
 function Shell() {
-  const [tab, setTab] = useState<Tab>('overview')
-  const [focus, setFocus] = useState<{ stock: string; priceCents: number } | null>(null)
+  // tab 与明细筛选都由 hash 承载（S7）：#/trades?stock=… 可以直达
+  const [route, setRoute] = useState(parseHash)
+  useEffect(() => {
+    const onHash = () => setRoute(parseHash())
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
   const { ready, ledger, activeAccountId, accounts, setActiveAccount } = useApp()
 
+  const goTrades = (q: TradesQuery) => navigate('trades', q)
   const pendingOrders = ledger.orders.length
   const accountOptions = [
     { key: 'all', label: '全部账户' },
@@ -56,22 +61,16 @@ function Shell() {
       <main className="app-main">
         {!ready ? (
           <div className="empty-box">初始化本地库…</div>
-        ) : tab === 'overview' ? (
-          <Overview
-            onPick={(stock, priceCents) => {
-              setFocus({ stock, priceCents })
-              setTab('trades')
-            }}
-            goManage={() => setTab('manage')}
-          />
-        ) : tab === 'trades' ? (
-          <TradesPage focus={focus} onClearFocus={() => setFocus(null)} />
-        ) : tab === 'orders' ? (
-          <OrdersPage />
-        ) : tab === 'stats' ? (
-          <StatsPage />
+        ) : route.tab === 'overview' ? (
+          <Overview goTrades={goTrades} goManage={() => navigate('manage')} />
+        ) : route.tab === 'trades' ? (
+          <TradesPage urlQuery={route.query} />
+        ) : route.tab === 'orders' ? (
+          <OrdersPage goTrades={goTrades} />
+        ) : route.tab === 'stats' ? (
+          <StatsPage goTrades={goTrades} />
         ) : (
-          <ManagePage />
+          <ManagePage goTrades={goTrades} />
         )}
       </main>
 
@@ -80,13 +79,12 @@ function Shell() {
           {TABS.map(({ key, label, Icon }) => (
             <button
               key={key}
-              className={`nav-btn${tab === key ? ' active' : ''}`}
+              className={`nav-btn${route.tab === key ? ' active' : ''}`}
               onClick={() => {
-                setTab(key)
-                if (key !== 'trades') setFocus(null)
+                navigate(key)
                 window.scrollTo({ top: 0 })
               }}
-              aria-current={tab === key ? 'page' : undefined}
+              aria-current={route.tab === key ? 'page' : undefined}
               data-nav={key}
             >
               <Icon />

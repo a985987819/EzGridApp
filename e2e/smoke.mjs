@@ -1,6 +1,7 @@
 /**
  * 项目自带 E2E 冒烟（移动端 390×844 视口）：
- * 股票排序 → 导入 → 基准校验 → 分股 tab → 明细编辑/删除/恢复 → 挂单区间 → 启用开关 → 手动卖出
+ * 股票排序 → 导入 → 基准校验 → 分股 tab → 明细编辑/删除/恢复 → 跨数据跳转/URL 筛选/可叠加筛选/一键复位
+ * → 挂单区间 → 启用开关 → 手动卖出
  *
  *   node e2e/smoke.mjs http://127.0.0.1:5183
  */
@@ -373,22 +374,30 @@ try {
   const r2Text = await evaluate(`document.querySelector('[data-row="2"] .dates')?.textContent.trim() ?? ''`)
   check('R2 两个日期都有值', /买入 \d{4}-\d{2}-\d{2}/.test(r2Text) && /卖出 \d{4}-\d{2}-\d{2}/.test(r2Text), r2Text)
 
-  // 缺日期筛选拆成买入/卖出两个
-  const pickStatus = async (label) => {
-    await evaluate(`document.querySelector('.app-main [role="combobox"][aria-label="按状态筛选"]')?.click()`)
-    await sleep(300)
-    const ok = await clickByText('[role="option"]', label)
+  // 状态多选 chips（V9）：可叠加取交集，已生效条件 chip 可点掉，一键复位
+  const toggleStatus = async (label) => {
+    const ok = await clickByText('.status-chips .filter-chip', label)
     await sleep(400)
     return ok
   }
-  check('筛选「缺卖出日期」', await pickStatus('缺卖出日期'))
+  check('筛选「缺卖出日期」', await toggleStatus('缺卖出日期'))
   const sellMissingCount = await headCount()
   check('缺卖出日期 9 行', sellMissingCount === 9, String(sellMissingCount))
-  check('筛选「缺买入日期」', await pickStatus('缺买入日期'))
-  const buyMissingCount = await headCount()
-  check('缺买入日期 4 行（R60–63）', buyMissingCount === 4, String(buyMissingCount))
-  check('筛选回到全部状态', await pickStatus('全部状态'))
-  check('全部状态行数恢复', (await headCount()) === allCount, `${await headCount()}/${allCount}`)
+  const hashWithStatus = await evaluate('location.hash')
+  check('筛选写进 URL（S7）', hashWithStatus.includes('status=sellDateMissing'), hashWithStatus)
+  check('叠加「缺买入日期」', await toggleStatus('缺买入日期'))
+  const bothCount = await headCount()
+  check('交集 4 行（R60–63 两个日期都缺）', bothCount === 4, String(bothCount))
+  check(
+    '点掉「缺卖出日期」条件 chip',
+    await clickByText('[data-testid="active-chips"] .filter-chip', '缺卖出日期'),
+  )
+  await sleep(400)
+  check('点掉后只剩缺买入日期 4 行', (await headCount()) === 4, String(await headCount()))
+  check('一键复位「清空筛选」', await clickByText('[data-testid="active-chips"] .filter-chip', '清空筛选'))
+  await sleep(400)
+  check('复位后行数恢复', (await headCount()) === allCount, `${await headCount()}/${allCount}`)
+  check('复位后 URL 不带筛选', (await evaluate('location.hash')) === '#/trades', await evaluate('location.hash'))
   check('明细顶部吸顶', (await stickyOf('trades')) === 'sticky')
   const tradePills = await evaluate(`JSON.stringify([...document.querySelectorAll('.stock-tabs > *')].map(e => e.textContent.trim()))`)
   check('明细也有股票药丸（含「全部」）', JSON.parse(tradePills)[0] === '全部' && JSON.parse(tradePills).length === 5, tradePills)
@@ -473,6 +482,117 @@ try {
   await nav('overview')
   text = await bodyText()
   check('改回后盈利 ¥9,830 且基准全中', text.includes('9,830') && text.includes('基准全中'))
+
+  console.log('\n[7.5] 跨数据跳转 + URL 筛选（V9）')
+  // 深链直达：URL 直接打开明细并带筛选（S7）
+  await send('Page.navigate', { url: `${BASE}/#/trades?status=pending&stock=${encodeURIComponent('柳工')}` })
+  await settle(2500)
+  await sleep(600)
+  check('深链落在明细页', (await evaluate('location.hash')).includes('#/trades'))
+  check('深链筛选生效：柳工待回补 4 行', (await headCount()) === 4, String(await headCount()))
+  const onChips = await evaluate(`JSON.stringify([...document.querySelectorAll('.status-chips .filter-chip.on')].map(e => e.textContent.trim()))`)
+  check('状态 chip 处于激活态', JSON.parse(onChips).join(',') === '待回补', onChips)
+
+  // 概览 · 价格网格 → 明细（股票 + 价格档）
+  await nav('overview')
+  await clickByText('.stock-tabs > *', '柳工')
+  await sleep(400)
+  check(
+    '点价格网格行',
+    await evaluate(`(() => {
+      const tr = document.querySelector('table.pricegrid tbody tr')
+      if (!tr) return false
+      tr.click(); return true
+    })()`),
+  )
+  await sleep(600)
+  const gridHash = await evaluate('location.hash')
+  check('网格跳转带股票和价格档', gridHash.startsWith('#/trades') && /price=\d+/.test(gridHash) && decodeURIComponent(gridHash).includes('stock=柳工'), gridHash)
+
+  // 概览 · 待补日期标签 → 缺卖出日期
+  await nav('overview')
+  check(
+    '点「待补日期 N 笔」标签',
+    await evaluate(`(() => {
+      const tag = [...document.querySelectorAll('[class*="animal-tag"]')].find(e => e.textContent.includes('待补日期'))
+      if (!tag) return false
+      tag.click(); return true
+    })()`),
+  )
+  await sleep(600)
+  check('跳到明细并带缺卖出日期筛选', (await evaluate('location.hash')).includes('status=sellDateMissing'))
+  check('缺卖出日期 9 行', (await headCount()) === 9, String(await headCount()))
+
+  // 统计 · 月度成交 → 该月日期区间
+  await nav('stats')
+  check(
+    '点月度行「2026-02」',
+    await evaluate(`(() => {
+      const line = [...document.querySelectorAll('.data-block .line')].find(l => l.textContent.includes('2026-02'))
+      if (!line) return false
+      line.click(); return true
+    })()`),
+  )
+  await sleep(600)
+  const monthHash = await evaluate('location.hash')
+  check('落在明细并带该月区间', monthHash.startsWith('#/trades') && monthHash.includes('from=2026-02-01') && monthHash.includes('to=2026-02-28'), monthHash)
+  check('该月行数 > 0', (await headCount()) > 0, String(await headCount()))
+
+  // 统计 · 按股票 → 该股明细
+  await nav('stats')
+  check(
+    '点「按股票 · 柳工」行',
+    await evaluate(`(() => {
+      const line = [...document.querySelectorAll('.data-block .line')].find(l => l.textContent.includes('柳工') && l.textContent.includes('净持仓'))
+      if (!line) return false
+      line.click(); return true
+    })()`),
+  )
+  await sleep(600)
+  const stockHash = await evaluate('location.hash')
+  check('落在明细并选中该股', stockHash.startsWith('#/trades') && decodeURIComponent(stockHash).includes('stock=柳工'), stockHash)
+
+  // 统计 · 组池 → 该股 + 该价格档
+  await nav('stats')
+  check(
+    '点组池第一行',
+    await evaluate(`(() => {
+      const line = [...document.querySelectorAll('.data-block .line')].find(l => l.textContent.includes('每手'))
+      if (!line) return false
+      line.click(); return true
+    })()`),
+  )
+  await sleep(600)
+  const groupHash = await evaluate('location.hash')
+  check('组池跳转带股票和价格档', groupHash.startsWith('#/trades') && /price=\d+/.test(groupHash) && decodeURIComponent(groupHash).includes('stock=柳工'), groupHash)
+  check('组池[0]=柳工|7.81 命中 2 行', (await headCount()) === 2, String(await headCount()))
+
+  // 统计 · 成交日历 → 那一天
+  await nav('stats')
+  check(
+    '点「看这天明细」',
+    await clickByText('button', '看这天明细'),
+  )
+  await sleep(600)
+  const dayHash = await evaluate('location.hash')
+  check('落在明细并带单日区间', /from=\d{4}-\d{2}-\d{2}/.test(dayHash) && /to=\d{4}-\d{2}-\d{2}/.test(dayHash) && dayHash.match(/from=([^&]+)/)?.[1] === dayHash.match(/to=([^&]+)/)?.[1], dayHash)
+
+  // 挂单 · 待卖条目 → 行号定位
+  await nav('orders')
+  check(
+    '点待卖「明细」按钮',
+    await evaluate(`(() => {
+      const btn = [...document.querySelectorAll('.app-main button')].find(b => b.textContent.trim() === '明细')
+      if (!btn) return false
+      btn.click(); return true
+    })()`),
+  )
+  await sleep(600)
+  const rowHash = await evaluate('location.hash')
+  const rowNo = Number((rowHash.match(/row=(\d+)/) || [])[1])
+  check('落在明细并带行号', Number.isInteger(rowNo) && rowNo > 0, rowHash)
+  check('行号定位 1 行', (await headCount()) === 1, String(await headCount()))
+  check('行号条件 chip 显示', (await bodyText()).includes(`行 ${rowNo}`))
 
   console.log('\n[8] 挂单：确认昨收 → 涨停/跌停 → 今日挂单')
   check('切到挂单', await nav('orders'))
@@ -606,7 +726,7 @@ try {
   check('点「新增一笔」', await clickByText('button', '新增一笔'))
   await sleep(600)
   check('弹窗立即可见（无打字机）', (await bodyText()).includes('买入份额') || (await bodyText()).includes('卖出数量'))
-  check('切到卖出', await clickByText('button', '卖出'))
+  check('切到卖出', await clickByText('.type-toggle button', '卖出'))
   await sleep(300)
   text = await bodyText()
   check('卖出表单出现「成交价」「回补价」', text.includes('成交价') && text.includes('回补价'))

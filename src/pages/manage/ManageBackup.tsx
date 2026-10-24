@@ -55,11 +55,20 @@ export function ManageBackup() {
               if (!f) return
               void f.text().then(async (text) => {
                 try {
+                  // S4：恢复是整库覆盖，先把当前库强制导出一份快照，手滑了还有后悔药
+                  const snapshot = await exportBackup()
+                  const stamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-')
+                  const snapName = `grid-backup-before-restore-${stamp}.json`
+                  downloadText(snapName, snapshot, 'application/json;charset=utf-8')
                   await restoreBackup(text)
-                  notificationOpen({ message: '备份已恢复', type: 'success' })
+                  notificationOpen({
+                    message: '备份已恢复',
+                    description: `恢复前已自动导出当前数据：${snapName}`,
+                    type: 'success',
+                  })
                 } catch (err) {
                   notificationOpen({
-                    message: '恢复失败',
+                    message: '恢复失败（当前数据未动，快照已导出到下载目录）',
                     description: err instanceof Error ? err.message : String(err),
                     type: 'error',
                   })
@@ -80,6 +89,8 @@ export function ManageBackup() {
         </div>
         <p className="hint-block" style={{ margin: '10px 0 0' }}>
           当前数据源：{basename}。数据只存在本机 IndexedDB，长期不打开会被浏览器清理，<b>建议每周导出一次</b>。
+          <br />
+          从 JSON 恢复会<b>整库覆盖</b>：点恢复时会先把当前数据自动导出一份「恢复前快照」JSON（S4），再写入备份内容。
           <br />
           上次备份：
           <b>

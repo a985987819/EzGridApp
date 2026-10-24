@@ -7,6 +7,7 @@ import { compareBaseline } from '../../domain/baseline'
 import { CheckList } from '../../components/CheckGrid'
 import { downloadText, toCsv } from '../../ui/csv'
 import { money, price, qty } from '../../ui/format'
+import type { TradesQuery } from '../../ui/nav'
 import { IconDownload, IconUpload } from '../../ui/icons'
 
 const ANOMALY_LABEL: Record<string, string> = {
@@ -16,7 +17,7 @@ const ANOMALY_LABEL: Record<string, string> = {
   negativeProfit: '负盈利',
 }
 
-export function ManageImport() {
+export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
   const {
     stocks,
     records,
@@ -206,7 +207,11 @@ export function ManageImport() {
             ) : (
               <div className="data-block">
               {previewLedger.anomalies.map((a, i) => (
-                <div className="line" key={`${a.kind}-${a.sourceRow}-${i}`}>
+                <div
+                  className="line clickable"
+                  key={`${a.kind}-${a.sourceRow}-${i}`}
+                  onClick={() => goTrades({ row: a.sourceRow, stock: a.stockName })}
+                >
                   <div className="left">
                     <div className="t1" style={{ fontWeight: 500 }}>
                       {ANOMALY_LABEL[a.kind] ?? a.kind}
@@ -218,6 +223,9 @@ export function ManageImport() {
               ))}
               </div>
             )}
+            <p className="tiny muted" style={{ margin: '8px 0 0' }}>
+              点异常行 → 跳到明细页并定位到那一行。
+            </p>
           </Card>
 
           <Card>

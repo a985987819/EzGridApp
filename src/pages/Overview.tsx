@@ -6,12 +6,13 @@ import { useApp } from '../store/useApp'
 import { CheckList } from '../components/CheckGrid'
 import { PriceGrid } from '../components/PriceGrid'
 import { money, price, qty, signedMoney, tone } from '../ui/format'
+import type { TradesQuery } from '../ui/nav'
 
 export function Overview({
-  onPick,
+  goTrades,
   goManage,
 }: {
-  onPick: (stock: string, priceCents: number) => void
+  goTrades: (q: TradesQuery) => void
   goManage: () => void
 }) {
   const { ledger, baseline, records, basename, stocks, lastBackupAt } = useApp()
@@ -21,6 +22,8 @@ export function Overview({
   const failed = baseline.filter((c) => !c.ok).length
   const backupDays = lastBackupAt ? Math.floor((Date.now() - lastBackupAt) / 86400000) : null
   const backupStale = backupDays === null || backupDays >= 7
+  // 跨数据跳转：待补日期 N 笔 → 明细里只看缺卖出日期的行
+  const missingDateCount = ledger.anomalies.filter((a) => a.kind === 'dateMissing').length
 
   const enabledNames = useMemo(() => activeStockNames(stocks), [stocks])
   const withRows = useMemo<StockSummary[]>(() => {
@@ -102,7 +105,24 @@ export function Overview({
           <Tag size="small" variant="soft" color="app-blue">已实现 {signedMoney(t.profitCents)}</Tag>
           <Tag size="small" variant="soft" color="app-orange">待卖 {money(t.targetAmountCents)}</Tag>
           {t.exposureQty > 0 && (
-            <Tag size="small" variant="soft" color="app-red">卖满后 {qty(t.exposureQty)} 股敞口</Tag>
+            <Tag
+              size="small"
+              variant="soft"
+              color="app-red"
+              onClick={() => goTrades({ status: ['pending'] })}
+            >
+              卖满后 {qty(t.exposureQty)} 股敞口
+            </Tag>
+          )}
+          {missingDateCount > 0 && (
+            <Tag
+              size="small"
+              variant="soft"
+              color="app-yellow"
+              onClick={() => goTrades({ status: ['sellDateMissing'] })}
+            >
+              待补日期 {missingDateCount} 笔
+            </Tag>
           )}
           {backupStale && hasData && (
             <Tag size="small" variant="soft" color="app-yellow">
@@ -256,7 +276,7 @@ export function Overview({
                 <div className={`v long ${tone(current.profitCents)}`}>{signedMoney(current.profitCents)}</div>
               </div>
             </div>
-            <PriceGrid stock={current} onPick={(p) => onPick(current.stockName, p)} />
+            <PriceGrid stock={current} onPick={(p) => goTrades({ stock: current.stockName, price: p })} />
           </div>
         )}
       </Card>

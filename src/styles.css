@@ -510,3 +510,45 @@ button { font-family: inherit; }
   display: inline-block;
   flex: 0 0 1px;
 }
+
+/* ---------- 明细筛选 chips（V9 可叠加筛选 + 一键复位） ---------- */
+.filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid var(--animal-border-color, #e0d8c8);
+  background: #fffdf7;
+  color: var(--animal-text-color, #794f27);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1;
+  padding: 7px 11px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.filter-chip:active { background: var(--animal-bg-color-secondary, #f0e8d8); }
+/* 状态多选：激活态用主题色描边，一眼看出勾了哪几个 */
+.filter-chip.toggle.on {
+  background: rgba(25, 200, 185, 0.14);
+  border-color: var(--animal-primary-color, #19c8b9);
+  color: #0e8f84;
+  font-weight: 600;
+}
+.filter-chip .x { opacity: 0.55; margin-left: 1px; }
+/* 一键复位：虚线描边 + 警示色，和普通条件 chip 区分开 */
+.filter-chip.reset {
+  border-style: dashed;
+  color: var(--animal-error-color, #e05a5a);
+  background: transparent;
+}
+
+/* 数据块里可点的行（跨数据跳转）：按下有反馈，扫一眼知道能点 */
+.line.clickable { cursor: pointer; }
+.line.clickable:active { background: rgba(25, 200, 185, 0.07); }

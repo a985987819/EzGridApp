@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react'
-import { Calendar, Card, Tag } from 'animal-island-ui'
+import { Button, Calendar, Card, Tag } from 'animal-island-ui'
 import { useApp } from '../store/useApp'
 import { activeStocks } from '../domain/stocks'
 import { money, qty, signedMoney, tone } from '../ui/format'
+import { monthRange, type TradesQuery } from '../ui/nav'
 
-export function StatsPage() {
+export function StatsPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
   const { ledger, stocks } = useApp()
   const t = ledger.totals
   const active = activeStocks(stocks)
@@ -13,12 +14,13 @@ export function StatsPage() {
   const byStock = ledger.byStock.filter((s) => enabledNames.has(s.stockName))
   const groups = ledger.groups.filter((g) => enabledIds.has(g.stockId))
   const hiddenCount = ledger.byStock.length - byStock.length
+  const stockNameOf = (id: string) => stocks.find((s) => s.id === id)?.name ?? ''
 
   return (
     <div className="stack">
       <div className="page-title">
         <h2>统计</h2>
-        <p>按卖出日期归月，缺日期单列</p>
+        <p>按卖出日期归月，缺日期单列 · 点行可跳明细</p>
       </div>
 
       <Card>
@@ -41,7 +43,7 @@ export function StatsPage() {
         </div>
       </Card>
 
-      <CalendarCard />
+      <CalendarCard goTrades={goTrades} />
 
       <Card>
         <div className="sec-head">
@@ -51,7 +53,13 @@ export function StatsPage() {
         </div>
         <div className="data-block">
         {ledger.monthly.map((m) => (
-          <div key={m.month} className="line">
+          <div
+            key={m.month}
+            className="line clickable"
+            onClick={() =>
+              goTrades(m.dateMissing ? { status: ['sellDateMissing'] } : { from: monthRange(m.month).from, to: monthRange(m.month).to })
+            }
+          >
             <div className="left">
               <div className="t1">
                 {m.month}
@@ -74,6 +82,9 @@ export function StatsPage() {
           </div>
         ))}
         </div>
+        <p className="tiny muted" style={{ margin: '8px 0 0' }}>
+          点某个月 → 明细按该月日期区间过滤；「未填日期」→ 明细里看全部缺卖出日期的行。
+        </p>
       </Card>
 
       <Card>
@@ -82,7 +93,7 @@ export function StatsPage() {
         </div>
         <div className="data-block">
         {byStock.map((s) => (
-          <div key={s.stockName} className="line">
+          <div key={s.stockName} className="line clickable" onClick={() => goTrades({ stock: s.stockName })}>
             <div className="left" style={{ flex: 1 }}>
               <div className="t1">
                 {s.stockName}
@@ -136,7 +147,11 @@ export function StatsPage() {
         ) : (
           <div className="data-block">
           {groups.map((g) => (
-            <div key={g.groupKey} className="line">
+            <div
+              key={g.groupKey}
+              className="line clickable"
+              onClick={() => goTrades({ stock: stockNameOf(g.stockId), price: g.rebuyPriceCents })}
+            >
               <div className="left">
                 <div className="t1 mono" style={{ fontSize: 12.5 }}>{g.groupKey.replace('stock:', '')}</div>
                 <div className="t2">
@@ -151,6 +166,9 @@ export function StatsPage() {
           ))}
           </div>
         )}
+        <p className="tiny muted" style={{ margin: '8px 0 0' }}>
+          点某个价组 → 明细按该股 + 该价格档过滤。
+        </p>
       </Card>
     </div>
   )
@@ -158,7 +176,7 @@ export function StatsPage() {
 
 
 /** 成交日历：按月看每天卖出了什么、赚了多少（红盈绿亏） */
-function CalendarCard() {
+function CalendarCard({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
   const { ledger } = useApp()
   const today = new Date()
   const [panel, setPanel] = useState(`${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`)
@@ -185,7 +203,11 @@ function CalendarCard() {
       <div className="sec-head">
         <strong>成交日历</strong>
         <div className="spacer" />
-        {missing > 0 && <Tag size="small" variant="soft" color="app-yellow">{missing} 笔缺日期</Tag>}
+        {missing > 0 && (
+          <Tag size="small" variant="soft" color="app-yellow" onClick={() => goTrades({ status: ['sellDateMissing'] })}>
+            {missing} 笔缺日期
+          </Tag>
+        )}
       </div>
       <Calendar
         value={selected}
@@ -201,13 +223,16 @@ function CalendarCard() {
           <span className="tiny muted">{selected}</span>
           <div className="spacer" />
           <span className="tiny muted">{daySells.length} 笔</span>
+          <Button size="small" type="text" onClick={() => goTrades({ from: selected, to: selected })}>
+            看这天明细
+          </Button>
         </div>
         {daySells.length === 0 ? (
           <p className="tiny muted" style={{ margin: 0 }}>这天没有成交</p>
         ) : (
           <div className="data-block">
           {daySells.map((s) => (
-            <div key={s.id} className="line">
+            <div key={s.id} className="line clickable" onClick={() => goTrades({ row: s.sourceRow, stock: s.stockName })}>
               <div className="left">
                 <div className="t1" style={{ fontSize: 13 }}>
                   {s.stockName} · {price2(s.priceCents)} × {s.qty}

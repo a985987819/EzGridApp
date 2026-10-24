@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Button, Card, Drawer, Input, Modal, Select, Switch, Tag, notificationOpen } from 'animal-island-ui'
 import { useApp } from '../store/useApp'
 import { serialToIso } from '../domain/defaults'
@@ -6,18 +6,27 @@ import { EDITABLE, fieldText, type EditableKey } from '../domain/edit'
 import { activeStocks } from '../domain/stocks'
 import type { ManualInput } from '../domain/manual'
 import { isoDate, money, price, qty, signedMoney, tone } from '../ui/format'
+import { replaceRoute, type TradesQuery } from '../ui/nav'
 import { toCents } from '../domain/money'
 import { downloadText, toCsv } from '../ui/csv'
 import type { Lot, RawRecord, SellExecution } from '../domain/types'
 
-type StatusFilter =
-  | 'all'
-  | 'holding'
-  | 'soldout'
-  | 'pending'
-  | 'buyDateMissing'
-  | 'sellDateMissing'
-  | 'needsPrice'
+/** 状态筛选可多选（V9 可叠加）：命中的行要满足每一个勾选的状态 */
+const STATUS_KEYS = ['holding', 'soldout', 'pending', 'buyDateMissing', 'sellDateMissing', 'needsPrice'] as const
+type StatusKey = (typeof STATUS_KEYS)[number]
+
+const STATUS_LABEL: Record<StatusKey, string> = {
+  holding: '有剩余',
+  soldout: '已卖完',
+  pending: '待回补',
+  buyDateMissing: '缺买入日期',
+  sellDateMissing: '缺卖出日期',
+  needsPrice: '缺价格',
+}
+
+function isStatusKey(v: string): v is StatusKey {
+  return (STATUS_KEYS as readonly string[]).includes(v)
+}
 
 type SortBy =
   | 'rowDesc'
@@ -35,16 +44,6 @@ interface Row {
   sell: SellExecution | null
 }
 
-const STATUS_OPTIONS: { key: StatusFilter; label: string }[] = [
-  { key: 'all', label: '全部状态' },
-  { key: 'holding', label: '还有剩余持仓' },
-  { key: 'soldout', label: '已卖完' },
-  { key: 'pending', label: '待回补' },
-  { key: 'buyDateMissing', label: '缺买入日期' },
-  { key: 'sellDateMissing', label: '缺卖出日期' },
-  { key: 'needsPrice', label: '缺价格' },
-]
-
 const SORT_OPTIONS: { key: SortBy; label: string }[] = [
   { key: 'rowDesc', label: '行号 高→低' },
   { key: 'rowAsc', label: '行号 低→高' },
@@ -55,6 +54,8 @@ const SORT_OPTIONS: { key: SortBy; label: string }[] = [
   { key: 'profitDesc', label: '盈利 高→低' },
   { key: 'profitAsc', label: '盈利 低→高' },
 ]
+
+const SORT_KEYS: readonly string[] = SORT_OPTIONS.map((o) => o.key)
 
 /** 行上的买入日期（可空） */
 function buyDateOf(r: Row): string | null {
@@ -79,6 +80,24 @@ function cmpDate(a: string | null, b: string | null, dir: 1 | -1): number {
   return a < b ? -dir : dir
 }
 
+/** 单个状态的判定；多选时取交集 */
+function statusMatch(r: Row, key: StatusKey): boolean {
+  switch (key) {
+    case 'holding':
+      return (r.lot?.remainingQty ?? 0) > 0
+    case 'soldout':
+      return r.sell !== null && (r.lot?.remainingQty ?? 0) === 0
+    case 'pending':
+      return r.sell?.rebuyStatus === 'pending'
+    case 'buyDateMissing':
+      return buyDateOf(r) === null
+    case 'sellDateMissing':
+      return r.sell !== null && sellDateOf(r) === null
+    case 'needsPrice':
+      return (r.sell !== null && r.sell.priceCents === null) || r.lot?.needsPrice === true
+  }
+}
+
 const BLANK_DRAFT = Object.fromEntries(EDITABLE.map((f) => [f.key, ''])) as Record<EditableKey, string>
 
 const BLANK_FORM: ManualInput = {
@@ -95,13 +114,7 @@ const BLANK_FORM: ManualInput = {
   buyDate: '',
 }
 
-export function TradesPage({
-  focus,
-  onClearFocus,
-}: {
-  focus: { stock: string; priceCents: number } | null
-  onClearFocus: () => void
-}) {
+export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   const {
     ledger,
     scopedRecords,
@@ -115,14 +128,19 @@ export function TradesPage({
     addExtraTarget,
     removeExtraTarget,
   } = useApp()
-  const [stockFilter, setStockFilter] = useState(focus?.stock ?? 'all')
-  const [status, setStatus] = useState<StatusFilter>('all')
-  const [keyword, setKeyword] = useState('')
-  const [priceFilter, setPriceFilter] = useState<number | null>(focus?.priceCents ?? null)
-  const [fromDate, setFromDate] = useState('')
-  const [toDate, setToDate] = useState('')
-  const [sortBy, setSortBy] = useState<SortBy>('rowDesc')
-  const [showDeleted, setShowDeleted] = useState(false)
+  const [stockFilter, setStockFilter] = useState(urlQuery.stock ?? 'all')
+  const [statuses, setStatuses] = useState<StatusKey[]>(() => (urlQuery.status ?? []).filter(isStatusKey))
+  const [keyword, setKeyword] = useState(urlQuery.q ?? '')
+  const [priceFilter, setPriceFilter] = useState<number | null>(
+    typeof urlQuery.price === 'number' ? urlQuery.price : null,
+  )
+  const [fromDate, setFromDate] = useState(urlQuery.from ?? '')
+  const [toDate, setToDate] = useState(urlQuery.to ?? '')
+  const [rowFilter, setRowFilter] = useState<number | null>(typeof urlQuery.row === 'number' ? urlQuery.row : null)
+  const [sortBy, setSortBy] = useState<SortBy>(() =>
+    SORT_KEYS.includes(urlQuery.sort ?? '') ? (urlQuery.sort as SortBy) : 'rowDesc',
+  )
+  const [showDeleted, setShowDeleted] = useState(urlQuery.del === true)
   const [openRow, setOpenRow] = useState<number | null>(null)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState<Record<EditableKey, string>>(BLANK_DRAFT)
@@ -130,6 +148,36 @@ export function TradesPage({
   const [form, setForm] = useState<ManualInput>(BLANK_FORM)
   const [tpPrice, setTpPrice] = useState('')
   const [tpQty, setTpQty] = useState('')
+
+  // 外部跳转 / 浏览器前进后退：hash 变了就把筛选整体换过去（跨数据跳转的落点）
+  const urlKey = JSON.stringify(urlQuery)
+  useEffect(() => {
+    const q = JSON.parse(urlKey) as TradesQuery
+    setStockFilter(q.stock ?? 'all')
+    setStatuses((q.status ?? []).filter(isStatusKey))
+    setKeyword(q.q ?? '')
+    setPriceFilter(typeof q.price === 'number' ? q.price : null)
+    setFromDate(q.from ?? '')
+    setToDate(q.to ?? '')
+    setRowFilter(typeof q.row === 'number' ? q.row : null)
+    setSortBy(SORT_KEYS.includes(q.sort ?? '') ? (q.sort as SortBy) : 'rowDesc')
+    setShowDeleted(q.del === true)
+  }, [urlKey])
+
+  // 反向同步：筛选变化写回 hash（replaceState，不产生历史条目）
+  useEffect(() => {
+    replaceRoute('trades', {
+      stock: stockFilter === 'all' ? undefined : stockFilter,
+      status: statuses.length > 0 ? statuses : undefined,
+      q: keyword || undefined,
+      price: priceFilter ?? undefined,
+      from: fromDate || undefined,
+      to: toDate || undefined,
+      row: rowFilter ?? undefined,
+      sort: sortBy === 'rowDesc' ? undefined : sortBy,
+      del: showDeleted || undefined,
+    })
+  }, [stockFilter, statuses, keyword, priceFilter, fromDate, toDate, rowFilter, sortBy, showDeleted])
 
   // 股票顺序 / 启停都来自「管理 · 股票」
   const stockList = useMemo(() => activeStocks(stocks), [stocks])
@@ -170,25 +218,47 @@ export function TradesPage({
           if (fromDate && d < fromDate) return false
           if (toDate && d > toDate) return false
         }
-        switch (status) {
-          case 'holding':
-            return (r.lot?.remainingQty ?? 0) > 0
-          case 'soldout':
-            return r.sell !== null && (r.lot?.remainingQty ?? 0) === 0
-          case 'pending':
-            return r.sell?.rebuyStatus === 'pending'
-          case 'buyDateMissing':
-            return buyDateOf(r) === null
-          case 'sellDateMissing':
-            return r.sell !== null && sellDateOf(r) === null
-          case 'needsPrice':
-            return (r.sell !== null && r.sell.priceCents === null) || r.lot?.needsPrice === true
-          default:
-            return true
-        }
+        if (rowFilter !== null && r.rec.sourceRow !== rowFilter) return false
+        // 状态多选取交集：勾了几个状态，行必须全都满足
+        if (statuses.length > 0 && !statuses.every((k) => statusMatch(r, k))) return false
+        return true
       }),
-    [rows, stockFilter, keyword, priceFilter, status, showDeleted, enabledSet, fromDate, toDate],
+    [rows, stockFilter, keyword, priceFilter, statuses, showDeleted, enabledSet, fromDate, toDate, rowFilter],
   )
+
+  /** 已生效的条件 chips：每颗都能单独点掉 */
+  const activeChips = useMemo(() => {
+    const chips: { key: string; label: string; clear: () => void }[] = []
+    if (stockFilter !== 'all')
+      chips.push({ key: 'stock', label: `股票 ${stockFilter}`, clear: () => setStockFilter('all') })
+    for (const k of statuses)
+      chips.push({ key: `st-${k}`, label: STATUS_LABEL[k], clear: () => setStatuses((s) => s.filter((x) => x !== k)) })
+    if (priceFilter !== null)
+      chips.push({ key: 'price', label: `价格 ${(priceFilter / 100).toFixed(2)}`, clear: () => setPriceFilter(null) })
+    if (fromDate || toDate)
+      chips.push({
+        key: 'date',
+        label: `日期 ${fromDate || '…'} → ${toDate || '…'}`,
+        clear: () => {
+          setFromDate('')
+          setToDate('')
+        },
+      })
+    if (keyword) chips.push({ key: 'q', label: `搜索 ${keyword}`, clear: () => setKeyword('') })
+    if (rowFilter !== null) chips.push({ key: 'row', label: `行 ${rowFilter}`, clear: () => setRowFilter(null) })
+    return chips
+  }, [stockFilter, statuses, priceFilter, fromDate, toDate, keyword, rowFilter])
+
+  /** 一键复位：股票 / 状态 / 日期 / 价格 / 关键词 / 行号 全清（排序与已删除开关不动） */
+  function resetFilters() {
+    setStockFilter('all')
+    setStatuses([])
+    setPriceFilter(null)
+    setFromDate('')
+    setToDate('')
+    setKeyword('')
+    setRowFilter(null)
+  }
 
   /** 排序后的可见列表（S3：行号 / 买入日期 / 卖出日期 / 盈利，各升降一档） */
   const visible = useMemo(() => {
@@ -319,21 +389,28 @@ export function TradesPage({
           ))}
         </div>
 
-        <div className="row nowrap">
-          <Select
-            options={STATUS_OPTIONS.map((o) => ({ key: o.key, label: o.label }))}
-            value={status}
-            onChange={(v) => setStatus(v as StatusFilter)}
-            aria-label="按状态筛选"
-          />
-          <Input
-            value={keyword}
-            onChange={(e) => setKeyword(e.target.value)}
-            placeholder="搜股票名 / 行号"
-            allowClear
-            onClear={() => setKeyword('')}
-            aria-label="搜索"
-          />
+        <Input
+          value={keyword}
+          onChange={(e) => setKeyword(e.target.value)}
+          placeholder="搜股票名 / 行号"
+          allowClear
+          onClear={() => setKeyword('')}
+          aria-label="搜索"
+        />
+
+        {/* 状态可多选（V9 可叠加）：命中的行要满足每个勾选的状态 */}
+        <div className="filter-chips status-chips" role="group" aria-label="按状态筛选">
+          {STATUS_KEYS.map((k) => (
+            <button
+              key={k}
+              type="button"
+              className={`filter-chip toggle${statuses.includes(k) ? ' on' : ''}`}
+              aria-pressed={statuses.includes(k)}
+              onClick={() => setStatuses((s) => (s.includes(k) ? s.filter((x) => x !== k) : [...s, k]))}
+            >
+              {STATUS_LABEL[k]}
+            </button>
+          ))}
         </div>
 
         {/* S3：日期区间筛选（卖出日期优先，其次买入日期） */}
@@ -368,6 +445,23 @@ export function TradesPage({
             </Button>
           )}
         </div>
+
+        {/* 已生效条件 chips + 一键复位（README 待办 B/C） */}
+        {activeChips.length > 0 && (
+          <div className="filter-chips" data-testid="active-chips">
+            {activeChips.map((c) => (
+              <button key={c.key} type="button" className="filter-chip" onClick={c.clear}>
+                {c.label}
+                <span className="x" aria-hidden>
+                  ×
+                </span>
+              </button>
+            ))}
+            <button type="button" className="filter-chip reset" onClick={resetFilters} data-action="reset-filters">
+              清空筛选
+            </button>
+          </div>
+        )}
       </div>
 
       <Card>
@@ -400,24 +494,6 @@ export function TradesPage({
           新增一笔
         </Button>
       </Card>
-
-      {priceFilter !== null && (
-        <div className="row" style={{ margin: '-4px 2px 0' }}>
-          <Tag size="small" variant="soft" color="app-blue">
-            价格 {(priceFilter / 100).toFixed(2)}
-          </Tag>
-          <Button
-            size="small"
-            type="text"
-            onClick={() => {
-              setPriceFilter(null)
-              onClearFocus()
-            }}
-          >
-            清除
-          </Button>
-        </div>
-      )}
 
       {visible.length === 0 ? (
         <Card>
