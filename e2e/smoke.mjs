@@ -240,7 +240,8 @@ try {
   check('可卖 15,200', text.includes('15,200'))
   check('待补 2,000', text.includes('2,000'))
   check('净持仓 13,200', text.includes('13,200'))
-  check('基准全中', text.includes('基准全中'))
+  // V9.10：基准体检挪去管理 · 校验，概览只在异常时弹「去管理页看」
+  check('概览无基准异常提示', !text.includes('去管理页看'))
   const pills = await evaluate(`JSON.stringify([...document.querySelectorAll('.stock-tabs > *')].map(e => e.textContent.trim()))`)
   console.log('  概览药丸:', pills)
   check('药丸顺序跟随股票排序（三一重工在前）', JSON.parse(pills)[0] === '三一重工')
@@ -340,17 +341,22 @@ try {
   const headCount = async () =>
     Number((await evaluate(`document.querySelector('.page-title p')?.textContent ?? ''`)).split('/')[0]) || 0
   const allCount = await headCount()
-  await setInput('input[aria-label="起始日期"]', '2026-08-01')
+  // V9.11：明细页不再放日期范围组件（年月筛选只从统计页跳转），区间筛选走 URL 深链验证
+  await send('Page.navigate', { url: `${BASE}/#/trades?from=2026-08-01` })
+  await settle(2500)
   await sleep(400)
   const fromCount = await headCount()
   check('起始日期筛选生效（8 月后行数变少）', fromCount > 0 && fromCount < allCount, `${fromCount}/${allCount}`)
-  await setInput('input[aria-label="结束日期"]', '2026-08-31')
+  check('日期条件 chip 出现', (await bodyText()).includes('日期 2026-08-01'))
+  await send('Page.navigate', { url: `${BASE}/#/trades?from=2026-08-01&to=2026-08-31` })
+  await settle(2500)
   await sleep(400)
   const rangeCount = await headCount()
+  check('整月区间显示成「月份」chip', (await bodyText()).includes('月份 2026-08'), '')
   check('结束日期进一步收窄', rangeCount <= fromCount, `${rangeCount}/${fromCount}`)
-  check('清除日期筛选', await clickByText('button', '清除'))
+  check('点掉月份 chip', await clickByText('[data-testid="active-chips"] .filter-chip', '月份 2026-08'))
   await sleep(400)
-  check('清除后恢复全部', (await headCount()) === allCount, `${await headCount()}/${allCount}`)
+  check('点掉后恢复全部', (await headCount()) === allCount, `${await headCount()}/${allCount}`)
 
   // 排序平铺 chips（V9.4）：同项单击反序，再点回默认
   const sortPick = async (label) => {
@@ -396,11 +402,15 @@ try {
   const r2Text = await evaluate(`document.querySelector('[data-row="2"] .dates')?.textContent.trim() ?? ''`)
   check('R2 两个日期都有值', /买入 \d{4}-\d{2}-\d{2}/.test(r2Text) && /卖出 \d{4}-\d{2}-\d{2}/.test(r2Text), r2Text)
   check(
-    'R2 买蓝卖红配色',
+    'R2 已完成行不再强调配色',
     Boolean(
-      await evaluate(`Boolean(document.querySelector('[data-row="2"] .c-buy') && document.querySelector('[data-row="2"] .c-sell'))`),
+      await evaluate(`!document.querySelector('[data-row="2"] .c-buy') && !document.querySelector('[data-row="2"] .c-sell')`),
     ),
   )
+  // V9.11 待办配色：红=待卖（持仓行目标价+剩余量），蓝=待买（待回补行买价×量）
+  check('持仓行待卖侧标红', Boolean(await evaluate(`Boolean(document.querySelector('.trade-item .path .c-sell'))`)))
+  check('待回补行待买侧标蓝', Boolean(await evaluate(`Boolean(document.querySelector('.trade-item .path .c-buy'))`)))
+  check('R63 先卖后买显示蓝色回补买价', Boolean(await evaluate(`Boolean(document.querySelector('[data-row="63"] .c-buy'))`)))
   check('恢复「隐藏已完成」', await toggleHideDoneHere())
 
   // 状态多选 chips（V9）：可叠加取交集，已生效条件 chip 可点掉，一键复位
@@ -521,7 +531,7 @@ try {
   await closeDrawer()
   await nav('overview')
   text = await bodyText()
-  check('改回后盈利 ¥9,830 且基准全中', text.includes('9,830') && text.includes('基准全中'))
+  check('改回后盈利 ¥9,830 且概览无基准异常', text.includes('9,830') && !text.includes('去管理页看'))
 
   console.log('\n[7.5] 跨数据跳转 + URL 筛选（V9）')
   // 深链直达：URL 直接打开明细并带筛选（S7）
@@ -820,6 +830,19 @@ try {
   await nav('overview')
   check('重新启用后回到概览', (await bodyText()).includes('奥佳华'))
 
+  console.log('\n[9.5] 价格轴：下沿 0 + 价签等比例间隔（V9.12）')
+  await sleep(900)
+  const axisInfo = await evaluate(`(() => {
+    const t = document.querySelector('canvas[data-tree="price"]')?.__tree
+    if (!t) return null
+    t.zoomBy(0.0001)
+    return JSON.stringify({ span: t.span(), center: t.center() })
+  })()`)
+  check('树画布可用', Boolean(axisInfo), '')
+  const axis = JSON.parse(axisInfo ?? '{}')
+  check('拉远后 span 到上限 150', axis.span === 150, JSON.stringify(axis))
+  check('下沿不越过 0（股价永远为正）', axis.center >= axis.span / 2 - 1e-6, JSON.stringify(axis))
+
   console.log('\n[10] 新增一笔：卖出（先卖后买）')
   await nav('trades')
   check('点「新增一笔」', await clickByText('button', '新增一笔'))
@@ -871,7 +894,15 @@ try {
   await nav('overview')
   text = await bodyText()
   check('回到净持仓 13,200', text.includes('13,200'))
-  check('基准重新全中', text.includes('基准全中'))
+  check('概览无基准异常提示', !text.includes('去管理页看'))
+
+  console.log('\n[11.1.1] 管理页 · 校验（V9.10 从概览挪来）')
+  await nav('manage')
+  check('切到校验 tab', await clickByText('[role="tab"]', '校验'))
+  await sleep(500)
+  text = await bodyText()
+  check('基准快照在管理页且全中', text.includes('基准快照') && text.includes('全中'))
+  check('数量守恒在管理页', text.includes('数量守恒'))
 
   console.log('\n[11.2] 账户')
   await nav('manage')

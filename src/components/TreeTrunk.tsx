@@ -1,5 +1,5 @@
 /**
- * 3D 价格树干（V9.6→V9.8）：概览页的纵轴是一棵手绘插画风立体树。
+ * 3D 价格树（V9.6→V9.9）：概览页的纵轴是一棵手绘插画风立体树。
  *
  * 渲染 = 两遍管线（风格化与场景内容解耦，任意模型/相机运动都有一致手绘感）：
  *   pass 1  数据缓冲：所有网格用同一个 GBufferMaterial 输出
@@ -7,15 +7,28 @@
  *           无任何风格化；RT 用 NearestFilter、无 mipmap。
  *   pass 2  全屏后处理（独立 scene + 正交相机）逐像素作画：
  *           ① 手抖采样（值噪声偏移，颜色/深度同一偏移防轮廓错位）
- *           ② 轮廓 = 逆深度 Laplacian（平面内二阶差分恒 0，只在真实深度不连续处
- *              有响应；除以 iw 归一化，任意距离轮廓强度一致）+ 法线突变补边
- *           ③ 阴影线 = 深度重建世界坐标/法线，条纹钉在表面上；间距按 2 的幂分级
- *              防摩尔纹；三方向（45°/-45°/15°）排线，密度随明暗递减，最暗涂黑
- *           ④ 纸面 = 双层值噪声纸纹 + 淡蓝横线（画布高 / 13.5）
+ *           ② 轮廓 = 逆深度 Laplacian + 法线突变补边
+ *           ③ 阴影线 = 深度重建世界坐标/法线，条纹钉在表面上；三方向排线
+ *           ④ 纸面 = 双层值噪声纸纹 + 淡蓝横线
  *           ⑤ 合成 paper → mix(墨色, hatch*0.72) → mix(轮廓墨*0.92, edge*ew)
  *
- * 交互不变：滚轮 / 双指捏合缩放、拖动攀爬、点叶跳明细；价格标签为 HTML 覆盖层。
- * three.js 动态导入（与 xlsx 同套路），主包不背 3D 引擎。
+ * V9.9 数据表现：
+ *   待买/待卖 = 树枝（左蓝 / 右红，长度随数量）；已卖出 = 落叶，铺在树干
+ *   后方更远的深度层（近处枝、远处叶，天然分层）。缩小（拉远）时相邻档的
+ *   枝按间距合并成一根，枝上画「合并档数」片叶子表达该区间挂单密度；
+ *   放大到档位可分辨时恢复每档一枝。
+ *
+ * 性能：按需渲染——场景无逐帧动画，只有交互/改尺寸时置脏重绘一帧；
+ *   枝叶布局只在合并档位（gap 档）变化时重排，矩阵全部复用临时对象。
+ *
+ * V9.12 轴刻度与下限：
+ *   价签步长按「最小屏幕间距」从 1-2-5 档里取——任何缩放级别下相邻数字
+ *   至少隔 LABEL_MIN_GAP 像素，数据是 8~12 每毛一档也不会挤；轴全程线性
+ *   等比例，数据稀疏就空着，不压缩。视野下沿压在 0：股价永远为正，
+ *   到 0 就不能再往下拉。
+ *
+ * 交互：滚轮 / 双指捏合缩放、拖动攀爬（内容跟随手指，和地图/列表同向）、
+ *   点枝跳明细；价格标签为 HTML 覆盖层。three.js 动态导入，主包不背 3D 引擎。
  */
 import { useEffect, useMemo, useRef } from 'react'
 import { useApp } from '../store/useApp'
@@ -31,15 +44,21 @@ export interface TreeLevel {
 
 const TRUNK_MIN = -20
 const TRUNK_MAX = 300
-const CAM_MIN = -12
 const CAM_MAX = 288
 const SPAN_MIN = 0.5
 const SPAN_MAX = 150
+/** 相邻两枝最少要占的屏幕行数（按 460px 高估）：行距不足就合并 */
+const ROWS_PER_SCREEN = 22
+/** 已完成落叶的实例上限（超出按比例抽样） */
+const FALLEN_CAP = 480
+/** 价签最小屏幕间距（px）：任何缩放下相邻两个数字至少隔这么远 */
+const LABEL_MIN_GAP = 80
+/** 价签步长档位（1-2-5 序列；0.1 档对应 A 股最小报价单位） */
+const LABEL_LADDER = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100]
 
 /** 墨色盘：每个物体一种墨（pass1 写进 gba，pass2 取出排线/填色/勾边） */
 const INK = {
   trunk: '#75492c',
-  twig: '#75492c',
   buy: '#4a7cc4',
   sell: '#c04f48',
   fallen: '#c39a4e',
@@ -49,15 +68,6 @@ const INK = {
   cloud: '#fdfbf2',
   mountain: '#d9dcc0',
 }
-
-interface BlobLevel extends TreeLevel {
-  buySize: number
-  sellSize: number
-  fallenSize: number
-}
-
-const sizeOf = (qtyValue: number, k: number, cap: number) =>
-  qtyValue <= 0 ? 0 : Math.min(cap, 0.24 + Math.sqrt(qtyValue) / k)
 
 function aggregate(
   stockName: string,
@@ -97,7 +107,7 @@ function trunkRadiusAt(y: number): number {
   return 0.55 - 0.19 * t
 }
 
-/** 价格 → 树干外表面半径（树轮 / 青苔 / 叶团的锚点） */
+/** 价格 → 树干外表面半径（树轮 / 青苔 / 枝叶的锚点） */
 function outlineRadiusAt(y: number): number {
   return trunkRadiusAt(y) + 0.03
 }
@@ -273,6 +283,17 @@ void main() {
 }
 `
 
+/** 一根合并后的枝：一段价格区间内的所有同侧挂单档 */
+interface BranchBin {
+  lo: number // 区间下沿（元）
+  hi: number
+  y: number // 数量加权摆放高度
+  repCents: number // 数量最大的档（点击/跳明细用它）
+  qty: number
+  count: number // 合并档数 = 枝上叶数
+  pick?: { x: number; y: number; z: number } // 拾取球心（world），投影/点击共用
+}
+
 export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (priceCents: number) => void }) {
   const { ledger } = useApp()
   const levels = useMemo(
@@ -312,9 +333,15 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
       const prices = levels.map((l) => l.priceCents / 100)
       const dataLo = prices.length ? Math.min(...prices) : 8
       const dataHi = prices.length ? Math.max(...prices) : 12
+      /** 视野钳位：span 限档；下沿（camY − span/2）不许低于 0——股价永远为正 */
+      const clampView = () => {
+        view.span = Math.min(SPAN_MAX, Math.max(SPAN_MIN, view.span))
+        view.camY = Math.min(CAM_MAX, Math.max(view.span / 2, view.camY))
+      }
       const resetView = () => {
         view.camY = (dataLo + dataHi) / 2
         view.span = Math.max(4, Math.min(SPAN_MAX, (dataHi - dataLo) * 1.6 + 2))
+        clampView()
       }
       resetView()
 
@@ -442,130 +469,228 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
       const ringSets = [makeRingSet(0.012), makeRingSet(0.05), makeRingSet(0.15)]
       const majorSets = [makeRingSet(0.024), makeRingSet(0.08), makeRingSet(0.24)]
 
-      // ---------- 数据叶子：买蓝（左）/ 卖红（右）/ 已卖米黄（贴干） ----------
-      const blobGeo = new THREE.IcosahedronGeometry(1, 1)
-      const twigGeo = new THREE.CylinderGeometry(0.02, 0.032, 1, 6)
+      // ---------- 数据枝叶：买枝（左·蓝）/ 卖枝（右·红）/ 落叶（已卖·后景） ----------
+      const branchGeo = new THREE.CylinderGeometry(0.032, 0.05, 1, 6) // 两段拼出一根弯枝
+      const leafGeo = new THREE.SphereGeometry(1, 8, 6)
+      const pickGeo = new THREE.IcosahedronGeometry(1, 1)
       const buyMat = inkOf(INK.buy)
       const sellMat = inkOf(INK.sell)
       const fallenMat = inkOf(INK.fallen)
-      const twigMat = inkOf(INK.twig)
+      const pickMat = inkOf(INK.trunk)
+      pickMat.visible = false // 只参与拾取，不进 pass1
+
       const dummy = new THREE.Matrix4()
-      const zeroM = new THREE.Matrix4().makeScale(0, 0, 0)
       const quat = new THREE.Quaternion()
       const up = new THREE.Vector3(0, 1, 0)
-      const dir = new THREE.Vector3()
+      const dir1 = new THREE.Vector3()
+      const dir2 = new THREE.Vector3()
+      const posV = new THREE.Vector3()
+      const sclV = new THREE.Vector3()
+      const projV = new THREE.Vector3()
 
-      interface BlobWork {
-        levels: BlobLevel[]
-        buyMesh: import('three').InstancedMesh | null
-        sellMesh: import('three').InstancedMesh | null
-        fallenMesh: import('three').InstancedMesh | null
-        twigMesh: import('three').InstancedMesh | null
+      const buyList = levels.filter((l) => l.buyQty > 0)
+      const sellList = levels.filter((l) => l.sellQty > 0)
+      const mkMesh = (geo: import('three').BufferGeometry, mat: import('three').ShaderMaterial, cap: number) => {
+        if (cap <= 0) return null
+        const mesh = new THREE.InstancedMesh(geo, mat, cap)
+        mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+        mesh.frustumCulled = false // 实例矩阵随视图重排，包围球不可靠
+        scene.add(mesh)
+        return mesh
       }
-      const work: BlobWork = { levels: [], buyMesh: null, sellMesh: null, fallenMesh: null, twigMesh: null }
-      const disposeBlobMeshes = () => {
-        for (const key of ['buyMesh', 'sellMesh', 'fallenMesh', 'twigMesh'] as const) {
-          const mesh = work[key]
-          if (mesh) {
-            scene.remove(mesh)
-            mesh.dispose()
-            work[key] = null
-          }
-        }
+      const buyBranchMesh = mkMesh(branchGeo, buyMat, buyList.length * 2)
+      const sellBranchMesh = mkMesh(branchGeo, sellMat, sellList.length * 2)
+      const buyLeafMesh = mkMesh(leafGeo, buyMat, buyList.length)
+      const sellLeafMesh = mkMesh(leafGeo, sellMat, sellList.length)
+      const pickMesh = mkMesh(pickGeo, pickMat, buyList.length + sellList.length)
+      const totalFallen = levels.reduce((s, l) => s + l.soldCount, 0)
+      const fallenMesh = mkMesh(leafGeo, fallenMat, Math.min(totalFallen, FALLEN_CAP))
+
+      interface BranchWork {
+        bins: { buy: BranchBin[]; sell: BranchBin[] }
+        picks: BranchBin[] // pickMesh 实例顺序对应：先卖后买
+        lastGate: string
       }
+      const work: BranchWork = { bins: { buy: [], sell: [] }, picks: [], lastGate: '' }
 
-      const buildBlobs = () => {
-        disposeBlobMeshes()
-        work.levels = levels.map((l) => ({
-          ...l,
-          buySize: sizeOf(l.buyQty, 34, 0.8),
-          sellSize: sizeOf(l.sellQty, 34, 0.8),
-          fallenSize: sizeOf(l.soldQty, 70, 0.36),
-        }))
-        const n = work.levels.length
-        if (n === 0) return
-        work.buyMesh = new THREE.InstancedMesh(blobGeo, buyMat, n * 3)
-        work.sellMesh = new THREE.InstancedMesh(blobGeo, sellMat, n * 3)
-        work.fallenMesh = new THREE.InstancedMesh(blobGeo, fallenMat, n * 3)
-        work.twigMesh = new THREE.InstancedMesh(twigGeo, twigMat, n * 2)
-        scene.add(work.buyMesh, work.sellMesh, work.fallenMesh, work.twigMesh)
-        for (let i = 0; i < n * 3; i += 1) {
-          work.buyMesh.setMatrixAt(i, zeroM)
-          work.sellMesh.setMatrixAt(i, zeroM)
-          work.fallenMesh.setMatrixAt(i, zeroM)
-        }
-        for (let i = 0; i < n * 2; i += 1) work.twigMesh.setMatrixAt(i, zeroM)
-      }
-      buildBlobs()
-
-      // 每帧按 LOD 系数重排叶团：拉远时叶子按「屏幕近似恒定」放大（封顶 4 倍），
-      // 左缘始终离树干 0.42，绝不吞掉树干；密度在拉远时自然聚成色块
-      let lastK = 0
-      const layoutBlobs = () => {
-        const n = work.levels.length
-        if (n === 0 || !work.buyMesh || !work.twigMesh) return
-        const k = Math.min(4, Math.max(1, view.span / 9))
-        if (Math.abs(k - lastK) < lastK * 0.02) return
-        lastK = k
-
+      /** 已完成落叶：铺在树干后方更远的深度层（近枝远叶），每笔已卖一片 */
+      const buildFallen = () => {
+        if (!fallenMesh) return
         let seed = 23
         const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647)
-        const placeSide = (
-          mesh: import('three').InstancedMesh | null,
-          side: 1 | -1,
-          sizeAt: (l: BlobLevel) => number,
-          twigBase: number,
-        ) => {
-          if (!mesh) return
-          work.levels.forEach((l, i) => {
-            const s = sizeAt(l) * k
-            if (s <= 0) return
-            const y = l.priceCents / 100
-            const r = outlineRadiusAt(y)
-            const cx = side * (r + 0.42 + s)
-            const cy = y + side * 0.06 * s
-            dir.set(cx - side * r, cy - y, 0).normalize()
-            quat.setFromUnitVectors(up, dir)
-            dummy.makeRotationFromQuaternion(quat)
-            dummy.scale(new THREE.Vector3(1, Math.hypot(cx - side * r, cy - y) || 0.001, 1))
-            dummy.setPosition(side * r * 0.98, y, 0)
-            work.twigMesh!.setMatrixAt(twigBase + i, dummy)
-
-            const main = new THREE.Matrix4().makeScale(s, s * 0.62, s)
-            main.setPosition(cx, cy, 0)
-            mesh.setMatrixAt(i * 3, main)
-            for (let j = 1; j <= 2; j += 1) {
-              const ss = s * (0.42 + rnd() * 0.22)
-              const mm = new THREE.Matrix4().makeScale(ss, ss * 0.6, ss)
-              mm.setPosition(
-                cx + side * s * (0.5 + rnd() * 0.35),
-                cy + (rnd() - 0.4) * s * 0.85,
-                (rnd() - 0.5) * s * 0.8,
-              )
-              mesh.setMatrixAt(i * 3 + j, mm)
-            }
-          })
-          mesh.instanceMatrix.needsUpdate = true
+        const stride = totalFallen > FALLEN_CAP ? totalFallen / FALLEN_CAP : 1
+        let acc = 0
+        let fi = 0
+        for (const l of levels) {
+          for (let j = 0; j < l.soldCount; j += 1) {
+            acc += 1
+            if (acc < stride) continue
+            acc -= stride
+            if (fi >= FALLEN_CAP) break
+            const y = l.priceCents / 100 - 0.05 - rnd() * 0.2
+            const x = (fi % 2 === 0 ? 1 : -1) * (0.55 + rnd() * 1.15)
+            const z = -(0.85 + rnd() * 0.55)
+            const s = 0.085 + Math.min(0.05, Math.sqrt(l.soldQty / Math.max(1, l.soldCount)) / 140)
+            quat.setFromAxisAngle(up, rnd() * Math.PI * 2)
+            sclV.set(s * 1.7, s * 0.34, s)
+            posV.set(x, y, z)
+            dummy.compose(posV, quat, sclV)
+            fallenMesh.setMatrixAt(fi, dummy)
+            fi += 1
+          }
+          if (fi >= FALLEN_CAP) break
         }
-        placeSide(work.buyMesh, -1, (l) => l.buySize, 0)
-        placeSide(work.sellMesh, 1, (l) => l.sellSize, n)
+        fallenMesh.count = fi
+        fallenMesh.instanceMatrix.needsUpdate = true
+      }
+      buildFallen()
 
-        const fallen = work.fallenMesh
-        if (!fallen) return
-        work.levels.forEach((l, i) => {
-          const s = l.fallenSize * Math.min(k, 2.2)
-          if (s <= 0) return
-          const y = l.priceCents / 100
-          const r = outlineRadiusAt(y)
-          const mm = new THREE.Matrix4().makeScale(s, s * 0.5, s)
-          mm.setPosition(r + 0.1 + s * 0.4, y + 0.12, 0.12)
-          fallen.setMatrixAt(i * 3, mm)
-          const mm2 = new THREE.Matrix4().makeScale(s * 0.6, s * 0.32, s * 0.6)
-          mm2.setPosition(r + 0.2 + s * 0.8, y - 0.1, -0.1)
-          fallen.setMatrixAt(i * 3 + 1, mm2)
-        })
-        fallen.instanceMatrix.needsUpdate = true
-        work.twigMesh.instanceMatrix.needsUpdate = true
+      /** 按档间距把同侧档位串成合并组（链式：相邻间距 < gap 就并） */
+      const groupLevels = (
+        list: TreeLevel[],
+        qtyOf: (l: TreeLevel) => number,
+        gap: number,
+      ): BranchBin[] => {
+        const bins: BranchBin[] = []
+        let i = 0
+        while (i < list.length) {
+          let j = i
+          let qty = 0
+          let wy = 0
+          let repQty = -1
+          let repCents = list[i].priceCents
+          while (j < list.length && (j === i || list[j].priceCents / 100 - list[j - 1].priceCents / 100 < gap)) {
+            const l = list[j]
+            const q = qtyOf(l)
+            qty += q
+            wy += (l.priceCents / 100) * q
+            if (q > repQty) {
+              repQty = q
+              repCents = l.priceCents
+            }
+            j += 1
+          }
+          bins.push({
+            lo: list[i].priceCents / 100,
+            hi: list[j - 1].priceCents / 100,
+            y: qty > 0 ? wy / qty : (list[i].priceCents + list[j - 1].priceCents) / 200,
+            repCents,
+            qty,
+            count: j - i,
+          })
+          i = j
+        }
+        return bins
+      }
+
+      /** 一段枝：从锚点沿 dir 伸出长度 len，粗细倍率 t */
+      const placeSeg = (
+        mesh: import('three').InstancedMesh | null,
+        idx: number,
+        ax: number,
+        ay: number,
+        dir: import('three').Vector3,
+        len: number,
+        t: number,
+      ) => {
+        if (!mesh) return
+        quat.setFromUnitVectors(up, dir)
+        posV.set(ax + dir.x * len * 0.5, ay + dir.y * len * 0.5, dir.z * len * 0.5)
+        sclV.set(t, len, t)
+        dummy.compose(posV, quat, sclV)
+        mesh.setMatrixAt(idx, dummy)
+      }
+
+      /**
+       * 重排枝叶。只在「合并档位（gap，√2 步进量化）+ 远景放大档」变化时做，
+       * 平移不触发；矩阵复用共享临时对象，无逐帧分配。
+       */
+      const layoutBranches = () => {
+        // 行距不足 ROWS_PER_SCREEN 行就并档；gap 按 2^(n/2) 量化，缩放中不抖
+        const gapRaw = view.span / ROWS_PER_SCREEN
+        const gap = Math.max(0.02, Math.pow(2, Math.ceil(Math.log2(Math.max(1e-4, gapRaw)) * 2) / 2))
+        // 拉远时枝整体放大一档，避免远景细枝缩成看不见的线
+        const kz = 1 + Math.min(1.1, Math.max(0, view.span - 12) / 90)
+        const gate = `${gap}|${Math.round(kz * 5)}`
+        if (gate === work.lastGate) return
+        work.lastGate = gate
+
+        const doSide = (
+          side: -1 | 1,
+          list: TreeLevel[],
+          qtyOf: (l: TreeLevel) => number,
+          branchMesh: import('three').InstancedMesh | null,
+          leafMesh: import('three').InstancedMesh | null,
+        ) => {
+          const bins = groupLevels(list, qtyOf, gap)
+          let bi = 0
+          let li = 0
+          const sideBins: BranchBin[] = []
+          for (const bin of bins) {
+            let seed = Math.round(bin.lo * 7919) + (side > 0 ? 31 : 57)
+            const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647)
+            const y = bin.y
+            const r = outlineRadiusAt(y)
+            const ax = side * r * 0.96
+            const len = Math.min(1.5, (0.5 + Math.sqrt(bin.qty) / 38) * kz)
+            const thick = (1 + Math.min(1.1, Math.sqrt(bin.qty) / 650)) * Math.min(1.5, kz * 0.85)
+            const tilt = 0.1 + rnd() * 0.16
+            dir1.set(side * 0.98, tilt, 0.04).normalize()
+            dir2.set(side * 0.9, tilt + 0.18 + rnd() * 0.1, 0.09).normalize()
+            const len1 = len * 0.62
+            const len2 = len * 0.5
+            placeSeg(branchMesh, bi * 2, ax, y, dir1, len1, thick)
+            placeSeg(branchMesh, bi * 2 + 1, ax + dir1.x * len1, y + dir1.y * len1, dir2, len2, thick * 0.66)
+            bi += 1
+
+            // 合并档 ≥ 2 才画叶：叶数 = 合并档数，沿枝铺开
+            if (bin.count > 1 && leafMesh) {
+              const total = len1 + len2
+              const ls = Math.max(0.55, Math.min(1.1, 1.15 - bin.count * 0.045)) * Math.min(1.6, kz * 0.9)
+              for (let m = 0; m < bin.count && li < list.length; m += 1) {
+                const s = ((m + 0.5) / bin.count) * total * 0.94 + total * 0.04
+                const px = s < len1 ? ax + dir1.x * s : ax + dir1.x * len1 + dir2.x * (s - len1)
+                const py = s < len1 ? y + dir1.y * s : y + dir1.y * len1 + dir2.y * (s - len1)
+                quat.setFromAxisAngle(up, rnd() * Math.PI * 2)
+                posV.set(px, py + (m % 2 === 0 ? 1 : -1) * 0.045 * ls, dir1.z * s)
+                sclV.set(0.16 * ls, 0.03 * ls, 0.078 * ls)
+                dummy.compose(posV, quat, sclV)
+                leafMesh.setMatrixAt(li, dummy)
+                li += 1
+              }
+            }
+
+            // 拾取球：贴在枝中段，杆细也能点中；球心存进 bin，投影/点击共用
+            bin.pick = { x: ax + dir1.x * len1 * 0.85, y: y + dir1.y * len1 * 0.85, z: dir1.z * len1 * 0.85 }
+            if (pickMesh) {
+              const pickR = Math.min(0.46, 0.3 + 0.02 * bin.count) * Math.min(1.6, kz)
+              posV.set(bin.pick.x, bin.pick.y, bin.pick.z)
+              sclV.setScalar(pickR)
+              quat.identity()
+              dummy.compose(posV, quat, sclV)
+              pickMesh.setMatrixAt(work.picks.push(bin) - 1, dummy)
+            }
+            sideBins.push(bin)
+          }
+          if (branchMesh) {
+            branchMesh.count = bi * 2
+            branchMesh.instanceMatrix.needsUpdate = true
+          }
+          if (leafMesh) {
+            leafMesh.count = li
+            leafMesh.instanceMatrix.needsUpdate = true
+          }
+          return sideBins
+        }
+
+        work.picks.length = 0
+        // 先卖后买，保证 e2e 默认 side=1 的档位在拾取层里
+        work.bins.sell = doSide(1, sellList, (l) => l.sellQty, sellBranchMesh, sellLeafMesh)
+        work.bins.buy = doSide(-1, buyList, (l) => l.buyQty, buyBranchMesh, buyLeafMesh)
+        if (pickMesh) {
+          pickMesh.count = work.picks.length
+          pickMesh.instanceMatrix.needsUpdate = true
+        }
       }
 
       // ---------- 价格标签：HTML 覆盖层（任何缩放下都清晰，钉在画布左缘） ----------
@@ -581,15 +706,22 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
         labelPool.push({ el, text: '' })
       }
       host.appendChild(labelHost)
-      const labelStep = (span: number) => (span < 6 ? 0.5 : span < 40 ? 1 : span < 130 ? 5 : 10)
+      /**
+       * 价签步长：让相邻数字在屏幕上至少隔 LABEL_MIN_GAP 像素，从 1-2-5 档里
+       * 取最小的满足档。任何缩放级别间隔都等比例、够宽——数据 8~12 毛毛都有
+       * 也不会挤；看得宽就让它稀疏，不压缩轴向。
+       */
+      const labelStep = (span: number, heightPx: number) => {
+        const raw = (LABEL_MIN_GAP * span) / Math.max(1, heightPx)
+        return LABEL_LADDER.find((s) => s >= raw) ?? LABEL_LADDER[LABEL_LADDER.length - 1]
+      }
 
-      const projV = new THREE.Vector3()
       const updateLabels = () => {
         const rect = canvas.getBoundingClientRect()
         const half = view.span / 2
         const y0 = Math.max(TRUNK_MIN + 0.1, view.camY - half)
         const y1 = Math.min(TRUNK_MAX - 0.1, view.camY + half)
-        const step = labelStep(view.span)
+        const step = labelStep(view.span, rect.height || canvas.clientHeight || 1)
         let li = 0
         for (let y = Math.ceil(y0 / step) * step; y <= y1 && li < LABEL_CAP; y += step) {
           projV.set(0, y, 0).project(camera)
@@ -609,24 +741,27 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
         for (; li < LABEL_CAP; li += 1) labelPool[li].el.style.display = 'none'
       }
 
-      // ---------- 交互：滚轮 / 捏合缩放，拖动攀爬，点叶跳明细 ----------
+      // ---------- 交互：滚轮 / 捏合缩放，拖动攀爬（内容跟手），点枝跳明细 ----------
       const pointers = new Map<number, { x: number; y: number }>()
       let pinchDist0 = 1
       let spanAtPinch = 0
       let pinchMidY = 0
       let dragMoved = 0
-
-      const clampView = () => {
-        view.span = Math.min(SPAN_MAX, Math.max(SPAN_MIN, view.span))
-        view.camY = Math.min(CAM_MAX, Math.max(CAM_MIN, view.camY))
+      let dirty = true
+      const markDirty = () => {
+        dirty = true
       }
+
+      // 手指往下拖 → 树往下走 → 镜头上移看更高价（和地图 / 列表同向，不再反向）
       const panBy = (dyPx: number) => {
         view.camY += dyPx * (view.span / (canvas.clientHeight || 1))
         clampView()
+        markDirty()
       }
       const zoomBy = (factor: number) => {
         view.span /= factor
         clampView()
+        markDirty()
       }
 
       const onWheel = (e: WheelEvent) => {
@@ -650,15 +785,16 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
         dragMoved += Math.abs(e.clientX - prev.x) + Math.abs(e.clientY - prev.y)
         pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
         if (pointers.size === 1) {
-          panBy(-(e.clientY - prev.y))
+          panBy(e.clientY - prev.y)
         } else if (pointers.size >= 2) {
           const [a, b] = [...pointers.values()]
           const d = Math.hypot(a.x - b.x, a.y - b.y) || 1
           view.span = spanAtPinch * (pinchDist0 / d)
           clampView()
           const midY = (a.y + b.y) / 2
-          panBy(pinchMidY - midY)
+          panBy(midY - pinchMidY)
           pinchMidY = midY
+          markDirty()
         }
       }
       const onUp = (e: PointerEvent) => {
@@ -671,14 +807,14 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
       const raycaster = new THREE.Raycaster()
       const ndc = new THREE.Vector2()
       const raycastPick = (e: PointerEvent) => {
+        if (!pickMesh) return
         const rect = canvas.getBoundingClientRect()
         ndc.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1)
         raycaster.setFromCamera(ndc, camera)
-        const meshes = [work.buyMesh, work.sellMesh].filter(Boolean) as import('three').InstancedMesh[]
-        for (const hit of raycaster.intersectObjects(meshes, false)) {
-          const level = work.levels[Math.floor((hit.instanceId ?? -1) / 3)]
-          if (level && (level.buyQty > 0 || level.sellQty > 0)) {
-            pickRef.current(level.priceCents)
+        for (const hit of raycaster.intersectObject(pickMesh, false)) {
+          const bin = work.picks[hit.instanceId ?? -1]
+          if (bin) {
+            pickRef.current(bin.repCents)
             return
           }
         }
@@ -736,12 +872,17 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
         const { w: bw, h: bh } = getBufSize()
         rt.setSize(bw, bh)
         postUniforms.uRes.value.set(bw, bh)
+        markDirty()
       }
       const ro = new ResizeObserver(resize)
       ro.observe(host)
+      const onVisible = () => {
+        if (!document.hidden) markDirty()
+      }
+      document.addEventListener('visibilitychange', onVisible)
       resize()
       applyCamera()
-      layoutBlobs()
+      layoutBranches()
       updateLabels()
 
       ;(canvas as HTMLCanvasElement & { __tree?: unknown }).__tree = {
@@ -750,9 +891,16 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
         center: () => view.camY,
         zoomBy,
         projectPrice: (cents: number, side: 1 | -1 = 1) => {
-          // 投影到叶团位置（树干外表面外 0.85）——e2e 用它定位点击点
+          // 投影到该档所在合并枝的拾取球心——e2e 用它定位点击点
           const y = cents / 100
-          projV.set(side * (outlineRadiusAt(y) + 0.85), y, 0).project(camera)
+          const bins = side > 0 ? work.bins.sell : work.bins.buy
+          const bin = bins.find((b) => y >= b.lo - 1e-6 && y <= b.hi + 1e-6)
+          if (bin?.pick) {
+            // layoutBranches 存好的拾取球心，投影/点击同一位置
+            projV.set(bin.pick.x, bin.pick.y, bin.pick.z).project(camera)
+          } else {
+            projV.set(side * (outlineRadiusAt(y) + 0.9), y, 0).project(camera)
+          }
           if (projV.z > 1 || projV.z < -1) return null
           const rect = canvas.getBoundingClientRect()
           return {
@@ -764,11 +912,9 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
 
       let raf = 0
       const mat4 = new THREE.Matrix4()
-      const tick = () => {
-        raf = requestAnimationFrame(tick)
-        if (document.hidden) return
+      const renderFrame = () => {
         applyCamera()
-        layoutBlobs()
+        layoutBranches()
         updateLabels()
         // 树轮换挡：近景 0.1 一圈（细），中景 0.5，远景 1 元（粗）
         const tier = view.span < 8 ? 0 : view.span < 60 ? 1 : 2
@@ -811,11 +957,19 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
         renderer.setRenderTarget(null)
         renderer.render(postScene, postCam)
       }
+      // 按需渲染：无逐帧动画，只有交互 / 改尺寸 / 回前台才置脏画一帧
+      const tick = () => {
+        raf = requestAnimationFrame(tick)
+        if (document.hidden || !dirty) return
+        dirty = false
+        renderFrame()
+      }
       tick()
 
       cleanup = () => {
         cancelAnimationFrame(raf)
         ro.disconnect()
+        document.removeEventListener('visibilitychange', onVisible)
         canvas.removeEventListener('wheel', onWheel)
         canvas.removeEventListener('pointerdown', onDown)
         canvas.removeEventListener('pointermove', onMove)
@@ -823,7 +977,6 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
         canvas.removeEventListener('pointercancel', onUp)
         delete (canvas as HTMLCanvasElement & { __tree?: unknown }).__tree
         labelHost.remove()
-        disposeBlobMeshes()
         rt.dispose()
         depthTex.dispose()
         postQuad.geometry.dispose()
@@ -835,14 +988,22 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
         rootGeo.dispose()
         mountMat.dispose()
         cloudMat.dispose()
+        cloudBallGeo.dispose()
         mossGeo.dispose()
         mossMat.dispose()
-        blobGeo.dispose()
-        twigGeo.dispose()
+        branchGeo.dispose()
+        leafGeo.dispose()
+        pickGeo.dispose()
         buyMat.dispose()
         sellMat.dispose()
         fallenMat.dispose()
-        twigMat.dispose()
+        pickMat.dispose()
+        for (const mesh of [buyBranchMesh, sellBranchMesh, buyLeafMesh, sellLeafMesh, pickMesh, fallenMesh]) {
+          if (mesh) {
+            scene.remove(mesh)
+            mesh.dispose()
+          }
+        }
         for (const set of [...ringSets, ...majorSets]) {
           set.geo.dispose()
           ;(set.mesh.material as import('three').ShaderMaterial).dispose()
@@ -863,10 +1024,10 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
     <div className="tree-wrap">
       <div ref={hostRef} className="tree-host" />
       <div className="tree-legend">
-        <span className="dot buy">待买（回补价）</span>
-        <span className="dot sell">待卖（目标价）</span>
-        <span className="dot fallen">已卖出</span>
-        <span className="hint">滚轮 / 双指缩放 · 拖动攀爬 · 点叶看明细</span>
+        <span className="dot buy">待买枝 · 左</span>
+        <span className="dot sell">待卖枝 · 右</span>
+        <span className="dot fallen">落叶 · 已卖（后景）</span>
+        <span className="hint">滚轮缩放 · 拖动攀爬 · 点枝看明细</span>
       </div>
     </div>
   )

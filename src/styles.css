@@ -465,22 +465,6 @@ button { font-family: inherit; }
 /* 金额型指标：字号收一档 + 不换行，避免「+」被挤到单独一行 */
 .metrics .v.money { font-size: 14.5px; white-space: nowrap; letter-spacing: -0.01em; }
 
-/* 明细：日期区间筛选 */
-.date-row { margin-top: 8px; gap: 6px; }
-.date-input {
-  flex: 1;
-  min-width: 0;
-  border: 1px solid var(--animal-border-color, #e0d8c8);
-  border-radius: 10px;
-  background: #fffdf7;
-  color: var(--animal-text-color, #794f27);
-  font-family: inherit;
-  font-size: 12px;
-  padding: 7px 8px;
-  -webkit-appearance: none;
-  appearance: none;
-}
-.date-input:focus { outline: 2px solid var(--animal-primary-color, #19c8b9); outline-offset: -1px; }
 /* 排序平铺 chips（V9.4）：复用 filter-chips 样式，自己占一行 */
 .sort-chips { margin-top: 8px; }
 

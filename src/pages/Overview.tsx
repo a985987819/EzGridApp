@@ -1,9 +1,8 @@
 import { useMemo, useState } from 'react'
-import { Button, Card, Collapse, Tag } from 'animal-island-ui'
+import { Button, Card, Tag } from 'animal-island-ui'
 import { activeStockNames } from '../domain/stocks'
 import type { StockSummary } from '../domain/types'
 import { useApp } from '../store/useApp'
-import { CheckList } from '../components/CheckGrid'
 import { TreeTrunk } from '../components/TreeTrunk'
 import { money, price, qty, signedMoney, tone } from '../ui/format'
 import type { TradesQuery } from '../ui/nav'
@@ -99,9 +98,12 @@ export function Overview({
         </div>
         <p className="tiny muted metrics-hint">点上面三格可以展开构成明细</p>
         <div className="row divider-top" style={{ gap: 6 }}>
-          <Tag size="small" variant="soft" color={failed ? 'app-red' : 'app-green'}>
-            {failed ? `基准 ${baseline.length - failed}/${baseline.length}` : '基准全中'}
-          </Tag>
+          {/* 基准体检挪去了管理 · 校验（V9.10）；这里只在异常时提醒一句 */}
+          {failed > 0 && (
+            <Tag size="small" variant="soft" color="app-red" onClick={goManage}>
+              基准 {baseline.length - failed}/{baseline.length} · 去管理页看
+            </Tag>
+          )}
           <Tag size="small" variant="soft" color="app-blue">已实现 {signedMoney(t.profitCents)}</Tag>
           <Tag size="small" variant="soft" color="app-orange">待卖 {money(t.targetAmountCents)}</Tag>
           {t.exposureQty > 0 && (
@@ -279,21 +281,6 @@ export function Overview({
             <TreeTrunk stockName={current.stockName} onPick={(p) => goTrades({ stock: current.stockName, price: p })} />
           </div>
         )}
-      </Card>
-
-      <Card>
-        <Collapse
-          question={
-            <span className="row" style={{ gap: 6 }}>
-              基准快照（文档 §03）
-              <Tag size="small" variant="soft" color={failed ? 'app-red' : 'app-green'}>
-                {failed ? `${failed} 项不符` : '全中'}
-              </Tag>
-            </span>
-          }
-          answer={<CheckList checks={baseline} />}
-        />
-        <Collapse question="数量守恒（R7）" answer={<CheckList checks={ledger.checks} />} />
       </Card>
 
       <p className="tiny muted" style={{ textAlign: 'center', margin: '0 0 4px' }}>

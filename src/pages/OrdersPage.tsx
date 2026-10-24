@@ -18,11 +18,18 @@ function stopWith(fn: () => void) {
   }
 }
 
+/** 从按股票记录的表里摘掉一只（返回新表，不改原表） */
+function dropStock<T>(rec: Record<string, T>, stock: string): Record<string, T> {
+  const next: Record<string, T> = {}
+  for (const k of Object.keys(rec)) if (k !== stock) next[k] = rec[k]
+  return next
+}
+
 export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
   const { ledger, stocks, executions, scopedRecords, ordersSession, patchOrdersSession, recordRebuy, removeRebuy, setPlan, clearPlan } = useApp()
   // 顺序与启停都跟随「管理 · 股票」
   const stockNames = useMemo(() => activeStocks(stocks).map((s) => s.name), [stocks])
-  const { stockName, lastClose, confirmed, limitOverride } = ordersSession
+  const { stockName } = ordersSession
 
   // 跳明细以 nanoId 定位（V9.4）：行级唯一 id，与明细页筛选同源
   const nano = useMemo(() => buildNanoIdIndex(scopedRecords), [scopedRecords])
@@ -31,6 +38,12 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
 
   const effectiveStock = stockNames.includes(stockName) ? stockName : stockNames[0] ?? ''
   const cfg = stocks.find((s) => s.name === effectiveStock)
+  // 昨收按股票记在会话里（V9.10）：切股再切回来，输入和确认结果都还在
+  const lastClose = ordersSession.closes[effectiveStock] ?? ''
+  const confirmedCents = ordersSession.confirmedCents[effectiveStock]
+  const confirmed = confirmedCents != null ? { stock: effectiveStock, closeCents: confirmedCents } : null
+  const ov = ordersSession.overrides[effectiveStock]
+  const limitOverride = ov ? { stock: effectiveStock, up: ov.up, down: ov.down } : null
 
   const limitLabel = !cfg
     ? '未配置'
@@ -41,8 +54,8 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
         : `${LIMIT_PCT[cfg.priceLimitType]}%`
 
   const computedRange =
-    confirmed && confirmed.stock === effectiveStock
-      ? limitRange(confirmed.closeCents, cfg?.priceLimitType ?? 'unknown', cfg?.customLimitPct ?? null)
+    confirmedCents != null
+      ? limitRange(confirmedCents, cfg?.priceLimitType ?? 'unknown', cfg?.customLimitPct ?? null)
       : null
 
   // §10：涨跌停允许手工覆盖，只影响挂单页的区间判断，不改股票配置
@@ -164,8 +177,12 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
       })
       return
     }
-    // 昨收只记在会话里（V9.4 起不再写 db.meta）：跳明细往返保留，刷新即清
-    patchOrdersSession({ lastClose, confirmed: { stock: effectiveStock, closeCents: cents }, limitOverride: null })
+    // 昨收按股票记在会话（V9.10）：切股 / 切页 / 刷新都保留，关标签页才清
+    patchOrdersSession({
+      closes: { ...ordersSession.closes, [effectiveStock]: lastClose },
+      confirmedCents: { ...ordersSession.confirmedCents, [effectiveStock]: cents },
+      overrides: dropStock(ordersSession.overrides, effectiveStock),
+    })
     setEditingLimit(false)
   }
 
@@ -252,7 +269,8 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
             options={stockNames.map((s) => ({ key: s, label: s }))}
             value={effectiveStock}
             onChange={(v) => {
-              patchOrdersSession({ stockName: v, confirmed: null, limitOverride: null })
+              // 数据都按股票记，切股只动 stockName；回来时昨收 / 确认 / 手工区间都还在
+              patchOrdersSession({ stockName: v })
               setEditingLimit(false)
             }}
             aria-label="选择股票"
@@ -262,13 +280,21 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
               className="grow"
               value={lastClose}
               onChange={(e) => {
-                patchOrdersSession({ lastClose: e.target.value, confirmed: null, limitOverride: null })
+                patchOrdersSession({
+                  closes: { ...ordersSession.closes, [effectiveStock]: e.target.value },
+                  confirmedCents: dropStock(ordersSession.confirmedCents, effectiveStock),
+                  overrides: dropStock(ordersSession.overrides, effectiveStock),
+                })
                 setEditingLimit(false)
               }}
               placeholder="昨收价，如 8.10"
               allowClear
               onClear={() => {
-                patchOrdersSession({ lastClose: '', confirmed: null, limitOverride: null })
+                patchOrdersSession({
+                  closes: { ...ordersSession.closes, [effectiveStock]: '' },
+                  confirmedCents: dropStock(ordersSession.confirmedCents, effectiveStock),
+                  overrides: dropStock(ordersSession.overrides, effectiveStock),
+                })
                 setEditingLimit(false)
               }}
               aria-label="昨收价"
@@ -292,9 +318,9 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
                     <Button
                       size="small"
                       type="text"
-                      onClick={() => {
-                        patchOrdersSession({ limitOverride: null })
-                        setEditingLimit(false)
+                    onClick={() => {
+                      patchOrdersSession({ overrides: dropStock(ordersSession.overrides, effectiveStock) })
+                      setEditingLimit(false)
                         notificationOpen({ message: '已回到按涨跌幅算的区间', type: 'info' })
                       }}
                     >
@@ -355,7 +381,9 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
                       notificationOpen({ message: '跌停价要低于涨停价', type: 'warning' })
                       return
                     }
-                    patchOrdersSession({ limitOverride: { stock: effectiveStock, up, down } })
+                    patchOrdersSession({
+                      overrides: { ...ordersSession.overrides, [effectiveStock]: { up, down } },
+                    })
                     setEditingLimit(false)
                     notificationOpen({ message: '已按手工区间挂单', description: '只影响本页判断，不改股票配置', type: 'success' })
                   }}

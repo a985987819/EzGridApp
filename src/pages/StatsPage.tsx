@@ -16,14 +16,6 @@ export function StatsPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) 
   const groups = ledger.groups.filter((g) => enabledIds.has(g.stockId))
   const hiddenCount = ledger.byStock.length - byStock.length
   const stockNameOf = (id: string) => stocks.find((s) => s.id === id)?.name ?? ''
-  // 年 / 月累计盈利：从月度桶里取（未填日期的卖出不进累计）
-  const now = new Date()
-  const curYear = String(now.getFullYear())
-  const curMonth = `${curYear}-${String(now.getMonth() + 1).padStart(2, '0')}`
-  const yearProfit = ledger.monthly
-    .filter((m) => m.month.startsWith(curYear))
-    .reduce((a, m) => a + m.profitCents, 0)
-  const monthProfit = ledger.monthly.find((m) => m.month === curMonth)?.profitCents ?? 0
 
   return (
     <div className="stack">
@@ -58,18 +50,7 @@ export function StatsPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) 
         <div className="sec-head">
           <strong>月度成交</strong>
           <div className="spacer" />
-          <span className="sec-sub">收益率 = 盈利 / 卖出额</span>
-        </div>
-        {/* V9.7：年 / 月累计盈利——把有日期的卖出按年 / 按月累加（未填日期的只单列，不进累计） */}
-        <div className="grid-4 metric-strip two-col" style={{ marginBottom: 8 }}>
-          <div>
-            <div className="k">年累计盈利（{curYear}）</div>
-            <div className={`v ${tone(yearProfit)}`}>{signedMoney(yearProfit)}</div>
-          </div>
-          <div>
-            <div className="k">月累计盈利（{curMonth}）</div>
-            <div className={`v ${tone(monthProfit)}`}>{signedMoney(monthProfit)}</div>
-          </div>
+          <span className="sec-sub">收益率 = 盈利 / 卖出额 · 年 / 月累计在上方日历区</span>
         </div>
         <div className="data-block">
         {ledger.monthly.map((m) => (
@@ -218,6 +199,18 @@ function CalendarCard({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
   const [panel, setPanel] = useState(`${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`)
   const [selected, setSelected] = useState(today.toISOString().slice(0, 10))
 
+  // 年 / 月累计盈利跟随日历面板（V9.10）：翻月 / 翻年就重算，不再钉死今天。
+  // 口径不变：从月度桶里取，未填日期的卖出不进累计。
+  const panelYear = panel.slice(0, 4)
+  const yearProfit = useMemo(
+    () => ledger.monthly.filter((m) => m.month.startsWith(panelYear)).reduce((a, m) => a + m.profitCents, 0),
+    [ledger.monthly, panelYear],
+  )
+  const monthProfit = useMemo(
+    () => ledger.monthly.find((m) => m.month === panel)?.profitCents ?? 0,
+    [ledger.monthly, panel],
+  )
+
   // 按天聚合：一个格子一条「左当日总盈利 / 右成交笔数」（V9.7 修正口径）
   const events = useMemo(() => {
     const byDay = new Map<string, { count: number; qty: number; profit: number }>()
@@ -258,6 +251,17 @@ function CalendarCard({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
             {missing} 笔缺日期
           </Tag>
         )}
+      </div>
+      {/* 年 / 月累计盈利随面板翻动（V9.10）：看的哪个月就算哪个月 */}
+      <div className="grid-4 metric-strip two-col" style={{ marginBottom: 8 }}>
+        <div>
+          <div className="k">年累计盈利（{panelYear}）</div>
+          <div className={`v ${tone(yearProfit)}`}>{signedMoney(yearProfit)}</div>
+        </div>
+        <div>
+          <div className="k">月累计盈利（{panel}）</div>
+          <div className={`v ${tone(monthProfit)}`}>{signedMoney(monthProfit)}</div>
+        </div>
       </div>
       <Calendar
         value={selected}

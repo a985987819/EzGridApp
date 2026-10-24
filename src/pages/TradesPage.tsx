@@ -108,6 +108,16 @@ function isDone(r: Row): boolean {
   return r.sell !== null && r.sell.rebuyStatus !== 'pending' && (r.lot === null || r.lot.remainingQty === 0)
 }
 
+/** 日期区间的 chip 文案：恰好整月就写成「月份 2026-02」（统计页月度/日历跳转都是整月或单日） */
+function dateChipLabel(from: string, to: string): string {
+  const m = from.match(/^(\d{4}-\d{2})-01$/)
+  if (m && to.startsWith(`${m[1]}-`)) {
+    const lastDay = new Date(Number(to.slice(0, 4)), Number(to.slice(5, 7)), 0).getDate()
+    if (Number(to.slice(8, 10)) === lastDay) return `月份 ${m[1]}`
+  }
+  return `日期 ${from || '…'} → ${to || '…'}`
+}
+
 const BLANK_DRAFT = Object.fromEntries(EDITABLE.map((f) => [f.key, ''])) as Record<EditableKey, string>
 
 const BLANK_FORM: ManualInput = {
@@ -263,7 +273,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     if (fromDate || toDate)
       chips.push({
         key: 'date',
-        label: `日期 ${fromDate || '…'} → ${toDate || '…'}`,
+        label: dateChipLabel(fromDate, toDate),
         clear: () => {
           setFromDate('')
           setToDate('')
@@ -456,38 +466,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
           </button>
         </div>
 
-        {/* S3：日期区间筛选（卖出日期优先，其次买入日期） */}
-        <div className="row nowrap date-row">
-          <input
-            type="date"
-            className="date-input"
-            value={fromDate}
-            max={toDate || undefined}
-            onChange={(e) => setFromDate(e.target.value)}
-            aria-label="起始日期"
-          />
-          <span className="tiny muted">→</span>
-          <input
-            type="date"
-            className="date-input"
-            value={toDate}
-            min={fromDate || undefined}
-            onChange={(e) => setToDate(e.target.value)}
-            aria-label="结束日期"
-          />
-          {(fromDate || toDate) && (
-            <Button
-              size="small"
-              type="text"
-              onClick={() => {
-                setFromDate('')
-                setToDate('')
-              }}
-            >
-              清除
-            </Button>
-          )}
-        </div>
+        {/* S3：日期区间筛选不设页面组件（V9.11 删）——只用年月：从「统计 · 月度成交 / 成交日历」跳转带入 from/to，条件 chip 可点掉 */}
 
         {/* 已生效条件 chips + 一键复位（每颗 chip 可单独点掉） */}
         {activeChips.length > 0 && (
@@ -565,6 +544,12 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       ) : (
         visible.map((r) => {
           const deleted = Boolean(r.rec.deletedAt)
+          // 待办配色（V9.11）：只标还没做的事——持仓中（含部分卖出）→待卖（目标价/剩余量红）；
+          // 已卖完待回补 / 先卖后买→待买（买入价·回补价/量蓝）；已完成的动作一律不再强调
+          const holding = (r.lot?.remainingQty ?? 0) > 0
+          const awaitingBuy = !holding && r.sell?.rebuyStatus === 'pending'
+          const buyP = r.rec.buyPriceCents ?? r.rec.earlyBuyPriceCents
+          const buyQ = r.lot ? r.lot.qty : r.rec.soldQty ?? 0
           return (
             <Card
               key={r.rec.sourceRow}
@@ -584,24 +569,24 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                   {r.sell ? signedMoney(r.sell.profitCents) : '—'}
                 </span>
               </div>
-              {/* 蓝买红卖（V9.5）：买价/买量蓝色，卖量红色并加粗；日期行弱化 */}
+              {/* 待办配色（V9.11）：红=待卖（目标价+剩余量），蓝=待回补买（买入/回补价+量）；已完成不标色 */}
               <div className="mid">
                 <span className="path num">
-                  {r.rec.buyPriceCents !== null ? (
-                    <span className="c-buy">
-                      买 {price(r.rec.buyPriceCents)}
-                      {r.lot ? <b> × {qty(r.lot.qty)}</b> : ''}
+                  {buyP !== null ? (
+                    <span className={awaitingBuy ? 'c-buy' : undefined}>
+                      买 {price(buyP)}
+                      {buyQ > 0 && <b> × {qty(buyQ)}</b>}
                     </span>
                   ) : (
                     '无买入批次'
                   )}
-                  {r.rec.soldQty ? (
-                    <span className="c-sell"> · 卖 <b>{qty(r.rec.soldQty)}</b></span>
-                  ) : ''}
+                  {r.rec.soldQty ? ` · 卖 ${qty(r.rec.soldQty)}` : ''}
                   {' → '}
-                  目标 {price(r.lot?.targetPriceCents ?? r.rec.targetPriceCents)}
+                  <span className={holding ? 'c-sell' : undefined}>
+                    目标 {price(r.lot?.targetPriceCents ?? r.rec.targetPriceCents)}
+                  </span>
                 </span>
-                <span className="right-qty num">
+                <span className={`right-qty num${holding ? ' c-sell' : ''}`}>
                   {r.lot ? `剩余 ${qty(r.lot.remainingQty)}` : r.rec.soldQty ? `已卖 ${qty(r.rec.soldQty)}` : ''}
                 </span>
               </div>

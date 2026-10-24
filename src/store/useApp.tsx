@@ -38,21 +38,40 @@ export interface ImportOutcome {
 }
 
 /**
- * 挂单页的临时状态（V9.4）：昨收输入、已确认区间、手工涨跌停、选中的股票。
- * 只活在当前会话（React state，不落库、刷新即失），但跨页往返保留——
- * 跳到明细对比完回来，挂单页还是跳走前的样子。
+ * 挂单页的临时状态（V9.10）：全部按股票记——昨收输入、已确认昨收、手工涨跌停、
+ * 当前选中的股票。切股、切页、刷新（同标签页）都保留；关掉标签页才清。
+ * 存 sessionStorage（会话级 Web Storage），不落 IndexedDB：昨收是行情信息，
+ * 隔天失效，不该进备份。
  */
 export interface OrdersSession {
   stockName: string
-  /** 昨收价输入框内容（未确认也留着） */
-  lastClose: string
-  /** 已确认的昨收：区间与今日挂单的依据 */
-  confirmed: { stock: string; closeCents: number } | null
-  /** 涨跌停手工覆盖区间（只影响挂单页判断） */
-  limitOverride: { stock: string; up: number; down: number } | null
+  /** 每只股票的昨收价输入框内容（未确认也留着） */
+  closes: Record<string, string>
+  /** 每只股票已确认的昨收（分）：区间与今日挂单的依据 */
+  confirmedCents: Record<string, number>
+  /** 每只股票的涨跌停手工覆盖区间（只影响挂单页判断） */
+  overrides: Record<string, { up: number; down: number }>
 }
 
-const EMPTY_ORDERS_SESSION: OrdersSession = { stockName: '', lastClose: '', confirmed: null, limitOverride: null }
+const ORDERS_SESSION_KEY = 'grid-trading:orders-session'
+const EMPTY_ORDERS_SESSION: OrdersSession = { stockName: '', closes: {}, confirmedCents: {}, overrides: {} }
+
+/** 从 sessionStorage 恢复（结构坏掉就当空会话） */
+function loadOrdersSession(): OrdersSession {
+  try {
+    const raw = sessionStorage.getItem(ORDERS_SESSION_KEY)
+    if (!raw) return EMPTY_ORDERS_SESSION
+    const p = JSON.parse(raw) as Partial<OrdersSession>
+    return {
+      stockName: typeof p.stockName === 'string' ? p.stockName : '',
+      closes: p.closes && typeof p.closes === 'object' ? p.closes : {},
+      confirmedCents: p.confirmedCents && typeof p.confirmedCents === 'object' ? p.confirmedCents : {},
+      overrides: p.overrides && typeof p.overrides === 'object' ? p.overrides : {},
+    }
+  } catch {
+    return EMPTY_ORDERS_SESSION
+  }
+}
 
 interface AppContextValue {
   ready: boolean
@@ -136,11 +155,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [accounts, setAccounts] = useState<Account[]>([])
   const [activeAccountId, setActiveAccountId] = useState('all')
   const [systemFont, setSystemFontState] = useState(false)
-  const [ordersSession, setOrdersSession] = useState<OrdersSession>(EMPTY_ORDERS_SESSION)
+  const [ordersSession, setOrdersSession] = useState<OrdersSession>(loadOrdersSession)
   const patchOrdersSession = useCallback(
     (p: Partial<OrdersSession>) => setOrdersSession((s) => ({ ...s, ...p })),
     [],
   )
+  // 会话级持久化：刷新/来回切页不清，关标签页由浏览器清
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(ORDERS_SESSION_KEY, JSON.stringify(ordersSession))
+    } catch {
+      // 隐私模式 / 存满：静默降级为内存态
+    }
+  }, [ordersSession])
 
   const reloadRecords = useCallback(async () => {
     const [r, a, x, pl, et] = await Promise.all([
