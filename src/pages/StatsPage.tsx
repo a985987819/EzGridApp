@@ -4,6 +4,7 @@ import { useApp } from '../store/useApp'
 import { activeStocks } from '../domain/stocks'
 import { money, qty, signedMoney, tone } from '../ui/format'
 import { monthRange, type TradesQuery } from '../ui/nav'
+import { buildNanoIdIndex } from '../ui/nanoid'
 
 export function StatsPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
   const { ledger, stocks } = useApp()
@@ -177,7 +178,8 @@ export function StatsPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) 
 
 /** 成交日历：按月看每天卖出了什么、赚了多少（红盈绿亏） */
 function CalendarCard({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
-  const { ledger } = useApp()
+  const { ledger, scopedRecords } = useApp()
+  const nano = useMemo(() => buildNanoIdIndex(scopedRecords), [scopedRecords])
   const today = new Date()
   const [panel, setPanel] = useState(`${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`)
   const [selected, setSelected] = useState(today.toISOString().slice(0, 10))
@@ -232,7 +234,7 @@ function CalendarCard({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
         ) : (
           <div className="data-block">
           {daySells.map((s) => (
-            <div key={s.id} className="line clickable" onClick={() => goTrades({ row: s.sourceRow, stock: s.stockName })}>
+            <div key={s.id} className="line clickable" onClick={() => goTrades({ id: nano.rowToId.get(s.sourceRow), stock: s.stockName })}>
               <div className="left">
                 <div className="t1" style={{ fontSize: 13 }}>
                   {s.stockName} · {price2(s.priceCents)} × {s.qty}

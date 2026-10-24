@@ -336,26 +336,25 @@ try {
   await sleep(400)
   check('清除后恢复全部', (await headCount()) === allCount, `${await headCount()}/${allCount}`)
 
+  // 排序平铺 chips（V9.4）：同项单击反序，再点回默认
   const sortPick = async (label) => {
-    await evaluate(`document.querySelector('.app-main [role="combobox"][aria-label="排序"]')?.click()`)
-    await sleep(300)
-    const ok = await clickByText('[role="option"]', label)
+    const ok = await clickByText('[aria-label="排序"] .filter-chip', label)
     await sleep(400)
     return ok
   }
   const firstRows = async () =>
     JSON.parse(await evaluate(`JSON.stringify([...document.querySelectorAll('[data-row]')].slice(0,3).map(e => Number(e.getAttribute('data-row'))))`))
-  check('排序切到「行号 低→高」', await sortPick('行号 低→高'))
+  check('排序切到「行号 低→高」（单击反序）', await sortPick('行号'))
   const asc = await firstRows()
   check('升序生效', asc[0] < asc[1] && asc[1] < asc[2], JSON.stringify(asc))
-  check('排序切回「行号 高→低」', await sortPick('行号 高→低'))
+  check('再点回「行号 高→低」默认', await sortPick('行号'))
   const desc = await firstRows()
   check('降序恢复', desc[0] > desc[1] && desc[1] > desc[2], JSON.stringify(desc))
 
   // 买入日期排序（新→旧）
   const firstBuyDates = async () =>
     JSON.parse(await evaluate(`JSON.stringify([...document.querySelectorAll('.trade-item .dates')].slice(0,3).map(e => e.textContent.trim()))`))
-  check('排序切到「买入日期 新→旧」', await sortPick('买入日期 新→旧'))
+  check('排序切到「买入日期 新→旧」', await sortPick('买入日期'))
   const buyDesc = await firstBuyDates()
   console.log('  买入日期降序前 3:', buyDesc)
   const isoOf = (t) => (t.match(/买入 (\d{4}-\d{2}-\d{2})/) || [])[1] ?? ''
@@ -363,7 +362,7 @@ try {
   check('买入日期降序生效', dates.length >= 2 && dates.every((d, i) => i === 0 || dates[i - 1] >= d), JSON.stringify(buyDesc))
   const datesShot = await send('Page.captureScreenshot', { format: 'png' })
   writeFileSync(join(OUT, 'mobile-trades-dates.png'), Buffer.from(datesShot.data, 'base64'))
-  check('排序切回「行号 高→低」', await sortPick('行号 高→低'))
+  check('点行号回默认排序', await sortPick('行号'))
 
   // 卡片上买入/卖出日期都要显示（空就显示 —）
   const cardText = await evaluate(`document.querySelector('[data-row="63"] .dates')?.textContent.trim() ?? ''`)
@@ -591,7 +590,7 @@ try {
   const dayHash = await evaluate('location.hash')
   check('落在明细并带单日区间', /from=\d{4}-\d{2}-\d{2}/.test(dayHash) && /to=\d{4}-\d{2}-\d{2}/.test(dayHash) && dayHash.match(/from=([^&]+)/)?.[1] === dayHash.match(/to=([^&]+)/)?.[1], dayHash)
 
-  // 挂单 · 待卖条目（整行可点）→ 行号定位
+  // 挂单 · 待卖条目（整行可点）→ nanoId 定位（V9.4 起跳转以 nanoId 为唯一依据）
   await nav('orders')
   check(
     '点待卖清单行',
@@ -602,11 +601,12 @@ try {
     })()`),
   )
   await sleep(600)
-  const rowHash = await evaluate('location.hash')
-  const rowNo = Number((rowHash.match(/row=(\d+)/) || [])[1])
-  check('落在明细并带行号', Number.isInteger(rowNo) && rowNo > 0, rowHash)
-  check('行号定位 1 行', (await headCount()) === 1, String(await headCount()))
-  check('行号条件 chip 显示', (await bodyText()).includes(`行 ${rowNo}`))
+  const idHash = await evaluate('location.hash')
+  const nanoId = (idHash.match(/id=([0-9a-z-]+)/) || [])[1]
+  check('落在明细并带 nanoId', Boolean(nanoId), idHash)
+  check('nanoId 定位 1 行', (await headCount()) === 1, String(await headCount()))
+  const idChip = await evaluate(`[...document.querySelectorAll('[data-testid="active-chips"] .filter-chip')].map(e => e.textContent.trim()).join('|')`)
+  check('行号条件 chip 显示', /行 \d+/.test(idChip), idChip)
 
   // 收尾清掉筛选，让后面的章节拿到干净的明细页（V9.2 起导航会恢复上次筛选）
   check('清空筛选收尾', await clickByText('[data-testid="active-chips"] .filter-chip', '清空筛选'))
@@ -675,6 +675,14 @@ try {
   await sleep(600)
   const backUp = await evaluate(`document.querySelector('[data-tag="limit-up"]')?.textContent.trim() ?? ''`)
   check('恢复后回到 8.91', backUp.includes('8.91'), backUp)
+
+  console.log('\n[8.1.1] 跳明细往返：昨收与区间保留在会话里（V9.4 起不落库）')
+  await nav('trades')
+  await nav('orders')
+  const keptUp = await evaluate(`document.querySelector('[data-tag="limit-up"]')?.textContent.trim() ?? ''`)
+  check('返回后区间还在（涨停 8.91）', keptUp.includes('8.91'), keptUp)
+  check('返回后输入框还留着昨收 8.10', (await evaluate(`document.querySelector('input[aria-label="昨收价"]')?.value ?? ''`)) === '8.10')
+  check('今日挂单不用重新确认就可用', (await bodyText()).includes('可挂买'))
 
   console.log('\n[8.2] 挂单计划价')
   check('点第一个「计划」', await clickByText('button', '计划'))

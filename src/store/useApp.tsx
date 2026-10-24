@@ -37,6 +37,23 @@ export interface ImportOutcome {
   batch: ImportBatch
 }
 
+/**
+ * 挂单页的临时状态（V9.4）：昨收输入、已确认区间、手工涨跌停、选中的股票。
+ * 只活在当前会话（React state，不落库、刷新即失），但跨页往返保留——
+ * 跳到明细对比完回来，挂单页还是跳走前的样子。
+ */
+export interface OrdersSession {
+  stockName: string
+  /** 昨收价输入框内容（未确认也留着） */
+  lastClose: string
+  /** 已确认的昨收：区间与今日挂单的依据 */
+  confirmed: { stock: string; closeCents: number } | null
+  /** 涨跌停手工覆盖区间（只影响挂单页判断） */
+  limitOverride: { stock: string; up: number; down: number } | null
+}
+
+const EMPTY_ORDERS_SESSION: OrdersSession = { stockName: '', lastClose: '', confirmed: null, limitOverride: null }
+
 interface AppContextValue {
   ready: boolean
   stocks: StockConfig[]
@@ -83,6 +100,8 @@ interface AppContextValue {
   addAccount: (name: string) => Promise<void>
   systemFont: boolean
   setSystemFont: (v: boolean) => Promise<void>
+  ordersSession: OrdersSession
+  patchOrdersSession: (p: Partial<OrdersSession>) => void
 }
 
 const AppContext = createContext<AppContextValue | null>(null)
@@ -117,6 +136,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [accounts, setAccounts] = useState<Account[]>([])
   const [activeAccountId, setActiveAccountId] = useState('all')
   const [systemFont, setSystemFontState] = useState(false)
+  const [ordersSession, setOrdersSession] = useState<OrdersSession>(EMPTY_ORDERS_SESSION)
+  const patchOrdersSession = useCallback(
+    (p: Partial<OrdersSession>) => setOrdersSession((s) => ({ ...s, ...p })),
+    [],
+  )
 
   const reloadRecords = useCallback(async () => {
     const [r, a, x, pl, et] = await Promise.all([
@@ -637,6 +661,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setActiveAccount,
     addAccount,
     systemFont,
+    ordersSession,
+    patchOrdersSession,
     setSystemFont,
   }
 

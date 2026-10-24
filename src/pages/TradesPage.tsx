@@ -7,6 +7,7 @@ import { activeStocks } from '../domain/stocks'
 import type { ManualInput } from '../domain/manual'
 import { isoDate, money, price, qty, signedMoney, tone } from '../ui/format'
 import { replaceRoute, type TradesQuery } from '../ui/nav'
+import { buildNanoIdIndex } from '../ui/nanoid'
 import { toCents } from '../domain/money'
 import { downloadText, toCsv } from '../ui/csv'
 import type { Lot, RawRecord, SellExecution } from '../domain/types'
@@ -45,18 +46,18 @@ interface Row {
   sell: SellExecution | null
 }
 
-const SORT_OPTIONS: { key: SortBy; label: string }[] = [
-  { key: 'rowDesc', label: '行号 高→低' },
-  { key: 'rowAsc', label: '行号 低→高' },
-  { key: 'buyDateDesc', label: '买入日期 新→旧' },
-  { key: 'buyDateAsc', label: '买入日期 旧→新' },
-  { key: 'sellDateDesc', label: '卖出日期 新→旧' },
-  { key: 'sellDateAsc', label: '卖出日期 旧→新' },
-  { key: 'profitDesc', label: '盈利 高→低' },
-  { key: 'profitAsc', label: '盈利 低→高' },
-]
+const SORT_KEYS: readonly string[] = ['rowDesc', 'rowAsc', 'buyDateDesc', 'buyDateAsc', 'sellDateDesc', 'sellDateAsc', 'profitDesc', 'profitAsc']
 
-const SORT_KEYS: readonly string[] = SORT_OPTIONS.map((o) => o.key)
+/**
+ * 排序平铺（V9.4）：4 个维度像表头一样直接可见。
+ * 点击循环：默认（行号 高→低）→ 该维度主方向 → 反序 → 回默认。
+ */
+const SORT_CHIPS: { key: string; label: string; desc: SortBy; asc: SortBy }[] = [
+  { key: 'row', label: '行号', desc: 'rowDesc', asc: 'rowAsc' },
+  { key: 'buyDate', label: '买入日期', desc: 'buyDateDesc', asc: 'buyDateAsc' },
+  { key: 'sellDate', label: '卖出日期', desc: 'sellDateDesc', asc: 'sellDateAsc' },
+  { key: 'profit', label: '盈利', desc: 'profitDesc', asc: 'profitAsc' },
+]
 
 /** 行上的买入日期（可空） */
 function buyDateOf(r: Row): string | null {
@@ -140,7 +141,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   )
   const [fromDate, setFromDate] = useState(urlQuery.from ?? '')
   const [toDate, setToDate] = useState(urlQuery.to ?? '')
-  const [rowFilter, setRowFilter] = useState<number | null>(typeof urlQuery.row === 'number' ? urlQuery.row : null)
+  const [idFilter, setIdFilter] = useState<string | null>(urlQuery.id ?? null)
   const [sortBy, setSortBy] = useState<SortBy>(() =>
     SORT_KEYS.includes(urlQuery.sort ?? '') ? (urlQuery.sort as SortBy) : 'rowDesc',
   )
@@ -163,7 +164,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     setPriceFilter(typeof q.price === 'number' ? q.price : null)
     setFromDate(q.from ?? '')
     setToDate(q.to ?? '')
-    setRowFilter(typeof q.row === 'number' ? q.row : null)
+    setIdFilter(typeof q.id === 'string' && q.id ? q.id : null)
     setSortBy(SORT_KEYS.includes(q.sort ?? '') ? (q.sort as SortBy) : 'rowDesc')
     setShowDeleted(q.del === true)
   }, [urlKey])
@@ -177,11 +178,14 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       price: priceFilter ?? undefined,
       from: fromDate || undefined,
       to: toDate || undefined,
-      row: rowFilter ?? undefined,
+      id: idFilter ?? undefined,
       sort: sortBy === 'rowDesc' ? undefined : sortBy,
       del: showDeleted || undefined,
     })
-  }, [stockFilter, statuses, keyword, priceFilter, fromDate, toDate, rowFilter, sortBy, showDeleted])
+  }, [stockFilter, statuses, keyword, priceFilter, fromDate, toDate, idFilter, sortBy, showDeleted])
+
+  // nanoId 索引：展示 / 筛选 / 跳转的唯一行级 id（V9.4）
+  const nano = useMemo(() => buildNanoIdIndex(scopedRecords), [scopedRecords])
 
   // 股票顺序 / 启停都来自「管理 · 股票」
   const stockList = useMemo(() => activeStocks(stocks), [stocks])
@@ -206,18 +210,19 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   const { filtered, noDateHidden } = useMemo(() => {
     let hidden = 0
     const list = rows.filter((r) => {
-      // row 深链要能命中已软删的行，showDeleted 的门对目标行放行
-      if (!showDeleted && r.rec.deletedAt && r.rec.sourceRow !== rowFilter) return false
+      // nanoId 深链要能命中已软删的行，showDeleted 的门对目标行放行
+      const rId = nano.rowToId.get(r.rec.sourceRow)
+      if (!showDeleted && r.rec.deletedAt && rId !== idFilter) return false
       if (stockFilter === 'all') {
         // 停用的股票不出现在明细里
         if (!enabledSet.has(r.rec.stockName)) return false
       } else if (r.rec.stockName !== stockFilter) return false
-      if (keyword && !String(r.rec.sourceRow).includes(keyword) && !r.rec.stockName.includes(keyword)) return false
+      if (keyword && !String(r.rec.sourceRow).includes(keyword) && !r.rec.stockName.includes(keyword) && !(rId ?? '').includes(keyword)) return false
       if (priceFilter !== null) {
         const prices = [r.rec.targetPriceCents, r.rec.buyPriceCents, r.sell?.priceCents ?? null, r.rec.earlyBuyPriceCents]
         if (!prices.includes(priceFilter)) return false
       }
-      if (rowFilter !== null && r.rec.sourceRow !== rowFilter) return false
+      if (idFilter !== null && rId !== idFilter) return false
       // 状态多选取交集：勾了几个状态，行必须全都满足
       if (statuses.length > 0 && !statuses.every((k) => statusMatch(r, k))) return false
       // 日期区间：卖出日期优先，其次买入日期；没日期的行在有区间条件时直接排除
@@ -233,7 +238,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       return true
     })
     return { filtered: list, noDateHidden: hidden }
-  }, [rows, stockFilter, keyword, priceFilter, statuses, showDeleted, enabledSet, fromDate, toDate, rowFilter])
+  }, [rows, stockFilter, keyword, priceFilter, statuses, showDeleted, enabledSet, fromDate, toDate, idFilter, nano])
 
   /** 已生效的条件 chips：每颗都能单独点掉 */
   const activeChips = useMemo(() => {
@@ -254,11 +259,14 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
         },
       })
     if (keyword) chips.push({ key: 'q', label: `搜索 ${keyword}`, clear: () => setKeyword('') })
-    if (rowFilter !== null) chips.push({ key: 'row', label: `行 ${rowFilter}`, clear: () => setRowFilter(null) })
+    if (idFilter !== null) {
+      const rec = nano.byId.get(idFilter)
+      chips.push({ key: 'id', label: rec ? `行 ${rec.sourceRow}` : `#${idFilter}`, clear: () => setIdFilter(null) })
+    }
     return chips
-  }, [stockFilter, statuses, priceFilter, fromDate, toDate, keyword, rowFilter])
+  }, [stockFilter, statuses, priceFilter, fromDate, toDate, keyword, idFilter, nano])
 
-  /** 一键复位：股票 / 状态 / 日期 / 价格 / 关键词 / 行号 全清（排序与已删除开关不动） */
+  /** 一键复位：股票 / 状态 / 日期 / 价格 / 关键词 / nanoId 全清（排序与已删除开关不动） */
   function resetFilters() {
     setStockFilter('all')
     setStatuses([])
@@ -266,7 +274,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     setFromDate('')
     setToDate('')
     setKeyword('')
-    setRowFilter(null)
+    setIdFilter(null)
   }
 
   /** 排序后的可见列表（S3：行号 / 买入日期 / 卖出日期 / 盈利，各升降一档） */
@@ -482,14 +490,27 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
           <div className="spacer" />
           <Button size="small" onClick={exportCsv}>导出 CSV</Button>
         </div>
-        {/* 排序单独占一行，8 个选项在 390px 下才不会挤成两行 */}
-        <div className="sort-row">
-          <Select
-            options={SORT_OPTIONS.map((o) => ({ key: o.key, label: o.label }))}
-            value={sortBy}
-            onChange={(v) => setSortBy(v as SortBy)}
-            aria-label="排序"
-          />
+        {/* 排序平铺（V9.4）：像表头一样直接可见；同项单击反序，再点回默认「行号 高→低」 */}
+        <div className="filter-chips sort-chips" role="group" aria-label="排序">
+          {SORT_CHIPS.map((c) => {
+            const active = sortBy === c.desc || sortBy === c.asc
+            return (
+              <button
+                key={c.key}
+                type="button"
+                className={`filter-chip toggle${active ? ' on' : ''}`}
+                aria-pressed={active}
+                onClick={() => {
+                  if (sortBy === c.desc) setSortBy(c.asc)
+                  else if (sortBy === c.asc) setSortBy('rowDesc')
+                  else setSortBy(c.desc)
+                }}
+              >
+                {c.label}
+                {active && <span aria-hidden>{sortBy === c.asc ? '↑' : '↓'}</span>}
+              </button>
+            )
+          })}
         </div>
         <Button
           block
@@ -528,6 +549,9 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
             >
               <div className="head">
                 <Tag size="small" variant="soft">{r.rec.origin === 'manual' ? '手动' : `行 ${r.rec.sourceRow}`}</Tag>
+                <span className="tiny muted mono" title={`nanoId ${nano.rowToId.get(r.rec.sourceRow)}`}>
+                  #{nano.rowToId.get(r.rec.sourceRow)}
+                </span>
                 <span className="name">{r.rec.stockName}</span>
                 <div className="spacer" />
                 <span className={`profit ${tone(r.sell?.profitCents ?? null)}`}>
@@ -580,7 +604,11 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
         open={current !== null}
         placement="bottom"
         height="84vh"
-        title={current ? `${current.rec.stockName} · ${current.rec.origin === 'manual' ? '手动' : `第 ${current.rec.sourceRow} 行`}` : ''}
+        title={
+          current
+            ? `${current.rec.stockName} · ${current.rec.origin === 'manual' ? '手动' : `第 ${current.rec.sourceRow} 行`} · #${nano.rowToId.get(current.rec.sourceRow)}`
+            : ''
+        }
         onClose={() => setOpenRow(null)}
         footer={
           current ? (

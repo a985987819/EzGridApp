@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Button, Card, Input, Modal, Select, Tag, notificationOpen } from 'animal-island-ui'
 import { useApp } from '../store/useApp'
-import { db } from '../store/db'
 import { activeStocks } from '../domain/stocks'
 import { LIMIT_PCT, limitRange } from '../domain/limit'
 import { toCents } from '../domain/money'
+import { buildNanoIdIndex } from '../ui/nanoid'
 import { downloadText, toCsv } from '../ui/csv'
 import { money, price, qty, signedMoney } from '../ui/format'
 import type { TradesQuery } from '../ui/nav'
@@ -19,33 +19,18 @@ function stopWith(fn: () => void) {
 }
 
 export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
-  const { ledger, stocks, executions, recordRebuy, removeRebuy, setPlan, clearPlan } = useApp()
+  const { ledger, stocks, executions, scopedRecords, ordersSession, patchOrdersSession, recordRebuy, removeRebuy, setPlan, clearPlan } = useApp()
   // 顺序与启停都跟随「管理 · 股票」
   const stockNames = useMemo(() => activeStocks(stocks).map((s) => s.name), [stocks])
-  const [stockName, setStockName] = useState(stockNames[0] ?? '')
-  const [lastClose, setLastClose] = useState('')
-  /** 点「确认」后才出区间，避免边输边跳 */
-  const [confirmed, setConfirmed] = useState<{ stock: string; closeCents: number } | null>(null)
+  const { stockName, lastClose, confirmed, limitOverride } = ordersSession
+
+  // 跳明细以 nanoId 定位（V9.4）：行级唯一 id，与明细页筛选同源
+  const nano = useMemo(() => buildNanoIdIndex(scopedRecords), [scopedRecords])
+  const idFor = (row: number | null | undefined): string | undefined =>
+    row === null || row === undefined ? undefined : nano.rowToId.get(row)
 
   const effectiveStock = stockNames.includes(stockName) ? stockName : stockNames[0] ?? ''
   const cfg = stocks.find((s) => s.name === effectiveStock)
-
-  // 上次确认过的昨收按股票记在本地，进页自动带入输入框；算区间仍要点「确认」
-  // （昨收按天变，不自动确认，防止拿昨天的区间判断今天）
-  const cfgId = cfg?.id
-  useEffect(() => {
-    let alive = true
-    if (!cfgId) {
-      setLastClose('')
-      return
-    }
-    void db.meta.get(`lastClose:${cfgId}`).then((m) => {
-      if (alive) setLastClose(m ? String(m.value) : '')
-    })
-    return () => {
-      alive = false
-    }
-  }, [cfgId])
 
   const limitLabel = !cfg
     ? '未配置'
@@ -61,7 +46,6 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
       : null
 
   // §10：涨跌停允许手工覆盖，只影响挂单页的区间判断，不改股票配置
-  const [limitOverride, setLimitOverride] = useState<{ stock: string; up: number; down: number } | null>(null)
   const [editingLimit, setEditingLimit] = useState(false)
   const [upText, setUpText] = useState('')
   const [downText, setDownText] = useState('')
@@ -180,11 +164,9 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
       })
       return
     }
-    // 记住这只票最后确认的昨收，下次进页自动带入
-    void db.meta.put({ key: `lastClose:${cfg.id}`, value: (cents / 100).toFixed(2) })
-    setLimitOverride(null)
+    // 昨收只记在会话里（V9.4 起不再写 db.meta）：跳明细往返保留，刷新即清
+    patchOrdersSession({ lastClose, confirmed: { stock: effectiveStock, closeCents: cents }, limitOverride: null })
     setEditingLimit(false)
-    setConfirmed({ stock: effectiveStock, closeCents: cents })
   }
 
   function copyList() {
@@ -270,9 +252,7 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
             options={stockNames.map((s) => ({ key: s, label: s }))}
             value={effectiveStock}
             onChange={(v) => {
-              setStockName(v)
-              setConfirmed(null)
-              setLimitOverride(null)
+              patchOrdersSession({ stockName: v, confirmed: null, limitOverride: null })
               setEditingLimit(false)
             }}
             aria-label="选择股票"
@@ -282,17 +262,13 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
               className="grow"
               value={lastClose}
               onChange={(e) => {
-                setLastClose(e.target.value)
-                setConfirmed(null)
-                setLimitOverride(null)
+                patchOrdersSession({ lastClose: e.target.value, confirmed: null, limitOverride: null })
                 setEditingLimit(false)
               }}
               placeholder="昨收价，如 8.10"
               allowClear
               onClear={() => {
-                setLastClose('')
-                setConfirmed(null)
-                setLimitOverride(null)
+                patchOrdersSession({ lastClose: '', confirmed: null, limitOverride: null })
                 setEditingLimit(false)
               }}
               aria-label="昨收价"
@@ -317,7 +293,7 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
                       size="small"
                       type="text"
                       onClick={() => {
-                        setLimitOverride(null)
+                        patchOrdersSession({ limitOverride: null })
                         setEditingLimit(false)
                         notificationOpen({ message: '已回到按涨跌幅算的区间', type: 'info' })
                       }}
@@ -379,7 +355,7 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
                       notificationOpen({ message: '跌停价要低于涨停价', type: 'warning' })
                       return
                     }
-                    setLimitOverride({ stock: effectiveStock, up, down })
+                    patchOrdersSession({ limitOverride: { stock: effectiveStock, up, down } })
                     setEditingLimit(false)
                     notificationOpen({ message: '已按手工区间挂单', description: '只影响本页判断，不改股票配置', type: 'success' })
                   }}
@@ -445,7 +421,7 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
                         <div
                           key={`t-${o.id}`}
                           className="line wrap-row clickable"
-                          onClick={() => goTrades({ row: o.sourceRow, stock: o.stockName })}
+                          onClick={() => goTrades({ id: idFor(o.sourceRow), stock: o.stockName })}
                         >
                           <div className="left">
                             <div className="t1 num">买 {price(o.rebuyPriceCents)} × {qty(o.remainingQty)}</div>
@@ -490,7 +466,7 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
                           className="line wrap-row clickable"
                           onClick={() =>
                             goTrades({
-                              row: ledger.lots.find((l) => l.id === t.lotId)?.sourceRow ?? Number(t.lotId.replace('lot:', '')),
+                              id: idFor(ledger.lots.find((l) => l.id === t.lotId)?.sourceRow ?? Number(t.lotId.replace('lot:', ''))),
                               stock: t.stockName,
                             })
                           }
@@ -552,7 +528,7 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
                 <div
                   key={o.id}
                   className="line clickable"
-                  onClick={() => goTrades({ row: o.sourceRow, stock: o.stockName })}
+                  onClick={() => goTrades({ id: idFor(o.sourceRow), stock: o.stockName })}
                 >
                   <div className="left">
                     <div className="t1 num">
@@ -620,7 +596,10 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
                   key={t.id}
                   className="line clickable"
                   onClick={() =>
-                    goTrades({ row: lot?.sourceRow ?? Number(t.lotId.replace('lot:', '')), stock: t.stockName })
+                    goTrades({
+                      id: idFor(lot?.sourceRow ?? Number(t.lotId.replace('lot:', ''))),
+                      stock: t.stockName,
+                    })
                   }
                 >
                   <div className="left">

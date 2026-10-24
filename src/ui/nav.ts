@@ -24,8 +24,8 @@ export interface TradesQuery {
   /** 日期区间（卖出日期优先，其次买入日期） */
   from?: string
   to?: string
-  /** 指定 Excel 行号 */
-  row?: number
+  /** 目标行的 nanoId（行级唯一短 id，见 ui/nanoid.ts；筛选与跳转都以它为准） */
+  id?: string
   sort?: string
   /** 显示已删除行 */
   del?: boolean
@@ -44,7 +44,7 @@ export function serializeTradesQuery(q: TradesQuery): string {
   if (typeof q.price === 'number') p.set('price', String(q.price))
   if (q.from) p.set('from', q.from)
   if (q.to) p.set('to', q.to)
-  if (typeof q.row === 'number') p.set('row', String(q.row))
+  if (q.id) p.set('id', q.id)
   if (q.sort) p.set('sort', q.sort)
   if (q.del) p.set('del', '1')
   return p.toString()
@@ -65,8 +65,8 @@ export function parseTradesQuery(search: string): TradesQuery {
   if (from) q.from = from
   const to = p.get('to')
   if (to) q.to = to
-  const row = Number(p.get('row'))
-  if (p.get('row') !== null && Number.isInteger(row)) q.row = row
+  const id = p.get('id')
+  if (id) q.id = id
   const sort = p.get('sort')
   if (sort) q.sort = sort
   if (p.get('del') === '1') q.del = true

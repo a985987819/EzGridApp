@@ -4,6 +4,7 @@ import { useApp } from '../../store/useApp'
 import { parseWorkbookFile, parseCsvFile } from '../../io/parseWorkbook'
 import { buildLedger } from '../../domain/ledger'
 import { compareBaseline } from '../../domain/baseline'
+import { buildNanoIdIndex } from '../../ui/nanoid'
 import { CheckList } from '../../components/CheckGrid'
 import { downloadText, toCsv } from '../../ui/csv'
 import { money, price, qty } from '../../ui/format'
@@ -32,6 +33,7 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
   const {
     stocks,
     records,
+    scopedRecords,
     preview,
     setPreview,
     commitImport,
@@ -49,6 +51,8 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
     () => (preview ? buildLedger(preview.records, stocks, { deriveSellPrice }) : null),
     [preview, stocks, deriveSellPrice],
   )
+  // 异常行跳明细用 nanoId 定位（V9.4），与明细页筛选同源
+  const nano = useMemo(() => buildNanoIdIndex(scopedRecords), [scopedRecords])
   const previewChecks = useMemo(() => (previewLedger ? compareBaseline(previewLedger) : []), [previewLedger])
 
   // P9 幂等：同 importKey 不覆盖。这里把「key 相同但文件内容改过」的行挑出来，
@@ -245,7 +249,7 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
                 <div
                   className="line clickable"
                   key={`${a.kind}-${a.sourceRow}-${i}`}
-                  onClick={() => goTrades({ row: a.sourceRow, stock: a.stockName })}
+                  onClick={() => goTrades({ id: nano.rowToId.get(a.sourceRow), stock: a.stockName })}
                 >
                   <div className="left">
                     <div className="t1" style={{ fontWeight: 500 }}>

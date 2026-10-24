@@ -459,8 +459,8 @@ button { font-family: inherit; }
   appearance: none;
 }
 .date-input:focus { outline: 2px solid var(--animal-primary-color, #19c8b9); outline-offset: -1px; }
-.sort-row { margin-top: 8px; }
-.sort-row > * { width: 100%; }
+/* 排序平铺 chips（V9.4）：复用 filter-chips 样式，自己占一行 */
+.sort-chips { margin-top: 8px; }
 
 /* 概览三格：可点击看构成（移动端没有悬停） */
 .metrics .metric-cell {
