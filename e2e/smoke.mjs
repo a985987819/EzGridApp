@@ -285,7 +285,7 @@ try {
   await sleep(500)
   text = await bodyText()
   check('出现「净持仓构成」', text.includes('净持仓构成'))
-  check('构成里有 Σ 买入 / Σ 卖出 / Σ 回补', text.includes('Σ 买入份额') && text.includes('Σ 卖出量') && text.includes('Σ 回补成交'))
+  check('构成里有 Σ 买入（含回补批次）/ Σ 卖出 / 净持仓', text.includes('Σ 买入份额（含回补批次）') && text.includes('Σ 卖出量') && text.includes('净持仓'))
   check('参数一致（合计 13,200）', text.includes('= 13,200'))
   check('点「收起」', await clickByText('button', '收起'))
   await sleep(400)

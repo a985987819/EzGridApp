@@ -87,14 +87,14 @@ describe('规则落地细节', () => {
     expect(r63?.rewardQty).toBe(100)
     const r46Reward = ledger.orders.filter((o) => o.sourceRow === 46)
     expect(r46Reward).toHaveLength(0)
-    const pool = ledger.groups.find((g) => g.groupKey === 'stock:柳工|781')
+    const pool = ledger.groups.find((g) => g.groupKey === 'acc:default|stock:柳工|781')
     expect(pool?.grossProfitCents).toBe(99500)
     expect(pool?.capacityHands).toBe(1)
   })
 
   it('其余 3 组 0 手', () => {
     for (const o of ledger.orders) {
-      if (o.groupKey === 'stock:柳工|781') continue
+      if (o.groupKey === 'acc:default|stock:柳工|781') continue
       expect(o.rewardQty).toBe(0)
     }
   })

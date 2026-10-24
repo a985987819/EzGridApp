@@ -96,7 +96,11 @@ const DATE_RE = /^(\d{4})[/\-年.](\d{1,2})[/\-月.](\d{1,2})日?$/
 function dateOrNull(sheet: WorkSheet, r: number, c: number): number | null {
   const cell = rawCell(sheet, r, c)
   if (isBlank(cell)) return null
-  if (typeof cell!.v === 'number') return Number.isFinite(cell!.v) ? cell!.v : null
+  if (typeof cell!.v === 'number') {
+    // 序列号阈值：Excel 1954-07 起才算日期（~20000）。列错位时价格（如 8.58）
+    // 会被当成 1900 年的怪日期，这里直接拒收按缺失处理
+    return Number.isFinite(cell!.v) && cell!.v >= 20000 ? cell!.v : null
+  }
   const s = String(cell!.v).trim().replace(/,/g, '')
   if (s === '') return null
   const m = DATE_RE.exec(s)
@@ -109,7 +113,7 @@ function dateOrNull(sheet: WorkSheet, r: number, c: number): number | null {
     return Math.round((Date.UTC(y, mo - 1, d) - Date.UTC(1899, 11, 30)) / 86400000)
   }
   const n = Number(s)
-  return Number.isFinite(n) && n > 0 ? n : null
+  return Number.isFinite(n) && n >= 20000 ? n : null
 }
 
 function centsOrNull(sheet: WorkSheet, r: number, c: number): number | null {

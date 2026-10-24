@@ -272,7 +272,7 @@ export interface MonthlyBucket {
 }
 
 export interface Anomaly {
-  kind: 'needsPrice' | 'needsCost' | 'dateMissing' | 'negativeProfit' | 'targetOverflow'
+  kind: 'needsPrice' | 'needsCost' | 'dateMissing' | 'negativeProfit' | 'targetOverflow' | 'oversell'
   sourceRow: number
   stockName: string
   detail: string
@@ -315,10 +315,8 @@ export interface Ledger {
     rebuyQty: number
     /** 已回补股数（真实成交） */
     rebuyExecQty: number
-    /** 其中有买入批次挂单的回补（计入净持仓、不新增待卖、不占敞口） */
-    lotBackedExecQty: number
-    /** 其中空头挂单已成交的奖励股数（额外买入，不减敞口） */
-    rewardedExecQty: number
+    /** 空头挂单回补成交里的基础股部分（既抵敞口又以回补批次进待卖，守恒式扣回防双算） */
+    exposureExecBaseQty: number
     /** 还没回补的股数 */
     rebuyRemainingQty: number
     rebuyAmountCents: number

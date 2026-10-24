@@ -16,6 +16,7 @@ const ANOMALY_LABEL: Record<string, string> = {
   needsCost: '待补成本',
   dateMissing: '待补日期',
   negativeProfit: '负盈利',
+  oversell: '卖出超量',
 }
 
 /** 参与「同 key 内容 diff」的文件来源字段（本地才有的 deletedAt/批次等不参与） */
@@ -89,7 +90,8 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
   async function loadDemo() {
     setBusy(true)
     try {
-      const res = await fetch(encodeURI('/demo/26年网格记录.xlsx'))
+      // BASE_URL：本地是 /，GitHub Pages 是 /EzGridApp/ —— 根路径写死在子路径部署下会 404
+      const res = await fetch(encodeURI(`${import.meta.env.BASE_URL}demo/26年网格记录.xlsx`))
       if (!res.ok) throw new Error(`示例文件读取失败（HTTP ${res.status}）`)
       const blob = await res.blob()
       await handleFile(new File([blob], '26年网格记录.xlsx'))
@@ -108,7 +110,7 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
       setPreview(null)
       notificationOpen({
         message: '已写入本地',
-        description: `新增 ${out.added} 行${out.duplicated ? `，跳过重复 ${out.duplicated} 行` : ''}`,
+        description: `新增 ${out.added} 行${out.updated ? `，更新 ${out.updated} 行` : ''}${out.duplicated ? `，无变化 ${out.duplicated} 行` : ''}`,
         type: 'success',
       })
     } catch (e) {
@@ -217,10 +219,10 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
             })()}
             {conflicts.length > 0 && (
               <div className="hint-block" style={{ borderTop: '1px solid var(--line)', paddingTop: 8 }}>
-                <b>与本地同 key 但内容有差异：{conflicts.length} 行</b>
+                <b>与本地同 key 但回补价有差异：{conflicts.length} 行</b>
                 （{conflicts.slice(0, 6).map((c) => `R${c.row}：${c.fields.join('、')}`).join('；')}
                 {conflicts.length > 6 && '…'}）。
-                按 P9 写入不会覆盖本地行——要让文件版生效，请到明细里手工改，或回滚对应批次后重新导入。
+                写入时会按行身份更新本地的回补价；其余买入侧信息相同的行也会同步最新卖出状态。
               </div>
             )}
             <CheckList checks={previewChecks} />

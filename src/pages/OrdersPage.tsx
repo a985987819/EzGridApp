@@ -25,6 +25,11 @@ function dropStock<T>(rec: Record<string, T>, stock: string): Record<string, T> 
   return next
 }
 
+/** 批次显示名：虚拟回补批次没有 Excel 行号，单独标注 */
+function lotLabel(lotId: string): string {
+  return lotId.startsWith('lot:exec:') ? '回补批次' : `批次 ${lotId.replace('lot:', '')}`
+}
+
 export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
   const { ledger, stocks, executions, scopedRecords, ordersSession, patchOrdersSession, recordRebuy, removeRebuy, setPlan, clearPlan } = useApp()
   // 顺序与启停都跟随「管理 · 股票」
@@ -138,7 +143,9 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
       setExecOrder(null)
       notificationOpen({
         message: '已记回补成交',
-        description: `${q} 股 @ ${execPrice}，敞口减少 ${q} 股`,
+        description: execOrder.exposure
+          ? `${q} 股 @ ${execPrice}，敞口减少，已生成回补批次进待卖`
+          : `${q} 股 @ ${execPrice}，已生成回补批次进待卖`,
         type: 'success',
       })
     } catch (e) {
@@ -194,7 +201,7 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
     if (sellToday.length) {
       lines.push('【今日可挂卖】')
       for (const t of sellToday) {
-        lines.push(`  批次${t.lotId.replace('lot:', '')}  ${price(t.planPriceCents ?? t.priceCents)} × ${t.planQty ?? t.qty} 股`)
+        lines.push(`  ${lotLabel(t.lotId)}  ${price(t.planPriceCents ?? t.priceCents)} × ${t.planQty ?? t.qty} 股`)
       }
     }
     if (!range) {
@@ -216,7 +223,14 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
     for (const t of targets) {
       const p = t.planPriceCents ?? t.priceCents
       const q = t.planQty ?? t.qty
-      rows.push(['待卖', Number(t.lotId.replace('lot:', '')), price(p), q, ((p * q) / 100).toFixed(2), zone(p)])
+      rows.push([
+        '待卖',
+        t.lotId.startsWith('lot:exec:') ? '回补批次' : Number(t.lotId.replace('lot:', '')),
+        price(p),
+        q,
+        ((p * q) / 100).toFixed(2),
+        zone(p),
+      ])
     }
     downloadText(`${effectiveStock}-挂单清单.csv`, toCsv(rows), 'text/csv;charset=utf-8')
   }
@@ -489,7 +503,7 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
                         >
                           <div className="left">
                             <div className="t1 num">卖 {price(t.priceCents)} × {qty(t.qty)}</div>
-                            <div className="t2">批次 {t.lotId.replace('lot:', '')} · 预期 {signedMoney(t.expectProfitCents)}</div>
+                            <div className="t2">{lotLabel(t.lotId)} · 预期 {signedMoney(t.expectProfitCents)}</div>
                             {t.planPriceCents != null && (
                               <div className="tag-row" style={{ marginTop: 4 }}>
                                 <Tag size="small" variant="soft" color="purple">

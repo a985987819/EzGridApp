@@ -6,24 +6,8 @@
 import { mulCents } from './money'
 import { deriveBuyQty } from './qty'
 import { serialToIso, stockIdOf } from './defaults'
-import type {
-  Anomaly,
-  ExtraTarget,
-  RebuyExecution,
-  TradePlan,
-  CheckResult,
-  GroupPool,
-  Ledger,
-  Lot,
-  DayBucket,
-  MonthlyBucket,
-  RawRecord,
-  RebuyOrder,
-  SellExecution,
-  SellTarget,
-  StockConfig,
-  StockSummary,
-} from './types'
+import { accountIdOf } from './accounts'
+import { DEFAULT_ACCOUNT_ID, type Anomaly, type ExtraTarget, type RebuyExecution, type TradePlan, type CheckResult, type GroupPool, type Ledger, type Lot, type DayBucket, type MonthlyBucket, type RawRecord, type RebuyOrder, type SellExecution, type SellTarget, type StockConfig, type StockSummary } from './types'
 
 export interface BuildOptions {
   /** 基准金额，默认 6000 元 */
@@ -42,8 +26,9 @@ export interface BuildOptions {
   extraTargets?: ExtraTarget[]
 }
 
-export function groupKeyOf(stockId: string, priceCents: number): string {
-  return `${stockId}|${priceCents}`
+/** 组池分组键（v9.20 起带账户维度）：账户|股票|成本分，'all' 视图下不同账户不混池 */
+export function groupKeyOf(accountId: string, stockId: string, priceCents: number): string {
+  return `${accountId}|${stockId}|${priceCents}`
 }
 
 function sumBy<T>(arr: T[], f: (x: T) => number): number {
@@ -79,6 +64,7 @@ export function buildLedger(
     const cfg = stockMap.get(r.stockName)
     const stockId = cfg?.id ?? stockIdOf(r.stockName)
     const interval = cfg?.intervalCents ?? 0
+    const accId = accountIdOf(r)
 
     // D 列：FLOOR(6000/买入价,100)（S2）
     const qty =
@@ -115,6 +101,15 @@ export function buildLedger(
         importKey: r.importKey,
       }
       lots.push(lot)
+      // 超卖：卖出量超过批次量，超出部分没有批次对应——标出来让用户知道
+      if (soldQty > qty!) {
+        anomalies.push({
+          kind: 'oversell',
+          sourceRow: r.sourceRow,
+          stockName: r.stockName,
+          detail: `卖出 ${soldQty} 股 > 买入 ${qty} 股，超出 ${soldQty - qty!} 股无批次对应`,
+        })
+      }
       if (target === null && rem > 0) {
         anomalies.push({
           kind: 'needsPrice',
@@ -137,7 +132,7 @@ export function buildLedger(
           r.sellDateSerial !== null &&
           r.sellDateSerial < r.buyDateSerial) ||
         (r.buyPriceCents === null && soldQty > 0)
-      const groupKey = cost !== null ? groupKeyOf(stockId, cost) : null
+      const groupKey = cost !== null ? groupKeyOf(accId, stockId, cost) : null
 
       const sell: SellExecution = {
         id: `sell:${r.sourceRow}`,
@@ -202,7 +197,16 @@ export function buildLedger(
   // 回补成交只认当前范围内的卖出行：executions 是全局表，账户筛选时
   // 别的账户的成交不该算进净持仓、也不该消耗本组的奖励预算（P4）
   const sellIdSet = new Set(sells.map((s) => s.id))
-  const scopedExecs = executions.filter((e) => sellIdSet.has(e.sellExecId))
+  const scopedExecs = executions
+    .filter((e) => sellIdSet.has(e.sellExecId))
+    .map((e) => {
+      // 老库存的 groupKeyAtExecution 没有账户前缀：按成交所属行补齐账户维度，
+      // 只改派生副本、不动存储原值（P4：额度消耗永久留在成交时的价组）
+      if (e.groupKeyAtExecution.startsWith('acc:')) return e
+      const row = byRow.get(Number(e.sellExecId.slice('sell:'.length)))
+      const acc = row ? accountIdOf(row) : DEFAULT_ACCOUNT_ID
+      return { ...e, groupKeyAtExecution: `${acc}|${e.groupKeyAtExecution}` }
+    })
   const execByOrder = new Map<string, RebuyExecution[]>()
   for (const e of scopedExecs) {
     const list = execByOrder.get(e.orderId)
@@ -297,7 +301,7 @@ export function buildLedger(
       doneRewardQty,
       remainingQty: Math.max(0, sell.qty - execQty),
       status: execQty <= 0 ? 'open' : 'partial',
-      groupKey: groupKeyOf(sell.stockId, rec.earlyBuyPriceCents),
+      groupKey: groupKeyOf(accountIdOf(rec), sell.stockId, rec.earlyBuyPriceCents),
       grossProfitCents: 0,
       hands: 0,
       createdAt: sell.sourceRow,
@@ -307,6 +311,60 @@ export function buildLedger(
       rewardSourceOrderIds: [],
     })
   }
+
+  // R6（v9.20 用户决策）：回补成交自动生成「回补批次」——买回的股回到待卖清单，
+  // 目标价 = 成交价 + 该股间隔。纯派生对象不落库，撤销成交即消失。
+  const orderById = new Map(orders.map((o) => [o.id, o]))
+  const virtualLots: Lot[] = []
+  for (const e of scopedExecs) {
+    const o = orderById.get(e.orderId)
+    if (!o) continue
+    const interval = stockMap.get(e.stockName)?.intervalCents ?? 0
+    const target = interval > 0 ? e.priceCents + interval : null
+    const d = new Date(e.at)
+    virtualLots.push({
+      id: `lot:exec:${e.id}`,
+      // 200000 段位：不与 Excel 行号 / 手动行（100000+）相撞的派生行号
+      sourceRow: 200000 + virtualLots.length,
+      stockId: o.stockId,
+      stockName: o.stockName,
+      buyDate: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`,
+      buyPriceCents: e.priceCents,
+      qty: e.qty,
+      soldQty: 0,
+      remainingQty: e.qty,
+      targetPriceCents: target,
+      needsPrice: target === null,
+      importKey: e.id,
+    })
+    if (target === null) {
+      anomalies.push({
+        kind: 'needsPrice',
+        sourceRow: o.sourceRow,
+        stockName: o.stockName,
+        detail: `回补批次（${e.qty} 股 @ ${(e.priceCents / 100).toFixed(2)}）缺该股间隔配置，无法生成待卖目标`,
+      })
+    }
+  }
+  // 回补批次与真实批次走同一套 R1 语义：自动目标挂在批次上，手动拆分也可用
+  for (const vl of virtualLots) {
+    if (vl.targetPriceCents === null) continue
+    const plan = planByRef.get(`target:${vl.id}`)
+    targets.push({
+      id: `target:${vl.id}`,
+      lotId: vl.id,
+      stockId: vl.stockId,
+      stockName: vl.stockName,
+      priceCents: vl.targetPriceCents,
+      qty: vl.remainingQty,
+      autoGenerated: true,
+      expectProfitCents: mulCents(vl.targetPriceCents - vl.buyPriceCents, vl.remainingQty),
+      amountCents: mulCents(vl.targetPriceCents, vl.remainingQty),
+      planPriceCents: plan?.priceCents ?? null,
+      planQty: plan?.qty ?? null,
+    })
+  }
+  const allLots = [...lots, ...virtualLots]
 
   // R4/R5 组池与奖励
   const groups = computeGroups(sells, orders, scopedExecs)
@@ -322,12 +380,11 @@ export function buildLedger(
     o.status = o.execQty <= 0 ? 'open' : o.remainingQty === 0 ? 'closed' : 'partial'
   }
 
-  // 汇总
-  const orderById = new Map(orders.map((o) => [o.id, o]))
+  // 汇总（v9.20：回补批次已是派生批次计入 Σ买入，净持仓不再单独加回补量）
   const totals = {
     rows: live.length,
-    buyQty: sumBy(lots, (l) => l.qty),
-    buyAmountCents: sumBy(lots, (l) => mulCents(l.buyPriceCents, l.qty)),
+    buyQty: sumBy(allLots, (l) => l.qty),
+    buyAmountCents: sumBy(allLots, (l) => mulCents(l.buyPriceCents, l.qty)),
     sellCount: sells.length,
     sellQty: sumBy(sells, (s) => s.qty),
     sellAmountCents: sumBy(sells, (s) => (s.priceCents === null ? 0 : mulCents(s.priceCents, s.qty))),
@@ -343,15 +400,10 @@ export function buildLedger(
     rebuyAmountCents: sumBy(orders, (o) => mulCents(o.rebuyPriceCents, o.baseQty + o.rewardQty)),
     rewardQty: sumBy(orders, (o) => o.rewardQty),
     rebuyExecQty: sumBy(scopedExecs, (e) => e.qty),
-    /** 其中有买入批次挂单的回补（计入净持仓、不新增待卖、不占敞口） */
-    lotBackedExecQty: sumBy(
-      scopedExecs.filter((e) => orderById.get(e.orderId)?.exposure === false),
-      (e) => e.qty,
-    ),
-    /** 其中空头挂单已成交的奖励股数（额外买入，不减敞口） */
-    rewardedExecQty: sumBy(
+    /** 空头挂单回补成交里的基础股部分：既抵了敞口、又以回补批次进了待卖，守恒式里要扣回防双算 */
+    exposureExecBaseQty: sumBy(
       scopedExecs.filter((e) => orderById.get(e.orderId)?.exposure === true),
-      (e) => e.rewardQty,
+      (e) => Math.max(0, e.qty - e.rewardQty),
     ),
     rebuyRemainingQty: sumBy(orders, (o) => o.remainingQty),
     netQty: 0,
@@ -362,36 +414,36 @@ export function buildLedger(
       (o) => Math.max(0, o.baseQty - Math.max(0, o.execQty - o.doneRewardQty)),
     ),
   }
-  // 回补成交是真实买入，计入净持仓
-  totals.netQty = totals.buyQty - totals.sellQty + totals.rebuyExecQty
+  // 回补批次已在 Σ买入 里，净持仓 = Σ买入 − Σ卖出
+  totals.netQty = totals.buyQty - totals.sellQty
 
-  const byStock = summarizeByStock(live, lots, sells, targets, orders, scopedExecs)
+  const byStock = summarizeByStock(live, allLots, sells, targets, orders)
   const monthly = summarizeMonthly(sells)
   const daily = summarizeDaily(sells)
 
   const checks: CheckResult[] = [
     {
-      name: 'Σ买入 + Σ回补 − Σ卖出 = 净持仓',
-      ok: totals.buyQty + totals.rebuyExecQty - totals.sellQty === totals.netQty,
-      actual: `${totals.buyQty} + ${totals.rebuyExecQty} − ${totals.sellQty} = ${totals.netQty}`,
+      name: 'Σ买入（含回补批次） − Σ卖出 = 净持仓',
+      ok: totals.buyQty - totals.sellQty === totals.netQty,
+      actual: `${totals.buyQty} − ${totals.sellQty} = ${totals.netQty}`,
       expected: '等式成立',
     },
     {
-      name: 'Σ待卖量 − 待补敞口 + 批次内回补 + 已成交奖励 = 净持仓',
+      name: 'Σ待卖量 − 待补敞口 − 空头回补基础股 = 净持仓',
       ok:
-        totals.targetQty - totals.exposureQty + totals.lotBackedExecQty + totals.rewardedExecQty ===
+        totals.targetQty - totals.exposureQty - totals.exposureExecBaseQty ===
         totals.netQty,
-      actual: `${totals.targetQty} − ${totals.exposureQty} + ${totals.lotBackedExecQty} + ${totals.rewardedExecQty} = ${
-        totals.targetQty - totals.exposureQty + totals.lotBackedExecQty + totals.rewardedExecQty
+      actual: `${totals.targetQty} − ${totals.exposureQty} − ${totals.exposureExecBaseQty} = ${
+        totals.targetQty - totals.exposureQty - totals.exposureExecBaseQty
       }`,
       expected: `= ${totals.netQty}`,
       detail:
-        '待补只算无买入批次的卖出；有批次的回补是再买入——批次内回补与已成交奖励计入净持仓，但按 D5 不新增待卖',
+        '回补成交自动生成回补批次进待卖（R6）；空头单回补的基础股既抵了敞口又在待卖里，扣回防双算；奖励股是额外买入不减敞口',
     },
     {
       name: 'Σ待卖量 = Σ批次剩余',
-      ok: totals.targetQty === sumBy(lots, (l) => l.remainingQty),
-      actual: `${totals.targetQty} vs ${sumBy(lots, (l) => l.remainingQty)}`,
+      ok: totals.targetQty === sumBy(allLots, (l) => l.remainingQty),
+      actual: `${totals.targetQty} vs ${sumBy(allLots, (l) => l.remainingQty)}`,
       expected: '相等',
     },
     {
@@ -409,7 +461,7 @@ export function buildLedger(
   ]
 
   return {
-    lots,
+    lots: allLots,
     sells,
     targets,
     orders,
@@ -497,14 +549,8 @@ function summarizeByStock(
   sells: SellExecution[],
   targets: SellTarget[],
   orders: RebuyOrder[],
-  executions: RebuyExecution[],
 ): StockSummary[] {
   const names = [...new Set(records.map((r) => r.stockName))]
-  // 每股净持仓要与 totals 同口径：回补成交按单归属到股
-  const execQtyByOrder = new Map<string, number>()
-  for (const e of executions) {
-    execQtyByOrder.set(e.orderId, (execQtyByOrder.get(e.orderId) ?? 0) + e.qty)
-  }
   return names.map((name) => {
     const ls = lots.filter((l) => l.stockName === name)
     const ss = sells.filter((s) => s.stockName === name)
@@ -526,10 +572,8 @@ function summarizeByStock(
       expectProfitCents: sumBy(ts, (t) => t.expectProfitCents),
       rebuyCount: os.length,
       rebuyQty: sumBy(os, (o) => o.baseQty + o.rewardQty),
-      netQty:
-        sumBy(ls, (l) => l.qty) -
-        sumBy(ss, (s) => s.qty) +
-        sumBy(os, (o) => execQtyByOrder.get(o.id) ?? 0),
+      // 与 totals 同口径：lots 已含回补批次（虚拟批次），净持仓 = Σ买入 − Σ卖出
+      netQty: sumBy(ls, (l) => l.qty) - sumBy(ss, (s) => s.qty),
       exposureQty: sumBy(
         os.filter((o) => o.exposure),
         (o) => Math.max(0, o.baseQty - Math.max(0, o.execQty - o.doneRewardQty)),

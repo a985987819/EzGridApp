@@ -190,8 +190,10 @@ function CalendarCard({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
   const { ledger, scopedRecords } = useApp()
   const nano = useMemo(() => buildNanoIdIndex(scopedRecords), [scopedRecords])
   const today = new Date()
+  // 本地时区的今天：toISOString 是 UTC，东八区早上 8 点前会落到昨天
+  const localIso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
   const [panel, setPanel] = useState(`${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`)
-  const [selected, setSelected] = useState(today.toISOString().slice(0, 10))
+  const [selected, setSelected] = useState(localIso)
 
   // 年 / 月累计盈利跟随日历面板（V9.10）：翻月 / 翻年就重算，不再钉死今天。
   // 口径不变：从月度桶里取，未填日期的卖出不进累计。

@@ -211,16 +211,17 @@ export function Overview({
             <>
               <div className="data-block">
                 <div className="line">
-                  <div className="left t1">Σ 买入份额</div>
-                  <div className="right num">{qty(t.buyQty)}</div>
+                  <div className="left t1">Σ 买入份额（含回补批次）</div>
+                  <div className="right num">
+                    {qty(t.buyQty)}
+                    {t.rebuyExecQty > 0 && (
+                      <span className="tiny muted" style={{ marginLeft: 4 }}>其中回补 {qty(t.rebuyExecQty)}</span>
+                    )}
+                  </div>
                 </div>
                 <div className="line">
                   <div className="left t1">Σ 卖出量</div>
                   <div className="right num">− {qty(t.sellQty)}</div>
-                </div>
-                <div className="line">
-                  <div className="left t1">Σ 回补成交</div>
-                  <div className="right num">{t.rebuyExecQty > 0 ? `+ ${qty(t.rebuyExecQty)}` : '0'}</div>
                 </div>
                 <div className="line">
                   <div className="left t1">净持仓</div>
@@ -228,12 +229,9 @@ export function Overview({
                 </div>
               </div>
               <p className="tiny muted" style={{ margin: '8px 0 0' }}>
-                {qty(t.buyQty)} − {qty(t.sellQty)}
-                {t.rebuyExecQty > 0 ? ` + ${qty(t.rebuyExecQty)}` : ''} = {qty(t.netQty)}
+                {qty(t.buyQty)} − {qty(t.sellQty)} = {qty(t.netQty)}
                 {' · '}可卖 {qty(t.targetQty)} − 待补 {qty(t.exposureQty)}
-                {t.lotBackedExecQty + t.rewardedExecQty > 0
-                  ? ` + 批次内回补 ${qty(t.lotBackedExecQty)} + 已成交奖励 ${qty(t.rewardedExecQty)}`
-                  : ''}
+                {t.exposureExecBaseQty > 0 ? ` − 空头回补基础股 ${qty(t.exposureExecBaseQty)}` : ''}
                 也应等于这个数
               </p>
             </>

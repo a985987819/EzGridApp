@@ -13,6 +13,8 @@ export interface ImportBatch {
   importedAt: number
   recordCount: number
   addedCount: number
+  /** 按行身份匹配更新的本地行数（v9.20 决策 C） */
+  updatedCount?: number
 }
 
 class GridTradingDB extends Dexie {

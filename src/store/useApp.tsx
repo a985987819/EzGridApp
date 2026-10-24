@@ -15,6 +15,7 @@ import { applyEdits, type EditableKey } from '../domain/edit'
 import { applyOrder, normalizeStocks } from '../domain/stocks'
 import { filterByAccount } from '../domain/accounts'
 import { buildManualRecord, MANUAL_ROW_BASE, type ManualInput } from '../domain/manual'
+import { importDiffFields, IMPORT_FIELD_LABEL, importFieldValue, planImport } from '../domain/importPlan'
 import { validateBackup } from '../domain/backup'
 import { DEFAULT_ACCOUNT_ID } from '../domain/types'
 import type {
@@ -34,6 +35,8 @@ import type { ParseResult } from '../io/parseWorkbook'
 export interface ImportOutcome {
   added: number
   duplicated: number
+  /** 按行身份匹配到的本地行更新数（v9.20 决策 C） */
+  updated: number
   batch: ImportBatch
 }
 
@@ -246,17 +249,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const commitImport = useCallback(
     async (p: ParseResult, fileName: string): Promise<ImportOutcome> => {
-      const existing = new Set((await db.records.toArray()).map((r) => r.importKey))
+      const existing = await db.records.toArray()
+      // v9.20 决策 C：同 key 跳过之外，再按行身份（股票+买入日期+买入价+份额）
+      // 匹配更新卖出侧字段——Excel 改了已卖行重导，更新而不是并存新旧行
+      const plan = planImport(existing, p.records)
       const batchId = `batch:${Date.now()}`
-      const fresh = p.records
-        .filter((r) => !existing.has(r.importKey))
-        .map((r) => ({
-          ...r,
-          origin: 'excel' as const,
-          batchId,
-          accountId: activeAccountId === 'all' ? DEFAULT_ACCOUNT_ID : activeAccountId,
-        }))
-      const duplicated = p.records.length - fresh.length
+      const fresh = plan.fresh.map((r) => ({
+        ...r,
+        origin: 'excel' as const,
+        batchId,
+        accountId: activeAccountId === 'all' ? DEFAULT_ACCOUNT_ID : activeAccountId,
+      }))
       const batch: ImportBatch = {
         id: batchId,
         fileName,
@@ -264,9 +267,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
         importedAt: Date.now(),
         recordCount: p.records.length,
         addedCount: fresh.length,
+        updatedCount: plan.updates.length,
       }
       await db.transaction('rw', db.records, db.batches, db.auditLogs, async () => {
         if (fresh.length) await db.records.bulkPut(fresh)
+        for (const u of plan.updates) {
+          const to = { ...u.to, editedAt: Date.now() }
+          await db.records.put(to)
+          await db.auditLogs.bulkAdd(
+            importDiffFields(u.from, u.to).map((k) =>
+              audit(
+                `record:${to.sourceRow}`,
+                IMPORT_FIELD_LABEL[k],
+                importFieldValue(u.from, k),
+                importFieldValue(to, k),
+                'import-update',
+              ),
+            ),
+          )
+        }
         await db.batches.put(batch)
         if (fresh.length) {
           await db.auditLogs.bulkAdd(
@@ -277,7 +296,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       await reloadRecords()
       setBatches(await db.batches.orderBy('importedAt').reverse().toArray())
       setBasename(fileName)
-      return { added: fresh.length, duplicated, batch }
+      return { added: fresh.length, duplicated: plan.unchanged, updated: plan.updates.length, batch }
     },
     [reloadRecords, activeAccountId],
   )
