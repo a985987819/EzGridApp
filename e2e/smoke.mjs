@@ -322,6 +322,33 @@ try {
   const span1 = await evaluate(`document.querySelector('canvas[data-tree="price"]').__tree.span()`)
   check('滚轮缩放生效（span 变小）', span1 < span0 * 0.9, `${span0} → ${span1}`)
 
+  // V9.17 左右拖拽转视角：真实鼠标拖（按下→横移 120px→松手；dragMoved>7 不触发拾取）
+  // 画布多半在视口外/被吸顶层盖住：滚到位并临时藏掉吸顶层，否则 CDP 坐标落空
+  await evaluate(`(() => {
+    const c = document.querySelector('canvas[data-tree="price"]')
+    c.scrollIntoView({ block: 'center' })
+    window.scrollBy(0, -80)
+    const st = document.querySelector('[data-sticky="overview"]')
+    if (st) st.style.visibility = 'hidden'
+  })()`)
+  await sleep(400)
+  const ang0 = await evaluate(`document.querySelector('canvas[data-tree="price"]').__tree.angle()`)
+  const rectC = await evaluate(`(() => {
+    const r = document.querySelector('canvas[data-tree="price"]').getBoundingClientRect()
+    return JSON.stringify({ cx: Math.round(r.left + r.width / 2), cy: Math.round(r.top + r.height / 2) })
+  })()`)
+  const { cx, cy } = JSON.parse(rectC)
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: cx, y: cy, button: 'left', buttons: 1, clickCount: 1 })
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: cx + 60, y: cy, buttons: 1 })
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: cx + 120, y: cy, buttons: 1 })
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: cx + 120, y: cy, button: 'left', clickCount: 1 })
+  await sleep(300)
+  const ang1 = await evaluate(`document.querySelector('canvas[data-tree="price"]').__tree.angle()`)
+  check('左右拖拽转视角生效', typeof ang1 === 'number' && Math.abs(ang1 - ang0) > 0.1, `${ang0} → ${ang1}`)
+  // 拖拽把视角转走了：转回正面，后面 projectPrice 的点击不受影响
+  await evaluate(`document.querySelector('canvas[data-tree="price"]').__tree.orbitBy(-120)`)
+  await sleep(200)
+
   // 点最密的待卖叶团 → 明细带价格档
   const topCents = tree.topSell.cents
   // V9.15 画布加高后目标点可能滚出视口/被吸顶头部盖住：滚到位并把吸顶层临时藏掉再取坐标

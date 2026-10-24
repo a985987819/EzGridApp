@@ -1,5 +1,6 @@
 # 部署到 GitHub Pages：push 到 main 自动构建发布
-# Pages 首次由 configure-pages 的 enablement 自动开启（source = Actions）
+# enablement: true —— Pages 未开启时由 configure-pages 自动创建站点（不传只会
+# GET 已有配置，404 直接挂掉整个工作流）
 name: Deploy to GitHub Pages
 
 on:
@@ -31,6 +32,8 @@ jobs:
           # 项目站点挂在 /EzGridApp/ 子路径下
           GITHUB_PAGES: 'true'
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

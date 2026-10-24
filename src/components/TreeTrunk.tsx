@@ -14,6 +14,10 @@
  *   待买/待卖 = 树枝（左蓝 / 右红，长度随数量）。缩小（拉远）时相邻档的
  *   枝按间距合并成一根，枝上画「合并档数」片绿叶表达该区域待成交密度。
  *
+ * V9.17 视角与价签：
+ *   左右拖拽 = 绕树干转视角（orbit，±69° 钳位，内容跟手——向右拖树跟着转向右）；
+ *   价签从画布左缘挪到树干正中（钉在树干上的小纸牌），两侧买卖枝一眼对照。
+ *
  * V9.15 枝距 / 枯枝 / 拾取：
  *   不同树枝至少隔 0.5 元（五毛一档），更近的档合并成一枝——树枝间距拉开；
  *   拉到最小视野时枝长按 span 线性放大，枝在画面中的占比不变（粗细随之
@@ -32,7 +36,8 @@
  *   到 0 就不能再往下拉。
  *
  * 交互：滚轮 / 双指捏合缩放、拖动攀爬（内容跟随手指，和地图/列表同向）、
- *   点枝跳明细；价格标签为 HTML 覆盖层。three.js 动态导入，主包不背 3D 引擎。
+ *   左右拖拽转视角、点枝跳明细；价格标签为 HTML 覆盖层。
+ *   three.js 动态导入，主包不背 3D 引擎。
  */
 import { useEffect, useMemo, useRef } from 'react'
 import { useApp } from '../store/useApp'
@@ -49,6 +54,8 @@ export interface TreeLevel {
 const TRUNK_MIN = -20
 const TRUNK_MAX = 300
 const CAM_MAX = 288
+/** 转视角钳位（弧度，±69°）：转到接近 90° 枝就和视线同向看不见了 */
+const ANG_MAX = 1.2
 const SPAN_MIN = 0.5
 const SPAN_MAX = 150
 /** 相邻两枝最少要占的屏幕行数（按 460px 高估）：行距不足就合并 */
@@ -244,7 +251,7 @@ export function TreeTrunk({
 
       const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 900)
       const camX = 1.6
-      const view = { span: 8, camY: 8 }
+      const view = { span: 8, camY: 8, ang: 0 }
       const prices = levels.map((l) => l.priceCents / 100)
       const dataLo = prices.length ? Math.min(...prices) : 8
       const dataHi = prices.length ? Math.max(...prices) : 12
@@ -252,6 +259,7 @@ export function TreeTrunk({
       const clampView = () => {
         view.span = Math.min(SPAN_MAX, Math.max(SPAN_MIN, view.span))
         view.camY = Math.min(CAM_MAX, Math.max(view.span / 2, view.camY))
+        view.ang = Math.min(ANG_MAX, Math.max(-ANG_MAX, view.ang))
       }
       const resetView = () => {
         view.camY = (dataLo + dataHi) / 2
@@ -264,7 +272,10 @@ export function TreeTrunk({
         const dist = view.span / (2 * Math.tan((camera.fov * Math.PI) / 360)) + trunkRadiusAt(view.camY) + 0.6
         // 画布越高横向视野越窄:按 aspect 收敛相机侧移,近侧的枝才不会被透视推出画布
         const lateral = camX * Math.min(1, Math.max(0.35, camera.aspect / 0.78))
-        camera.position.set(lateral, view.camY, dist)
+        // 左右拖拽 = 相机绕树干转 ang（半径不变，始终看向树干轴线）
+        const sinA = Math.sin(view.ang)
+        const cosA = Math.cos(view.ang)
+        camera.position.set(lateral * cosA + dist * sinA, view.camY, -lateral * sinA + dist * cosA)
         camera.lookAt(0, view.camY, 0)
         camera.updateMatrixWorld()
       }
@@ -597,7 +608,7 @@ export function TreeTrunk({
         }
       }
 
-      // ---------- 价格标签：HTML 覆盖层（任何缩放下都清晰，钉在画布左缘） ----------
+      // ---------- 价格标签：HTML 覆盖层（任何缩放下都清晰，钉在树干正中） ----------
       const LABEL_CAP = 40
       const labelHost = document.createElement('div')
       labelHost.className = 'tree-labels'
@@ -639,7 +650,9 @@ export function TreeTrunk({
             entry.text = text
           }
           entry.el.style.display = 'block'
-          entry.el.style.transform = `translateY(${relTop.toFixed(1)}px)`
+          // 树干轴线始终投影在画面正中：价签水平居中钉在树干上，两侧枝一眼对照
+          const relLeft = ((1 + projV.x) / 2) * rect.width
+          entry.el.style.transform = `translate(calc(${relLeft.toFixed(1)}px - 50%), ${relTop.toFixed(1)}px)`
           li += 1
         }
         for (; li < LABEL_CAP; li += 1) labelPool[li].el.style.display = 'none'
@@ -666,6 +679,12 @@ export function TreeTrunk({
       // 手指往下拖 → 树往下走 → 镜头上移看更高价（和地图 / 列表同向，不再反向）
       const panBy = (dyPx: number) => {
         view.camY += dyPx * (view.span / (canvas.clientHeight || 1))
+        clampView()
+        boil()
+      }
+      // 手指往右拖 → 树面跟着转向右（内容跟手）：相机往 −x 侧绕，ang 减小
+      const orbitBy = (dxPx: number) => {
+        view.ang -= dxPx * ((Math.PI * 0.5) / (canvas.clientWidth || 1))
         clampView()
         boil()
       }
@@ -697,6 +716,7 @@ export function TreeTrunk({
         pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
         if (pointers.size === 1) {
           panBy(e.clientY - prev.y)
+          orbitBy(e.clientX - prev.x)
         } else if (pointers.size >= 2) {
           const [a, b] = [...pointers.values()]
           const d = Math.hypot(a.x - b.x, a.y - b.y) || 1
@@ -774,6 +794,8 @@ export function TreeTrunk({
           return null
         },
         zoomBy,
+        orbitBy,
+        angle: () => view.ang,
         projectPrice: (cents: number, side: 1 | -1 | 0 = 1) => {
           // 投影到该档所在合并枝的拾取球心——e2e 用它定位点击点（0 = 已成交枯枝）
           const y = cents / 100
@@ -909,7 +931,7 @@ export function TreeTrunk({
         <span className="dot sell">待卖枝 · 右</span>
         <span className="dot leaf">绿叶 · 聚合档数</span>
         <span className="dot fallen">枯枝 · 已成交（更长）</span>
-        <span className="hint">滚轮缩放 · 拖动攀爬 · 点枝看明细</span>
+        <span className="hint">滚轮缩放 · 拖动攀爬 · 左右转视角 · 点枝看明细</span>
       </div>
     </div>
   )
