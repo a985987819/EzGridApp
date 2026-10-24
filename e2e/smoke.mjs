@@ -322,6 +322,10 @@ try {
   const span1 = await evaluate(`document.querySelector('canvas[data-tree="price"]').__tree.span()`)
   check('滚轮缩放生效（span 变小）', span1 < span0 * 0.9, `${span0} → ${span1}`)
 
+  // 放大状态截图：聚合枝应分散回原档位数、枝梢数据牌互不重叠（V9.21）
+  const zoomInShot = await send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync(join(OUT, 'mobile-tree-zoomin.png'), Buffer.from(zoomInShot.data, 'base64'))
+
   // 缩到最远看整条价格轴（标签密度 / 枝干比例 / 云朵），拍完恢复原视野——
   // 缩远会把 camY 钳到 span/2（视野离开数据区），不恢复的话后面点击全落空
   const view0 = await evaluate(`(() => {
@@ -415,11 +419,13 @@ try {
   check('枯枝档可投影', Boolean(soldPick && JSON.parse(soldPick).p), soldPick ?? '')
   if (soldPick && JSON.parse(soldPick).p) {
     const sp = JSON.parse(soldPick)
+    // 合并枝点击跳的是组内代表档（V9.21 projectPrice 返回 repCents）
+    const repCents = sp.p.repCents ?? sp.cents
     await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: sp.p.x, y: sp.p.y, button: 'left', clickCount: 1 })
     await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: sp.p.x, y: sp.p.y, button: 'left', clickCount: 1 })
     await sleep(700)
     const soldHash = await evaluate('location.hash')
-    check('点枯枝跳明细带价格', soldHash.startsWith('#/trades') && soldHash.includes(`price=${sp.cents}`), soldHash)
+    check('点枯枝跳明细带价格', soldHash.startsWith('#/trades') && soldHash.includes(`price=${repCents}`), soldHash)
     if (sp.lonely) check('枯枝跳转放开隐藏已完成（showDone=1）', soldHash.includes('showDone=1'), soldHash)
     check('清掉枯枝留下的筛选', await clickByText('[data-testid="active-chips"] .filter-chip', '清空筛选'))
     await sleep(400)
