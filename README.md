@@ -19,7 +19,9 @@ node e2e/smoke.mjs http://127.0.0.1:5173   # 无头浏览器走一遍主链路
 
 打开后到「导入」页：
 
-- 选自己的 xlsx，或点 **载入内置示例**（就是 `public/demo/26年网格记录.xlsx`）；
+- 选自己的 xlsx / csv，或点 **载入内置示例**（就是 `public/demo/26年网格记录.xlsx`）；
+  - xlsx / xls 只读第 1 个工作表「交易记录」（公式无缓存值的份额/目标价按规则重算）；
+  - csv 整表读入（单表文件）：UTF-8 带 BOM 为主，UTF-16LE / GBK 自动回退，文本日期（`2026/1/28`）与 `#VALUE!` 错误串都已容错；
 - 先出 **dry-run 报告**（8 个基准数字 + 异常清单），确认后再点 **写入本地**（对应文档 S2 门槛）。
 
 ---
@@ -86,7 +88,7 @@ src/
     baseline.ts        8 个基准快照校验
     backup.ts          恢复前的备份内容校验（坏结构整包拒绝）
     types.ts           实体与结果类型（对齐 §7.1）
-  io/parseWorkbook.ts  SheetJS 只读第 1 表（关键：sheetStubs）；xlsx 动态导入，只在导入页解析文件时才下载（主包 770→436 kB）
+  io/parseWorkbook.ts  SheetJS 读表：xlsx 只读第 1 表（关键：sheetStubs），csv 整表（parseCsvText/File）；xlsx 动态导入，只在导入页解析文件时才下载（主包 770→436 kB)
   store/               Dexie + React Context（数据全在本地）
   components/          CheckList / PriceGrid
   pages/
@@ -184,7 +186,7 @@ E2E 里有断言守这两件事，`npm run e2e` 会检查：
 | --- | --- | --- |
 | S0 环境与数据勘察 | 真实文件复算 8 个基准数字 | ✅ |
 | S1 骨架 + 精度内核 | `money` / `qty` / `limit` + 单测 | ✅ |
-| S2 导入引擎 | 只读第 1 表 → dry-run 报告（16 项基准 + 异常清单） | ✅ |
+| S2 导入引擎 | 只读第 1 表（xlsx）/ 整表（csv）→ dry-run 报告（16 项基准 + 异常清单） | ✅ |
 | S3 落库 + 明细页 | Dexie、卡片流、抽屉编辑、变更审计、软删除 | ✅ |
 | S4 股票管理 + 备份 | 管理·股票（排序/启停/涨跌幅）、JSON 备份恢复 | ✅ |
 | S5 关联引擎 | R1/R2 清单、三格指标、价格网格、守恒断言 | ✅ |

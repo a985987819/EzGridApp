@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Button, Card, Tag, Upload, notificationOpen } from 'animal-island-ui'
 import { useApp } from '../../store/useApp'
-import { parseWorkbookFile } from '../../io/parseWorkbook'
+import { parseWorkbookFile, parseCsvFile } from '../../io/parseWorkbook'
 import { buildLedger } from '../../domain/ledger'
 import { compareBaseline } from '../../domain/baseline'
 import { CheckList } from '../../components/CheckGrid'
@@ -69,7 +69,8 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
   async function handleFile(file: File) {
     setBusy(true)
     try {
-      const p = await parseWorkbookFile(file)
+      const isCsv = /\.csv$/i.test(file.name)
+      const p = isCsv ? await parseCsvFile(file) : await parseWorkbookFile(file)
       setPreview(p)
       setLastFile(file.name)
       notificationOpen({ message: '解析完成', description: `有效 ${p.records.length} 行`, type: 'success' })
@@ -124,12 +125,12 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
     <div className="stack">
       <Card>
         <Upload
-          accept=".xlsx,.xls"
+          accept=".xlsx,.xls,.csv"
           maxCount={1}
           drag
           disabled={busy}
           showUploadList={false}
-          tip="支持 .xlsx / .xls，只读第 1 个工作表「交易记录」，不改原文件"
+          tip="支持 .xlsx / .xls / .csv；xlsx 只读第 1 个工作表「交易记录」，csv 整表读入，不改原文件"
           beforeUpload={(file) => {
             void handleFile(file)
             return false
@@ -137,7 +138,7 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
         >
           <div className="empty-box" style={{ padding: '10px 0' }}>
             <strong>
-              <IconUpload /> 选一个 Excel
+              <IconUpload /> 选一个 Excel / CSV
             </strong>
             或者把文件拖进来
           </div>

@@ -1,5 +1,5 @@
 /**
- * 导入解析：只读第 1 个工作表「交易记录」（D7）。
+ * 导入解析：xlsx 只读第 1 个工作表「交易记录」（D7）；CSV 天然只有一个表，整表读入。
  * 只负责把单元格原始状态读出来（值 / 是否公式 / 是否无缓存值），
  * 规则派生全部留给 domain/ledger.ts，这样改间隔能立即重算。
  */
@@ -14,7 +14,7 @@ type CellObject = import('xlsx').CellObject
 
 /**
  * SheetJS 动态导入：只有导入页真正解析文件时才下载这个 chunk（xlsx 约占主包一半体积）。
- * 模块级 XLSX 只在 parseWorkbook 内 await loadXlsx() 之后才会被触达，helpers 可以直接读。
+ * 模块级 XLSX 只在 parseWorkbook / parseCsvText 内 await loadXlsx() 之后才会被触达，helpers 可以直接读。
  */
 let XLSX: XlsxModule
 let xlsxReady: Promise<XlsxModule> | null = null
@@ -87,6 +87,31 @@ function numOrNull(sheet: WorkSheet, r: number, c: number): number | null {
   return Number.isFinite(n) ? n : null
 }
 
+/**
+ * 日期列：xlsx 里是序列号数字；CSV 导出后是「2026/1/28」这类文本（SheetJS 读 CSV 全按字符串）。
+ * Excel 错误值（#VALUE! 等）与乱串一律 null，绝不抛错。
+ */
+const DATE_RE = /^(\d{4})[/\-年.](\d{1,2})[/\-月.](\d{1,2})日?$/
+
+function dateOrNull(sheet: WorkSheet, r: number, c: number): number | null {
+  const cell = rawCell(sheet, r, c)
+  if (isBlank(cell)) return null
+  if (typeof cell!.v === 'number') return Number.isFinite(cell!.v) ? cell!.v : null
+  const s = String(cell!.v).trim().replace(/,/g, '')
+  if (s === '') return null
+  const m = DATE_RE.exec(s)
+  if (m) {
+    const y = Number(m[1])
+    const mo = Number(m[2])
+    const d = Number(m[3])
+    if (mo < 1 || mo > 12 || d < 1 || d > 31) return null
+    // 与 defaults.serialToIso 互逆的 1900 系统（1900-03-01 起的虚闰年误差不影响 2000 年后的日期）
+    return Math.round((Date.UTC(y, mo - 1, d) - Date.UTC(1899, 11, 30)) / 86400000)
+  }
+  const n = Number(s)
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
 function centsOrNull(sheet: WorkSheet, r: number, c: number): number | null {
   const cell = rawCell(sheet, r, c)
   if (isBlank(cell)) return null
@@ -101,21 +126,8 @@ function resolveHeader(sheet: WorkSheet, aliases: readonly string[]): number | n
   return null
 }
 
-export async function parseWorkbook(buffer: ArrayBuffer | Uint8Array): Promise<ParseResult> {
-  await loadXlsx()
-  // sheetStubs: 只有公式、没有缓存值的单元格也会保留（否则整格丢失）
-  const wb = XLSX.read(buffer, {
-    type: 'array',
-    sheetStubs: true,
-    cellFormula: true,
-    cellNF: false,
-    cellDates: false,
-  })
-  const sheetName = wb.SheetNames[0]
-  if (!sheetName) throw new Error('工作簿里没有任何工作表')
-  const sheet = wb.Sheets[sheetName]
-  if (!sheet || !sheet['!ref']) throw new Error('第 1 个工作表是空的')
-
+/** 单表解析核心：xlsx 的第 1 个表和 CSV 的唯一表都走这里 */
+function parseSheet(sheet: WorkSheet, sheetName: string): ParseResult {
   const idx = {} as Record<ColKey, number | null>
   for (const k of Object.keys(COL) as ColKey[]) {
     idx[k] = resolveHeader(sheet, COL[k])
@@ -156,8 +168,8 @@ export async function parseWorkbook(buffer: ArrayBuffer | Uint8Array): Promise<P
       continue
     }
 
-    const buyDateSerial = idx.buyDate === null ? null : numOrNull(sheet, r, idx.buyDate)
-    const sellDateSerial = idx.sellDate === null ? null : numOrNull(sheet, r, idx.sellDate)
+    const buyDateSerial = idx.buyDate === null ? null : dateOrNull(sheet, r, idx.buyDate)
+    const sellDateSerial = idx.sellDate === null ? null : dateOrNull(sheet, r, idx.sellDate)
     // 日期格是 =TODAY() 公式、且文件里没存计算结果 → 标记出来，
     // 这类格子打开 Excel 会显示「当天」，不是真实成交日，不能拿来当数据
     const buyDateFormula = idx.buyDate === null ? null : cellFormula(sheet, r, idx.buyDate)
@@ -192,6 +204,60 @@ export async function parseWorkbook(buffer: ArrayBuffer | Uint8Array): Promise<P
   }
 
   return { sheetName, records, skippedRows, missingColumns }
+}
+
+export async function parseWorkbook(buffer: ArrayBuffer | Uint8Array): Promise<ParseResult> {
+  await loadXlsx()
+  // sheetStubs: 只有公式、没有缓存值的单元格也会保留（否则整格丢失）
+  const wb = XLSX.read(buffer, {
+    type: 'array',
+    sheetStubs: true,
+    cellFormula: true,
+    cellNF: false,
+    cellDates: false,
+  })
+  const sheetName = wb.SheetNames[0]
+  if (!sheetName) throw new Error('工作簿里没有任何工作表')
+  const sheet = wb.Sheets[sheetName]
+  if (!sheet || !sheet['!ref']) throw new Error('第 1 个工作表是空的')
+  return parseSheet(sheet, sheetName)
+}
+
+/**
+ * CSV 文本 → 单表解析。SheetJS 读 CSV 全按字符串（含日期），数值/日期列的
+ * 字符串转换由 numOrNull / dateOrNull / centsOrNull 负责；#VALUE! 等 Excel
+ * 错误串在这三个入口都自然落到 null。
+ */
+export async function parseCsvText(text: string): Promise<ParseResult> {
+  await loadXlsx()
+  const clean = text.replace(/^\uFEFF/, '')
+  if (clean.trim() === '') throw new Error('CSV 是空的')
+  const wb = XLSX.read(clean, { type: 'string', cellFormula: false, cellDates: false, raw: true })
+  const sheetName = wb.SheetNames[0]
+  if (!sheetName) throw new Error('CSV 里没有工作表')
+  const sheet = wb.Sheets[sheetName]
+  if (!sheet || !sheet['!ref']) throw new Error('CSV 是空的')
+  return parseSheet(sheet, sheetName)
+}
+
+/** CSV 文件：UTF-8 带 BOM 为主（Excel 导出默认），出现替换符回退 GBK，FF FE 开头按 UTF-16LE */
+export async function parseCsvFile(file: File): Promise<ParseResult> {
+  const buf = await file.arrayBuffer()
+  const bytes = new Uint8Array(buf)
+  let text: string
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) {
+    text = new TextDecoder('utf-16le').decode(buf)
+  } else {
+    text = new TextDecoder('utf-8').decode(buf)
+    if (text.includes('\uFFFD')) {
+      try {
+        text = new TextDecoder('gbk').decode(buf)
+      } catch {
+        // 环境没有 GBK 解码器就保留 UTF-8 结果（中文列名会失配而报缺列，不至于崩）
+      }
+    }
+  }
+  return parseCsvText(text)
 }
 
 export async function parseWorkbookFile(file: File): Promise<ParseResult> {
