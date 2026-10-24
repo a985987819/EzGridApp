@@ -278,7 +278,13 @@ export function Overview({
                 <div className={`v long ${tone(current.profitCents)}`}>{signedMoney(current.profitCents)}</div>
               </div>
             </div>
-            <TreeTrunk stockName={current.stockName} onPick={(p) => goTrades({ stock: current.stockName, price: p })} />
+            {/* 已成交枯枝跳明细要放开「隐藏已完成」，否则点过去看不到行 */}
+            <TreeTrunk
+              stockName={current.stockName}
+              onPick={(p, opts) =>
+                goTrades({ stock: current.stockName, price: p, showDone: opts?.done === true || undefined })
+              }
+            />
           </div>
         )}
       </Card>

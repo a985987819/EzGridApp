@@ -1,24 +1,28 @@
 /**
- * 3D 价格树（V9.6→V9.9）：概览页的纵轴是一棵手绘插画风立体树。
+ * 3D 价格树（V9.6→V9.14）：概览页的纵轴是一棵手绘插画风立体树。
  *
- * 渲染 = 两遍管线（风格化与场景内容解耦，任意模型/相机运动都有一致手绘感）：
- *   pass 1  数据缓冲：所有网格用同一个 GBufferMaterial 输出
- *           RGBA 半浮点 (r=半球明暗 shade, gba=墨色) + FloatType 深度纹理，
- *           无任何风格化；RT 用 NearestFilter、无 mipmap。
- *   pass 2  全屏后处理（独立 scene + 正交相机）逐像素作画：
- *           ① 手抖采样（值噪声偏移，颜色/深度同一偏移防轮廓错位）
- *           ② 轮廓 = 逆深度 Laplacian + 法线突变补边
- *           ③ 阴影线 = 深度重建世界坐标/法线，条纹钉在表面上；三方向排线
- *           ④ 纸面 = 双层值噪声纸纹 + 淡蓝横线
- *           ⑤ 合成 paper → mix(墨色, hatch*0.72) → mix(轮廓墨*0.92, edge*ew)
+ * 渲染 = 单 pass 直绘（V9.14 起，弃用 V9.8 的两遍管线 / RT / 全屏后处理）：
+ *   每个物体一个轻量 ShaderMaterial，直接画进画布——
+ *   ① 纯色墨底 + 二档赛璐璐明暗（光向固定）
+ *   ② 表面锚定排线（世界坐标按主法线轴投影），暗面加密
+ *   ③ 掠射处勾边（rim 加深当轮廓笔）
+ *   ④ 云 / 远山 / 地面 = 整片纯色剪影；背景即画布纸色，无纸纹后处理
+ * 手绘沸腾（V9.14）：uSeed 全场景共享，拖动 / 缩放期间每 2 帧进 1——
+ *   排线与抖动随之重排，肉眼可见「笔触在重画」；停手即静止，回归按需渲染。
  *
  * V9.9 数据表现：
- *   待买/待卖 = 树枝（左蓝 / 右红，长度随数量）；已卖出 = 落叶，铺在树干
- *   后方更远的深度层（近处枝、远处叶，天然分层）。缩小（拉远）时相邻档的
- *   枝按间距合并成一根，枝上画「合并档数」片叶子表达该区间挂单密度；
- *   放大到档位可分辨时恢复每档一枝。
+ *   待买/待卖 = 树枝（左蓝 / 右红，长度随数量）。缩小（拉远）时相邻档的
+ *   枝按间距合并成一根，枝上画「合并档数」片绿叶表达该区域待成交密度。
  *
- * 性能：按需渲染——场景无逐帧动画，只有交互/改尺寸时置脏重绘一帧；
+ * V9.15 枝距 / 枯枝 / 拾取：
+ *   不同树枝至少隔 0.5 元（五毛一档），更近的档合并成一枝——树枝间距拉开；
+ *   拉到最小视野时枝长按 span 线性放大，枝在画面中的占比不变（粗细随之
+ *   缓放保证可见）。已成交 = 树干后方的枯黄长枝（下垂、比待成交枝更长），
+ *   取代旧的落叶铺地。三类枝（待买 / 待卖 / 已成交）点击都跳对应明细，
+ *   已成交跳转自动放开「隐藏已完成」。
+ *
+ * 性能：按需渲染——场景无持续动画，只有交互 / 改尺寸时置脏重绘；交互后的
+ *   ~140ms 沸腾窗口内继续逐帧重画（纹理变化可见），随后静止。
  *   枝叶布局只在合并档位（gap 档）变化时重排，矩阵全部复用临时对象。
  *
  * V9.12 轴刻度与下限：
@@ -49,8 +53,6 @@ const SPAN_MIN = 0.5
 const SPAN_MAX = 150
 /** 相邻两枝最少要占的屏幕行数（按 460px 高估）：行距不足就合并 */
 const ROWS_PER_SCREEN = 22
-/** 已完成落叶的实例上限（超出按比例抽样） */
-const FALLEN_CAP = 480
 /** 价签最小屏幕间距（px）：任何缩放下相邻两个数字至少隔这么远 */
 const LABEL_MIN_GAP = 80
 /** 价签步长档位（1-2-5 序列；0.1 档对应 A 股最小报价单位） */
@@ -62,8 +64,9 @@ const INK = {
   buy: '#4a7cc4',
   sell: '#c04f48',
   fallen: '#c39a4e',
+  leaf: '#5f9a4a',
   moss: '#7f9455',
-  ring: '#a08056',
+  ring: '#c3a878',
   ground: '#e9e6c8',
   cloud: '#fdfbf2',
   mountain: '#d9dcc0',
@@ -112,10 +115,11 @@ function outlineRadiusAt(y: number): number {
   return trunkRadiusAt(y) + 0.03
 }
 
-// ---------------- shader 源码 ----------------
+// ---------------- shader 源码（单 pass 直绘） ----------------
 
-const GBUFFER_VERT = /* glsl */ `
+const INK_VERT = /* glsl */ `
 out vec3 vN;
+out vec3 vW;
 void main() {
   vec3 n = normal;
   vec4 wp = modelMatrix * vec4(position, 1.0);
@@ -124,43 +128,19 @@ void main() {
     n = mat3(instanceMatrix) * normal;
   #endif
   vN = normalize(mat3(modelMatrix) * n);
+  vW = wp.xyz;
   gl_Position = projectionMatrix * viewMatrix * wp;
 }
 `
 
-const GBUFFER_FRAG = /* glsl */ `
+const INK_FRAG = /* glsl */ `
 precision highp float;
 in vec3 vN;
+in vec3 vW;
+out vec4 outColor;
 uniform vec3 uInk;
-uniform float uFill; // 1 = 纯色填充（云 / 山 / 地面），pass2 整片涂纯色
-out vec4 outColor;
-void main() {
-  float shade = dot(normalize(vN), normalize(vec3(0.45, 0.8, 0.55))) * 0.5 + 0.5;
-  if (uFill > 0.5) shade = -1.0;
-  outColor = vec4(shade, uInk);
-}
-`
-
-const POST_VERT = /* glsl */ `
-out vec2 vUv;
-void main() {
-  vUv = uv;
-  gl_Position = vec4(position.xy, 0.0, 1.0);
-}
-`
-
-const POST_FRAG = /* glsl */ `
-precision highp float;
-in vec2 vUv;
-out vec4 outColor;
-
-uniform sampler2D tColor;
-uniform sampler2D tDepth;
-uniform vec2 uRes;
-uniform float uNear;
-uniform float uFar;
-uniform mat4 uInvProj;
-uniform mat4 uInvView;
+uniform float uFill;  // 1 = 整片纯色剪影（云 / 山 / 地）
+uniform float uSeed;  // 手绘沸腾种子：拖动期间逐帧递进，笔触随之重排
 
 float hash(vec2 p) {
   return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
@@ -175,115 +155,41 @@ float vnoise(vec2 p) {
   float d = hash(i + vec2(1.0, 1.0));
   return mix(mix(a, b, u2.x), mix(c, d, u2.x), u2.y);
 }
-/** 窗口深度 → 线性距离 */
-float linDepth(vec2 uv) {
-  float d = texture(tDepth, uv).x;
-  float viewZ = (uNear * uFar) / ((uFar - uNear) * d - uFar);
-  return -viewZ;
-}
-vec3 viewPosAt(vec2 uv, float depth01) {
-  vec4 clip = vec4(uv * 2.0 - 1.0, depth01 * 2.0 - 1.0, 1.0);
-  vec4 vp = uInvProj * clip;
-  return vp.xyz / vp.w;
-}
 /** 排线：p 为表面锚定坐标，dir 条纹方向 */
 float stripes(vec2 p, vec2 dir, float spacing, float width) {
   float t = dot(p, vec2(-dir.y, dir.x));
   float f = abs(fract(t / spacing) - 0.5) * spacing;
-  float soft = width * 0.6;
-  return 1.0 - smoothstep(width * 0.5 - soft, width * 0.5 + soft, f);
+  return 1.0 - smoothstep(width * 0.5, width * 0.5 + width * 0.4, f);
 }
 
 void main() {
-  vec2 px = 1.0 / uRes;
-  // ① 手抖采样：整幅笔触同步微抖；颜色与深度用同一偏移（错位会轮廓错边）
-  vec2 wob = (vec2(vnoise(vUv * uRes.y * 0.09 + 3.1), vnoise(vUv * uRes.y * 0.09 + 7.7)) - 0.5)
-    * 2.0 * 1.4 * px;
-  vec2 suv = vUv + wob;
-  float o = 1.6;
-
-  vec4 g = texture(tColor, suv);
-  float shade = g.r;
-  vec3 ink = g.gba;
-  float dz = linDepth(suv);
-  bool isBg = dz >= uFar * 0.995;
-
-  // ② 轮廓：逆深度 Laplacian（平面内二阶差分恒 0 → 只在真实不连续处响应）
-  float zl = linDepth(suv - vec2(o * px.x, 0.0));
-  float zr = linDepth(suv + vec2(o * px.x, 0.0));
-  float zu = linDepth(suv + vec2(0.0, o * px.y));
-  float zd = linDepth(suv - vec2(0.0, o * px.y));
-  float iw = 1.0 / max(dz, 1e-4);
-  float lap = abs(1.0 / max(zl, 1e-4) + 1.0 / max(zr, 1e-4) - 2.0 * iw)
-    + abs(1.0 / max(zu, 1e-4) + 1.0 / max(zd, 1e-4) - 2.0 * iw);
-  float edge = smoothstep(0.07, 0.30, lap / (iw + 1e-7));
-
-  // 由深度重建视空间坐标 → 面法线（导数），法线突变补一条贴面物体的轮廓
-  vec3 vp = viewPosAt(suv, texture(tDepth, suv).x);
-  vec3 vpL = viewPosAt(suv - vec2(o * px.x, 0.0), texture(tDepth, suv - vec2(o * px.x, 0.0)).x);
-  vec3 vpU = viewPosAt(suv + vec2(0.0, o * px.y), texture(tDepth, suv + vec2(0.0, o * px.y)).x);
-  vec3 nV = normalize(cross(dFdx(vp), dFdy(vp)));
-  vec3 nL = normalize(cross(dFdx(vpL), dFdy(vpL)));
-  vec3 nU = normalize(cross(dFdx(vpU), dFdy(vpU)));
-  float nEdge = max(length(nV - nL), length(nV - nU));
-  edge = max(edge, smoothstep(0.55, 0.85, nEdge));
-
-  // 轮廓墨色取最近深度物体的墨
-  vec4 gL = texture(tColor, suv - vec2(o * px.x, 0.0));
-  vec4 gR = texture(tColor, suv + vec2(o * px.x, 0.0));
-  vec4 gU = texture(tColor, suv + vec2(0.0, o * px.y));
-  vec4 gD = texture(tColor, suv - vec2(0.0, o * px.y));
-  float best = dz;
-  vec3 nearestInk = ink;
-  if (zl < best) { best = zl; nearestInk = gL.gba; }
-  if (zr < best) { best = zr; nearestInk = gR.gba; }
-  if (zu < best) { best = zu; nearestInk = gU.gba; }
-  if (zd < best) { best = zd; nearestInk = gD.gba; }
-
-  // ③ 阴影线：世界坐标 / 法线，法线最朝外的轴决定投影面 → 条纹钉在表面上
-  vec3 wPos = (uInvView * vec4(vp, 1.0)).xyz;
-  vec3 wN = normalize(mat3(uInvView) * nV);
-  vec3 a = abs(wN);
-  vec2 p2;
-  if (a.x >= a.y && a.x >= a.z) p2 = wPos.yz;
-  else if (a.y >= a.z) p2 = wPos.xz;
-  else p2 = wPos.xy;
-  float dist = length(vp.xyz);
-  // 间距 2 的幂分级（对数域线性混合，避免分档边界抖动出噪点）
-  float lf = log2(0.016 * dist / 0.5);
-  float i0 = floor(lf);
-  float sp = 0.5 * exp2(i0 + smoothstep(0.75, 1.0, lf - i0));
-  float w = sp * 0.17;
-  // 树干以竖描为主（参考图笔触），亮面留稀疏线、暗面逐层加密，最暗处涂黑
-  float h1 = stripes(p2, vec2(0.0, 1.0), sp, w) * (1.0 - smoothstep(0.88, 0.99, shade));
-  float h2 = stripes(p2, normalize(vec2(1.0, 1.0)), sp, w) * (1.0 - smoothstep(0.42, 0.58, shade));
-  float h3 = stripes(p2, normalize(vec2(1.0, -1.0)), sp, w) * (1.0 - smoothstep(0.2, 0.3, shade));
-  float hatch = clamp(h1 + h2 + h3 + (1.0 - smoothstep(0.06, 0.14, shade)), 0.0, 1.0);
-
-  // ④ 纸面：双层值噪声纸纹 + 淡蓝横线
-  vec3 paper = vec3(0.965, 0.937, 0.863);
-  paper *= 0.965 + 0.05 * vnoise(vUv * uRes.y * 0.55) + 0.028 * vnoise(vUv * uRes.y * 3.1);
-  float ruleT = mod(gl_FragCoord.y, uRes.y / 13.5);
-  float rule = 1.0 - smoothstep(0.0, 1.4, ruleT);
-  paper = mix(paper, vec3(0.58, 0.70, 0.92), rule * 0.16);
-
-  // ⑤ 合成：paper → 墨色排线 → 轮廓
-  vec3 col = paper;
-  if (!isBg) {
-    if (shade < -0.5) {
-      col = ink; // fill：整片纯色（云 / 山 / 地面）
-    } else {
-      // 6% 墨色打底给物体一个体色，排线叠在上面
-      col = mix(paper, ink, hatch * 0.72 + 0.06);
-    }
+  vec3 N = normalize(vN);
+  if (uFill > 0.5) {
+    outColor = vec4(uInk, 1.0);
+    return;
   }
-  float ew = 0.75 + 0.35 * vnoise(vUv * uRes.y * 0.42);
-  col = mix(col, nearestInk * 0.92, edge * ew);
+  // 沸腾相位：种子变 → 抖动 / 条纹整体重排（拖动时可见纹理在变化）
+  float boil = uSeed * 0.73;
+  // 二档赛璐璐明暗（光向沿用旧管线），暗部压深一档
+  float shade = dot(N, normalize(vec3(0.45, 0.8, 0.55))) * 0.5 + 0.5;
+  vec3 col = mix(uInk * 0.78, uInk, smoothstep(0.3, 0.48, shade));
+  // 表面锚定排线：世界坐标按最朝外的主法线轴投影，条纹钉在表面上
+  vec3 a = abs(N);
+  vec2 p2 = (a.x >= a.y && a.x >= a.z) ? vW.yz : (a.y >= a.z ? vW.xz : vW.xy);
+  // 手抖：值噪声把锚定坐标揉一下，随 boil 重排（拖动时笔触蠕动）
+  p2 += (vec2(vnoise(p2 * 5.0 + boil), vnoise(p2 * 5.0 - boil + 3.1)) - 0.5) * 0.032;
+  // 亮面铺淡竖皴(蜡笔竖线),暗面再叠 45° 深线——纹理可见,拖动时全场重排
+  float hatch = stripes(p2, vec2(0.0, 1.0), 0.1, 0.034)
+    + stripes(p2, normalize(vec2(1.0, 1.0)), 0.13, 0.026) * (1.0 - smoothstep(0.3, 0.5, shade));
+  col = mix(col, uInk * 0.42, clamp(hatch * (0.5 + 0.5 * (1.0 - smoothstep(0.5, 0.85, shade))), 0.0, 0.8));
+  // 掠射勾边：视线擦过的棱边压深，当轮廓笔
+  vec3 V = normalize(cameraPosition - vW);
+  float rim = 1.0 - max(dot(N, V), 0.0);
+  col = mix(col, uInk * 0.36, smoothstep(0.55, 0.85, rim));
   outColor = vec4(col, 1.0);
 }
 `
 
-/** 一根合并后的枝：一段价格区间内的所有同侧挂单档 */
 interface BranchBin {
   lo: number // 区间下沿（元）
   hi: number
@@ -291,10 +197,17 @@ interface BranchBin {
   repCents: number // 数量最大的档（点击/跳明细用它）
   qty: number
   count: number // 合并档数 = 枝上叶数
+  kind: 'buy' | 'sell' | 'sold'
   pick?: { x: number; y: number; z: number } // 拾取球心（world），投影/点击共用
 }
 
-export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (priceCents: number) => void }) {
+export function TreeTrunk({
+  stockName,
+  onPick,
+}: {
+  stockName: string
+  onPick: (priceCents: number, opts?: { done?: boolean }) => void
+}) {
   const { ledger } = useApp()
   const levels = useMemo(
     () => aggregate(stockName, ledger.sells, ledger.targets, ledger.orders),
@@ -315,17 +228,19 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
       const THREE = await import('three')
       if (disposed) return
 
-      // ---------- 渲染器 / 两遍管线的 RT ----------
-      const renderer = new THREE.WebGLRenderer({ antialias: false })
+      // ---------- 渲染器：单 pass 直绘，纸色底、开 MSAA（线条干净） ----------
+      const renderer = new THREE.WebGLRenderer({ antialias: true })
       renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
+      renderer.setClearColor('#f6efdc')
       const canvas = renderer.domElement
       canvas.dataset.tree = 'price'
       canvas.style.touchAction = 'none'
       host.appendChild(canvas)
 
       const scene = new THREE.Scene()
-      const postScene = new THREE.Scene()
-      const postCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1)
+
+      // 手绘沸腾种子：所有材质共享同一个 uniform 对象，进一位全场笔触重排
+      const boilSeed = { value: 0 }
 
       const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 900)
       const camX = 1.6
@@ -347,17 +262,23 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
 
       const applyCamera = () => {
         const dist = view.span / (2 * Math.tan((camera.fov * Math.PI) / 360)) + trunkRadiusAt(view.camY) + 0.6
-        camera.position.set(camX, view.camY, dist)
+        // 画布越高横向视野越窄:按 aspect 收敛相机侧移,近侧的枝才不会被透视推出画布
+        const lateral = camX * Math.min(1, Math.max(0.35, camera.aspect / 0.78))
+        camera.position.set(lateral, view.camY, dist)
         camera.lookAt(0, view.camY, 0)
         camera.updateMatrixWorld()
       }
 
       const inkOf = (hex: string, fill = false) =>
         new THREE.ShaderMaterial({
-          vertexShader: GBUFFER_VERT,
-          fragmentShader: GBUFFER_FRAG,
+          vertexShader: INK_VERT,
+          fragmentShader: INK_FRAG,
           glslVersion: THREE.GLSL3,
-          uniforms: { uInk: { value: new THREE.Color(hex) }, uFill: { value: fill ? 1 : 0 } },
+          uniforms: {
+            uInk: { value: new THREE.Color(hex) },
+            uFill: { value: fill ? 1 : 0 },
+            uSeed: boilSeed,
+          },
         })
 
       // ---------- 树干 + 根 ----------
@@ -469,13 +390,14 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
       const ringSets = [makeRingSet(0.012), makeRingSet(0.05), makeRingSet(0.15)]
       const majorSets = [makeRingSet(0.024), makeRingSet(0.08), makeRingSet(0.24)]
 
-      // ---------- 数据枝叶：买枝（左·蓝）/ 卖枝（右·红）/ 落叶（已卖·后景） ----------
+      // ---------- 数据枝叶：买枝（左·蓝）/ 卖枝（右·红）/ 枯枝（已成交·后景） ----------
       const branchGeo = new THREE.CylinderGeometry(0.032, 0.05, 1, 6) // 两段拼出一根弯枝
       const leafGeo = new THREE.SphereGeometry(1, 8, 6)
       const pickGeo = new THREE.IcosahedronGeometry(1, 1)
       const buyMat = inkOf(INK.buy)
       const sellMat = inkOf(INK.sell)
       const fallenMat = inkOf(INK.fallen)
+      const leafMat = inkOf(INK.leaf)
       const pickMat = inkOf(INK.trunk)
       pickMat.visible = false // 只参与拾取，不进 pass1
 
@@ -490,6 +412,7 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
 
       const buyList = levels.filter((l) => l.buyQty > 0)
       const sellList = levels.filter((l) => l.sellQty > 0)
+      const soldList = levels.filter((l) => l.soldCount > 0)
       const mkMesh = (geo: import('three').BufferGeometry, mat: import('three').ShaderMaterial, cap: number) => {
         if (cap <= 0) return null
         const mesh = new THREE.InstancedMesh(geo, mat, cap)
@@ -500,56 +423,24 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
       }
       const buyBranchMesh = mkMesh(branchGeo, buyMat, buyList.length * 2)
       const sellBranchMesh = mkMesh(branchGeo, sellMat, sellList.length * 2)
-      const buyLeafMesh = mkMesh(leafGeo, buyMat, buyList.length)
-      const sellLeafMesh = mkMesh(leafGeo, sellMat, sellList.length)
-      const pickMesh = mkMesh(pickGeo, pickMat, buyList.length + sellList.length)
-      const totalFallen = levels.reduce((s, l) => s + l.soldCount, 0)
-      const fallenMesh = mkMesh(leafGeo, fallenMat, Math.min(totalFallen, FALLEN_CAP))
+      const soldBranchMesh = mkMesh(branchGeo, fallenMat, soldList.length * 2)
+      const buyLeafMesh = mkMesh(leafGeo, leafMat, buyList.length)
+      const sellLeafMesh = mkMesh(leafGeo, leafMat, sellList.length)
+      const pickMesh = mkMesh(pickGeo, pickMat, buyList.length + sellList.length + soldList.length)
 
       interface BranchWork {
-        bins: { buy: BranchBin[]; sell: BranchBin[] }
-        picks: BranchBin[] // pickMesh 实例顺序对应：先卖后买
+        bins: { buy: BranchBin[]; sell: BranchBin[]; sold: BranchBin[] }
+        picks: BranchBin[] // pickMesh 实例顺序对应：先卖后买再枯枝
         lastGate: string
       }
-      const work: BranchWork = { bins: { buy: [], sell: [] }, picks: [], lastGate: '' }
-
-      /** 已完成落叶：铺在树干后方更远的深度层（近枝远叶），每笔已卖一片 */
-      const buildFallen = () => {
-        if (!fallenMesh) return
-        let seed = 23
-        const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647)
-        const stride = totalFallen > FALLEN_CAP ? totalFallen / FALLEN_CAP : 1
-        let acc = 0
-        let fi = 0
-        for (const l of levels) {
-          for (let j = 0; j < l.soldCount; j += 1) {
-            acc += 1
-            if (acc < stride) continue
-            acc -= stride
-            if (fi >= FALLEN_CAP) break
-            const y = l.priceCents / 100 - 0.05 - rnd() * 0.2
-            const x = (fi % 2 === 0 ? 1 : -1) * (0.55 + rnd() * 1.15)
-            const z = -(0.85 + rnd() * 0.55)
-            const s = 0.085 + Math.min(0.05, Math.sqrt(l.soldQty / Math.max(1, l.soldCount)) / 140)
-            quat.setFromAxisAngle(up, rnd() * Math.PI * 2)
-            sclV.set(s * 1.7, s * 0.34, s)
-            posV.set(x, y, z)
-            dummy.compose(posV, quat, sclV)
-            fallenMesh.setMatrixAt(fi, dummy)
-            fi += 1
-          }
-          if (fi >= FALLEN_CAP) break
-        }
-        fallenMesh.count = fi
-        fallenMesh.instanceMatrix.needsUpdate = true
-      }
-      buildFallen()
+      const work: BranchWork = { bins: { buy: [], sell: [], sold: [] }, picks: [], lastGate: '' }
 
       /** 按档间距把同侧档位串成合并组（链式：相邻间距 < gap 就并） */
       const groupLevels = (
         list: TreeLevel[],
         qtyOf: (l: TreeLevel) => number,
         gap: number,
+        kind: 'buy' | 'sell' | 'sold',
       ): BranchBin[] => {
         const bins: BranchBin[] = []
         let i = 0
@@ -577,6 +468,7 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
             repCents,
             qty,
             count: j - i,
+            kind,
           })
           i = j
         }
@@ -602,16 +494,20 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
       }
 
       /**
-       * 重排枝叶。只在「合并档位（gap，√2 步进量化）+ 远景放大档」变化时做，
-       * 平移不触发；矩阵复用共享临时对象，无逐帧分配。
+       * 重排枝叶。只在「合并档位 + 远景放大档」变化时做，平移不触发；
+       * 矩阵复用共享临时对象，无逐帧分配。
        */
       const layoutBranches = () => {
-        // 行距不足 ROWS_PER_SCREEN 行就并档；gap 按 2^(n/2) 量化，缩放中不抖
+        // 行距不足 ROWS_PER_SCREEN 行就并档；gap 按 2^(n/2) 量化，缩放中不抖。
+        // 下限 0.5：不同树枝至少隔五毛，更近的档并成一枝（V9.15）
         const gapRaw = view.span / ROWS_PER_SCREEN
-        const gap = Math.max(0.02, Math.pow(2, Math.ceil(Math.log2(Math.max(1e-4, gapRaw)) * 2) / 2))
-        // 拉远时枝整体放大一档，避免远景细枝缩成看不见的线
-        const kz = 1 + Math.min(1.1, Math.max(0, view.span - 12) / 90)
-        const gate = `${gap}|${Math.round(kz * 5)}`
+        const gap = Math.max(0.5, Math.pow(2, Math.ceil(Math.log2(Math.max(1e-4, gapRaw)) * 2) / 2))
+        // 枝长随视野线性等比：枝在画面中的占比恒定——缩小视图枝变长、放大变短,
+        // 任何缩放级别都不会被裁出画布(V9.15)
+        const kzLen = view.span / 8
+        // 粗缓于长：保证可见又不至于压过树干
+        const kzThick = Math.pow(kzLen, 0.75)
+        const gate = `${gap}|${Math.round(kzLen * 5)}`
         if (gate === work.lastGate) return
         work.lastGate = gate
 
@@ -621,32 +517,39 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
           qtyOf: (l: TreeLevel) => number,
           branchMesh: import('three').InstancedMesh | null,
           leafMesh: import('three').InstancedMesh | null,
+          kind: 'buy' | 'sell' | 'sold',
         ) => {
-          const bins = groupLevels(list, qtyOf, gap)
+          const bins = groupLevels(list, qtyOf, gap, kind)
           let bi = 0
           let li = 0
           const sideBins: BranchBin[] = []
           for (const bin of bins) {
             let seed = Math.round(bin.lo * 7919) + (side > 0 ? 31 : 57)
             const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647)
+            bin.kind = kind
             const y = bin.y
             const r = outlineRadiusAt(y)
             const ax = side * r * 0.96
-            const len = Math.min(1.5, (0.5 + Math.sqrt(bin.qty) / 38) * kz)
-            const thick = (1 + Math.min(1.1, Math.sqrt(bin.qty) / 650)) * Math.min(1.5, kz * 0.85)
-            const tilt = 0.1 + rnd() * 0.16
-            dir1.set(side * 0.98, tilt, 0.04).normalize()
-            dir2.set(side * 0.9, tilt + 0.18 + rnd() * 0.1, 0.09).normalize()
+            const isSold = kind === 'sold'
+            // 待成交枝上扬；已成交枯枝更长、下垂、伸向树干后方
+            const len = isSold
+              ? Math.min(2.2, (0.75 + Math.sqrt(bin.qty) / 32)) * kzLen
+              : Math.min(1.5, (0.5 + Math.sqrt(bin.qty) / 38)) * kzLen
+            const thick = (1 + Math.min(1.1, Math.sqrt(bin.qty) / 650)) * kzThick * (isSold ? 0.8 : 0.85)
+            const tilt = isSold ? -(0.04 + rnd() * 0.08) : 0.1 + rnd() * 0.16
+            const back = isSold ? -0.3 : 0.04
+            dir1.set(side * 0.98, tilt, back).normalize()
+            dir2.set(side * 0.9, tilt + (isSold ? -0.16 - rnd() * 0.12 : 0.18 + rnd() * 0.1), back * 1.6).normalize()
             const len1 = len * 0.62
             const len2 = len * 0.5
             placeSeg(branchMesh, bi * 2, ax, y, dir1, len1, thick)
             placeSeg(branchMesh, bi * 2 + 1, ax + dir1.x * len1, y + dir1.y * len1, dir2, len2, thick * 0.66)
             bi += 1
 
-            // 合并档 ≥ 2 才画叶：叶数 = 合并档数，沿枝铺开
-            if (bin.count > 1 && leafMesh) {
+            // 聚合档 ≥ 2 才画叶：绿叶数 = 聚合档数，表示这片有很多笔待成交
+            if (!isSold && bin.count > 1 && leafMesh) {
               const total = len1 + len2
-              const ls = Math.max(0.55, Math.min(1.1, 1.15 - bin.count * 0.045)) * Math.min(1.6, kz * 0.9)
+              const ls = Math.max(0.55, 1.15 - bin.count * 0.045) * kzThick
               for (let m = 0; m < bin.count && li < list.length; m += 1) {
                 const s = ((m + 0.5) / bin.count) * total * 0.94 + total * 0.04
                 const px = s < len1 ? ax + dir1.x * s : ax + dir1.x * len1 + dir2.x * (s - len1)
@@ -663,7 +566,7 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
             // 拾取球：贴在枝中段，杆细也能点中；球心存进 bin，投影/点击共用
             bin.pick = { x: ax + dir1.x * len1 * 0.85, y: y + dir1.y * len1 * 0.85, z: dir1.z * len1 * 0.85 }
             if (pickMesh) {
-              const pickR = Math.min(0.46, 0.3 + 0.02 * bin.count) * Math.min(1.6, kz)
+              const pickR = Math.min(0.46, 0.3 + 0.02 * bin.count) * kzThick
               posV.set(bin.pick.x, bin.pick.y, bin.pick.z)
               sclV.setScalar(pickR)
               quat.identity()
@@ -684,9 +587,10 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
         }
 
         work.picks.length = 0
-        // 先卖后买，保证 e2e 默认 side=1 的档位在拾取层里
-        work.bins.sell = doSide(1, sellList, (l) => l.sellQty, sellBranchMesh, sellLeafMesh)
-        work.bins.buy = doSide(-1, buyList, (l) => l.buyQty, buyBranchMesh, buyLeafMesh)
+        // 先卖后买，保证 e2e 默认 side=1 的档位在拾取层里；枯枝殿后
+        work.bins.sell = doSide(1, sellList, (l) => l.sellQty, sellBranchMesh, sellLeafMesh, 'sell')
+        work.bins.buy = doSide(-1, buyList, (l) => l.buyQty, buyBranchMesh, buyLeafMesh, 'buy')
+        work.bins.sold = doSide(1, soldList, (l) => l.soldQty, soldBranchMesh, null, 'sold')
         if (pickMesh) {
           pickMesh.count = work.picks.length
           pickMesh.instanceMatrix.needsUpdate = true
@@ -748,20 +652,27 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
       let pinchMidY = 0
       let dragMoved = 0
       let dirty = true
+      /** 手绘沸腾窗口：交互后的这段时间里持续重画并推进种子，笔触肉眼可见地重排 */
+      let boilUntil = 0
+      let boilFrame = 0
       const markDirty = () => {
         dirty = true
+      }
+      const boil = () => {
+        boilUntil = performance.now() + 140
+        markDirty()
       }
 
       // 手指往下拖 → 树往下走 → 镜头上移看更高价（和地图 / 列表同向，不再反向）
       const panBy = (dyPx: number) => {
         view.camY += dyPx * (view.span / (canvas.clientHeight || 1))
         clampView()
-        markDirty()
+        boil()
       }
       const zoomBy = (factor: number) => {
         view.span /= factor
         clampView()
-        markDirty()
+        boil()
       }
 
       const onWheel = (e: WheelEvent) => {
@@ -794,7 +705,6 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
           const midY = (a.y + b.y) / 2
           panBy(midY - pinchMidY)
           pinchMidY = midY
-          markDirty()
         }
       }
       const onUp = (e: PointerEvent) => {
@@ -814,7 +724,8 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
         for (const hit of raycaster.intersectObject(pickMesh, false)) {
           const bin = work.picks[hit.instanceId ?? -1]
           if (bin) {
-            pickRef.current(bin.repCents)
+            // 已成交跳明细要放开「隐藏已完成」，否则点过去是空列表
+            pickRef.current(bin.repCents, bin.kind === 'sold' ? { done: true } : undefined)
             return
           }
         }
@@ -826,52 +737,13 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
       canvas.addEventListener('pointerup', onUp)
       canvas.addEventListener('pointercancel', onUp)
 
-      // ---------- 尺寸 / RT / 后处理 ----------
-      const sizeV = new THREE.Vector2()
-      const getBufSize = () => {
-        renderer.getDrawingBufferSize(sizeV)
-        return { w: Math.max(2, Math.round(sizeV.x)), h: Math.max(2, Math.round(sizeV.y)) }
-      }
-      const { w: bw0, h: bh0 } = getBufSize()
-      const depthTex = new THREE.DepthTexture(bw0, bh0)
-      depthTex.type = THREE.FloatType
-      const rt = new THREE.WebGLRenderTarget(bw0, bh0, {
-        minFilter: THREE.NearestFilter,
-        magFilter: THREE.NearestFilter,
-        format: THREE.RGBAFormat,
-        type: THREE.HalfFloatType,
-        depthBuffer: true,
-        depthTexture: depthTex,
-      })
-      const postUniforms = {
-        tColor: { value: rt.texture },
-        tDepth: { value: depthTex },
-        uRes: { value: new THREE.Vector2(bw0, bh0) },
-        uNear: { value: camera.near },
-        uFar: { value: camera.far },
-        uInvProj: { value: new THREE.Matrix4() },
-        uInvView: { value: new THREE.Matrix4() },
-      }
-      const postMat = new THREE.ShaderMaterial({
-        vertexShader: POST_VERT,
-        fragmentShader: POST_FRAG,
-        glslVersion: THREE.GLSL3,
-        uniforms: postUniforms,
-        depthTest: false,
-        depthWrite: false,
-      })
-      const postQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), postMat)
-      postScene.add(postQuad)
-
+      // ---------- 尺寸 ----------
       const resize = () => {
         const w = host.clientWidth || 320
         const h = host.clientHeight || 380
         renderer.setSize(w, h, false)
         camera.aspect = w / h
         camera.updateProjectionMatrix()
-        const { w: bw, h: bh } = getBufSize()
-        rt.setSize(bw, bh)
-        postUniforms.uRes.value.set(bw, bh)
         markDirty()
       }
       const ro = new ResizeObserver(resize)
@@ -889,17 +761,29 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
         levels: () => levels.map((l) => ({ cents: l.priceCents, buy: l.buyQty, sell: l.sellQty, sold: l.soldQty })),
         span: () => view.span,
         center: () => view.camY,
+        /** 在视口坐标处做一次拾取，返回命中的档（e2e 诊断/兜底用） */
+        pickAt: (px: number, py: number) => {
+          if (!pickMesh) return null
+          const rect = canvas.getBoundingClientRect()
+          ndc.set(((px - rect.left) / rect.width) * 2 - 1, -((py - rect.top) / rect.height) * 2 + 1)
+          raycaster.setFromCamera(ndc, camera)
+          for (const hit of raycaster.intersectObject(pickMesh, false)) {
+            const bin = work.picks[hit.instanceId ?? -1]
+            if (bin) return { cents: bin.repCents, kind: bin.kind }
+          }
+          return null
+        },
         zoomBy,
-        projectPrice: (cents: number, side: 1 | -1 = 1) => {
-          // 投影到该档所在合并枝的拾取球心——e2e 用它定位点击点
+        projectPrice: (cents: number, side: 1 | -1 | 0 = 1) => {
+          // 投影到该档所在合并枝的拾取球心——e2e 用它定位点击点（0 = 已成交枯枝）
           const y = cents / 100
-          const bins = side > 0 ? work.bins.sell : work.bins.buy
+          const bins = side > 0 ? work.bins.sell : side < 0 ? work.bins.buy : work.bins.sold
           const bin = bins.find((b) => y >= b.lo - 1e-6 && y <= b.hi + 1e-6)
           if (bin?.pick) {
             // layoutBranches 存好的拾取球心，投影/点击同一位置
             projV.set(bin.pick.x, bin.pick.y, bin.pick.z).project(camera)
           } else {
-            projV.set(side * (outlineRadiusAt(y) + 0.9), y, 0).project(camera)
+            projV.set((side || 1) * (outlineRadiusAt(y) + 0.9), y, 0).project(camera)
           }
           if (projV.z > 1 || projV.z < -1) return null
           const rect = canvas.getBoundingClientRect()
@@ -949,18 +833,19 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
         activeMajors.count = mi
         activeMajors.instanceMatrix.needsUpdate = true
 
-        // pass 1：数据缓冲 → pass 2：全屏后处理上屏
-        postUniforms.uInvProj.value.copy(camera.projectionMatrixInverse)
-        postUniforms.uInvView.value.copy(camera.matrixWorld)
-        renderer.setRenderTarget(rt)
+        // 单 pass 直绘上屏
         renderer.render(scene, camera)
-        renderer.setRenderTarget(null)
-        renderer.render(postScene, postCam)
       }
-      // 按需渲染：无逐帧动画，只有交互 / 改尺寸 / 回前台才置脏画一帧
+      // 按需渲染：只有交互 / 改尺寸 / 回前台才画；交互后的沸腾窗口里继续逐帧
+      // 重画并推进共享种子（每 2 帧进 1 ≈ 30fps），笔触肉眼可见地重排，停手即静
       const tick = () => {
         raf = requestAnimationFrame(tick)
         if (document.hidden || !dirty) return
+        if (performance.now() < boilUntil) {
+          boilFrame += 1
+          if (boilFrame % 2 === 0) boilSeed.value = (boilSeed.value + 1) % 1024
+          dirty = true
+        }
         dirty = false
         renderFrame()
       }
@@ -977,10 +862,6 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
         canvas.removeEventListener('pointercancel', onUp)
         delete (canvas as HTMLCanvasElement & { __tree?: unknown }).__tree
         labelHost.remove()
-        rt.dispose()
-        depthTex.dispose()
-        postQuad.geometry.dispose()
-        postMat.dispose()
         trunkGeo.dispose()
         trunkMat.dispose()
         groundGeo.dispose()
@@ -998,7 +879,7 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
         sellMat.dispose()
         fallenMat.dispose()
         pickMat.dispose()
-        for (const mesh of [buyBranchMesh, sellBranchMesh, buyLeafMesh, sellLeafMesh, pickMesh, fallenMesh]) {
+        for (const mesh of [buyBranchMesh, sellBranchMesh, soldBranchMesh, buyLeafMesh, sellLeafMesh, pickMesh]) {
           if (mesh) {
             scene.remove(mesh)
             mesh.dispose()
@@ -1026,7 +907,8 @@ export function TreeTrunk({ stockName, onPick }: { stockName: string; onPick: (p
       <div className="tree-legend">
         <span className="dot buy">待买枝 · 左</span>
         <span className="dot sell">待卖枝 · 右</span>
-        <span className="dot fallen">落叶 · 已卖（后景）</span>
+        <span className="dot leaf">绿叶 · 聚合档数</span>
+        <span className="dot fallen">枯枝 · 已成交（更长）</span>
         <span className="hint">滚轮缩放 · 拖动攀爬 · 点枝看明细</span>
       </div>
     </div>

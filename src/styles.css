@@ -573,7 +573,7 @@ button { font-family: inherit; }
   overflow: hidden;
 }
 .tree-host {
-  height: 400px;
+  height: clamp(500px, 64vh, 680px);
   position: relative;
 }
 .tree-host canvas {
@@ -603,6 +603,7 @@ button { font-family: inherit; }
 }
 .tree-legend .dot.buy::before { background: #5b8fd9; }
 .tree-legend .dot.sell::before { background: #d95f57; }
+.tree-legend .dot.leaf::before { background: #5f9a4a; }
 .tree-legend .dot.fallen::before { background: #d9b56a; }
 .tree-legend .hint { margin-left: auto; }
 /* 价格标签：HTML 覆盖层，任何缩放下都清晰 */

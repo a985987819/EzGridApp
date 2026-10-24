@@ -324,6 +324,15 @@ try {
 
   // 点最密的待卖叶团 → 明细带价格档
   const topCents = tree.topSell.cents
+  // V9.15 画布加高后目标点可能滚出视口/被吸顶头部盖住：滚到位并把吸顶层临时藏掉再取坐标
+  await evaluate(`(() => {
+    const c = document.querySelector('canvas[data-tree="price"]')
+    c.scrollIntoView({ block: 'center' })
+    window.scrollBy(0, -80)
+    const st = document.querySelector('[data-sticky="overview"]')
+    if (st) st.style.visibility = 'hidden'
+  })()`)
+  await sleep(400)
   const pj = await evaluate(`(() => {
     const c = document.querySelector('canvas[data-tree="price"]')
     return JSON.stringify(c.__tree.projectPrice(${topCents}))
@@ -339,6 +348,41 @@ try {
   // V9.2 起导航回明细会恢复上次筛选：当场清掉价格筛选，让 [6] 从干净明细开始
   check('清空树干点击留下的筛选', await clickByText('[data-testid="active-chips"] .filter-chip', '清空筛选'))
   await sleep(400)
+
+  console.log('\n[5.5] 枯枝（已成交）点击跳明细（V9.15）')
+  check('回概览', await nav('overview'))
+  await sleep(900)
+  await evaluate(`(() => {
+    const c = document.querySelector('canvas[data-tree="price"]')
+    if (!c) return
+    c.scrollIntoView({ block: 'center' })
+    window.scrollBy(0, -80)
+    const st = document.querySelector('[data-sticky="overview"]')
+    if (st) st.style.visibility = 'hidden'
+  })()`)
+  await sleep(400)
+  const soldPick = await evaluate(`(() => {
+    const c = document.querySelector('canvas[data-tree="price"]')
+    if (!c || !c.__tree) return null
+    const lv = c.__tree.levels().filter((l) => l.sold > 0)
+    if (!lv.length) return null
+    // 优先找只有已成交、没有待买卖的独立档——点击不会被更近的待成交枝截胡
+    const lonely = lv.filter((l) => l.sell === 0 && l.buy === 0).sort((a, b) => b.sold - a.sold)[0]
+    const pick = lonely ?? lv.sort((a, b) => b.sold - a.sold)[0]
+    return JSON.stringify({ cents: pick.cents, lonely: Boolean(lonely), p: c.__tree.projectPrice(pick.cents, 0) })
+  })()`)
+  check('枯枝档可投影', Boolean(soldPick && JSON.parse(soldPick).p), soldPick ?? '')
+  if (soldPick && JSON.parse(soldPick).p) {
+    const sp = JSON.parse(soldPick)
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: sp.p.x, y: sp.p.y, button: 'left', clickCount: 1 })
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: sp.p.x, y: sp.p.y, button: 'left', clickCount: 1 })
+    await sleep(700)
+    const soldHash = await evaluate('location.hash')
+    check('点枯枝跳明细带价格', soldHash.startsWith('#/trades') && soldHash.includes(`price=${sp.cents}`), soldHash)
+    if (sp.lonely) check('枯枝跳转放开隐藏已完成（showDone=1）', soldHash.includes('showDone=1'), soldHash)
+    check('清掉枯枝留下的筛选', await clickByText('[data-testid="active-chips"] .filter-chip', '清空筛选'))
+    await sleep(400)
+  }
 
   console.log('\n[6] 明细：股票 tab + 抽屉编辑')
   check('切到明细', await nav('trades'))
