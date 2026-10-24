@@ -12,13 +12,14 @@ import { downloadText, toCsv } from '../ui/csv'
 import type { Lot, RawRecord, SellExecution } from '../domain/types'
 
 /** 状态筛选可多选（V9 可叠加）：命中的行要满足每一个勾选的状态 */
-const STATUS_KEYS = ['holding', 'soldout', 'pending', 'buyDateMissing', 'sellDateMissing', 'needsPrice'] as const
+const STATUS_KEYS = ['holding', 'soldout', 'pending', 'exposure', 'buyDateMissing', 'sellDateMissing', 'needsPrice'] as const
 type StatusKey = (typeof STATUS_KEYS)[number]
 
 const STATUS_LABEL: Record<StatusKey, string> = {
   holding: '有剩余',
   soldout: '已卖完',
   pending: '待回补',
+  exposure: '空头敞口',
   buyDateMissing: '缺买入日期',
   sellDateMissing: '缺卖出日期',
   needsPrice: '缺价格',
@@ -89,6 +90,9 @@ function statusMatch(r: Row, key: StatusKey): boolean {
       return r.sell !== null && (r.lot?.remainingQty ?? 0) === 0
     case 'pending':
       return r.sell?.rebuyStatus === 'pending'
+    // 空头敞口：待回补且无买入批次（与概览「卖满后 X 股敞口」同口径，ledger 的 order.exposure）
+    case 'exposure':
+      return r.sell?.rebuyStatus === 'pending' && r.rec.buyPriceCents === null
     case 'buyDateMissing':
       return buyDateOf(r) === null
     case 'sellDateMissing':
@@ -446,7 +450,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
           )}
         </div>
 
-        {/* 已生效条件 chips + 一键复位（README 待办 B/C） */}
+        {/* 已生效条件 chips + 一键复位（每颗 chip 可单独点掉） */}
         {activeChips.length > 0 && (
           <div className="filter-chips" data-testid="active-chips">
             {activeChips.map((c) => (

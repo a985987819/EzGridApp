@@ -109,7 +109,7 @@ export function Overview({
               size="small"
               variant="soft"
               color="app-red"
-              onClick={() => goTrades({ status: ['pending'] })}
+              onClick={() => goTrades({ status: ['exposure'] })}
             >
               卖满后 {qty(t.exposureQty)} 股敞口
             </Tag>

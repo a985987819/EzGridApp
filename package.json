@@ -1,7 +1,7 @@
 {
   "name": "grid-trading",
   "private": true,
-  "version": "0.7.0",
+  "version": "0.9.0",
   "type": "module",
   "description": "网格交易管理 · 按文档 v1.1 规则复现待买/待卖清单与奖励引擎",
   "scripts": {
@@ -11,8 +11,7 @@
     "test": "vitest run --no-file-parallelism",
     "test:watch": "vitest",
     "lint": "eslint .",
-    "e2e": "node e2e/smoke.mjs http://127.0.0.1:5183",
-    "e2e:build": "npm run build && node e2e/smoke.mjs http://127.0.0.1:5183"
+    "e2e": "node e2e/smoke.mjs http://127.0.0.1:5173"
   },
   "dependencies": {
     "animal-island-ui": "^2.3.0",

@@ -3,7 +3,7 @@
  * 股票排序 → 导入 → 基准校验 → 分股 tab → 明细编辑/删除/恢复 → 跨数据跳转/URL 筛选/可叠加筛选/一键复位
  * → 挂单区间 → 启用开关 → 手动卖出
  *
- *   node e2e/smoke.mjs http://127.0.0.1:5183
+ *   node e2e/smoke.mjs http://127.0.0.1:5173
  */
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const PORT = 9444
-const BASE = (process.argv[2] ?? 'http://127.0.0.1:5183').replace(/\/+$/, '')
+const BASE = (process.argv[2] ?? 'http://127.0.0.1:5173').replace(/\/+$/, '')
 const OUT = join(process.cwd(), 'e2e', 'out')
 mkdirSync(OUT, { recursive: true })
 
@@ -522,6 +522,20 @@ try {
   await sleep(600)
   check('跳到明细并带缺卖出日期筛选', (await evaluate('location.hash')).includes('status=sellDateMissing'))
   check('缺卖出日期 9 行', (await headCount()) === 9, String(await headCount()))
+
+  // 概览 · 敞口标签 → 空头敞口（口径与标签数字一致：待回补 ∧ 无买入批次）
+  await nav('overview')
+  check(
+    '点「卖满后 X 股敞口」标签',
+    await evaluate(`(() => {
+      const tag = [...document.querySelectorAll('[class*="animal-tag"]')].find(e => e.textContent.includes('股敞口'))
+      if (!tag) return false
+      tag.click(); return true
+    })()`),
+  )
+  await sleep(600)
+  check('跳到明细并带空头敞口筛选', (await evaluate('location.hash')).includes('status=exposure'))
+  check('空头敞口 4 行（R60–63，与敞口 2,000 股同口径）', (await headCount()) === 4, String(await headCount()))
 
   // 统计 · 月度成交 → 该月日期区间
   await nav('stats')

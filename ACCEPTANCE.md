@@ -99,5 +99,7 @@ npm run test     # 108 条单测，含真实文件 dry-run 与 §09 的 24 条�
 npm run lint
 npm run build
 npm run dev      # 另开一个终端
-npm run e2e      # 390×844 移动端视口跑主链路，截图落在 e2e/out/
+npm run e2e      # 390×844 移动端视口跑主链路（对 dev server 5173），截图落在 e2e/out/
+# 要对构建产物跑：npm run build 后另开终端 npx vite preview（默认 4173），
+# 再执行 node e2e/smoke.mjs http://127.0.0.1:4173
 ```

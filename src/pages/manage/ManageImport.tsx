@@ -224,7 +224,7 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
               </div>
             )}
             <p className="tiny muted" style={{ margin: '8px 0 0' }}>
-              点异常行 → 跳到明细页并定位到那一行。
+              点异常行 → 跳到明细页并定位到那一行；若这份文件还没「写入本地」，明细会是空的。
             </p>
           </Card>
 
