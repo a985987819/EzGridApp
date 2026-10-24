@@ -291,9 +291,9 @@ try {
   await sleep(400)
   check('收起后面板消失', !(await bodyText()).includes('净持仓构成'))
 
-  console.log('\n[5] 3D 价格树干（V9.6，替代价格表格）')
+  console.log('\n[5] 2D 价格树（V9.18 Canvas 手绘线条风，替代价格表格）')
   await clickByText('.stock-tabs > *', '柳工')
-  await sleep(1400) // three 动态 chunk + 首帧
+  await sleep(800) // 首帧（Canvas 直绘，无需等 chunk）
   check(
     '树干画布出现',
     Boolean(await evaluate(`Boolean(document.querySelector('canvas[data-tree="price"]'))`)),
@@ -322,7 +322,21 @@ try {
   const span1 = await evaluate(`document.querySelector('canvas[data-tree="price"]').__tree.span()`)
   check('滚轮缩放生效（span 变小）', span1 < span0 * 0.9, `${span0} → ${span1}`)
 
-  // V9.17 左右拖拽转视角：真实鼠标拖（按下→横移 120px→松手；dragMoved>7 不触发拾取）
+  // 缩到最远看整条价格轴（标签密度 / 枝干比例 / 云朵），拍完恢复原视野——
+  // 缩远会把 camY 钳到 span/2（视野离开数据区），不恢复的话后面点击全落空
+  const view0 = await evaluate(`(() => {
+    const c = document.querySelector('canvas[data-tree="price"]').__tree
+    return JSON.stringify({ span: c.span(), center: c.center() })
+  })()`)
+  await evaluate(`document.querySelector('canvas[data-tree="price"]').__tree.zoomBy(0.05)`)
+  await sleep(300)
+  const treeFarShot = await send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync(join(OUT, 'mobile-tree-zoomout.png'), Buffer.from(treeFarShot.data, 'base64'))
+  const { span: v0span, center: v0center } = JSON.parse(view0)
+  await evaluate(`document.querySelector('canvas[data-tree="price"]').__tree.setView(${v0span}, ${v0center})`)
+  await sleep(200)
+
+  // V9.18 左右拖动平移：真实鼠标拖（按下→横移 120px→松手；dragMoved>7 不触发拾取）
   // 画布多半在视口外/被吸顶层盖住：滚到位并临时藏掉吸顶层，否则 CDP 坐标落空
   await evaluate(`(() => {
     const c = document.querySelector('canvas[data-tree="price"]')
@@ -332,7 +346,7 @@ try {
     if (st) st.style.visibility = 'hidden'
   })()`)
   await sleep(400)
-  const ang0 = await evaluate(`document.querySelector('canvas[data-tree="price"]').__tree.angle()`)
+  const pan0 = await evaluate(`document.querySelector('canvas[data-tree="price"]').__tree.panX()`)
   const rectC = await evaluate(`(() => {
     const r = document.querySelector('canvas[data-tree="price"]').getBoundingClientRect()
     return JSON.stringify({ cx: Math.round(r.left + r.width / 2), cy: Math.round(r.top + r.height / 2) })
@@ -343,10 +357,10 @@ try {
   await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: cx + 120, y: cy, buttons: 1 })
   await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: cx + 120, y: cy, button: 'left', clickCount: 1 })
   await sleep(300)
-  const ang1 = await evaluate(`document.querySelector('canvas[data-tree="price"]').__tree.angle()`)
-  check('左右拖拽转视角生效', typeof ang1 === 'number' && Math.abs(ang1 - ang0) > 0.1, `${ang0} → ${ang1}`)
-  // 拖拽把视角转走了：转回正面，后面 projectPrice 的点击不受影响
-  await evaluate(`document.querySelector('canvas[data-tree="price"]').__tree.orbitBy(-120)`)
+  const pan1 = await evaluate(`document.querySelector('canvas[data-tree="price"]').__tree.panX()`)
+  check('左右拖动平移生效（树干可拖离中心）', typeof pan1 === 'number' && Math.abs(pan1 - pan0) >= 115, `${pan0} → ${pan1}`)
+  // 拖走的树平移回中，后面 projectPrice 的点击不受影响
+  await evaluate(`document.querySelector('canvas[data-tree="price"]').__tree.panXBy(-120)`)
   await sleep(200)
 
   // 点最密的待卖叶团 → 明细带价格档

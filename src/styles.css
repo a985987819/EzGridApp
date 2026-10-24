@@ -606,13 +606,6 @@ button { font-family: inherit; }
 .tree-legend .dot.leaf::before { background: #5f9a4a; }
 .tree-legend .dot.fallen::before { background: #d9b56a; }
 .tree-legend .hint { margin-left: auto; }
-/* 价格标签：HTML 覆盖层，任何缩放下都清晰 */
-.tree-labels {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  overflow: hidden;
-}
 /* V9.7：日历事件条撑满格宽（库里 chip 是收缩布局），聚合条才能左右分布 */
 /* V9.13：统计条占格子高度一半——bar-top 库里已算到格子垂直中点，从这起落到格底 */
 [class*='animal-event-'] {
@@ -651,21 +644,6 @@ button { font-family: inherit; }
 }
 .cal-day-stat { font-size: 9px; letter-spacing: -0.1px; }
 .cal-day-stat .amt { font-weight: 400; }
-/* V9.17：价签钉在树干正中（JS 算 transform 水平居中），底色加实一点盖住树干纹理 */
-.tree-label {
-  position: absolute;
-  top: 0;
-  left: 0;
-  font-size: 11px;
-  font-weight: 600;
-  color: #6b4a2e;
-  background: rgba(255, 250, 238, 0.95);
-  border: 1px solid rgba(203, 191, 169, 0.6);
-  border-radius: 999px;
-  padding: 1px 7px;
-  line-height: 1.4;
-  font-variant-numeric: tabular-nums;
-}
 
 /* 数据块里可点的行（跨数据跳转）：按下有反馈，扫一眼知道能点 */
 .line.clickable { cursor: pointer; }
