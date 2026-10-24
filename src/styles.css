@@ -565,11 +565,11 @@ button { font-family: inherit; }
 .filter-chips.scroll::-webkit-scrollbar { display: none; }
 .filter-chips.scroll > * { flex: 0 0 auto; }
 
-/* 3D 价格树干（V9.6）：手绘插画风的价格纵轴 */
+/* 价格树（V9.22 图鉴素雅风）：纸底 + 墨褐线稿的安静配色 */
 .tree-wrap {
-  border: 1px solid var(--line-strong);
+  border: 1px solid #d9cfb6;
   border-radius: 12px;
-  background: #f7f0dd;
+  background: #f4eee0;
   overflow: hidden;
 }
 .tree-host {
@@ -601,10 +601,10 @@ button { font-family: inherit; }
   border-radius: 50% 50% 50% 4px;
   display: inline-block;
 }
-.tree-legend .dot.buy::before { background: #5b8fd9; }
-.tree-legend .dot.sell::before { background: #d95f57; }
-.tree-legend .dot.leaf::before { background: #5f9a4a; }
-.tree-legend .dot.fallen::before { background: #d9b56a; }
+.tree-legend .dot.buy::before { background: #6e8aa8; }
+.tree-legend .dot.sell::before { background: #b0685c; }
+.tree-legend .dot.agg::before { background: #8d7f68; width: 6px; height: 6px; }
+.tree-legend .dot.fallen::before { background: #a38f70; }
 .tree-legend .hint { margin-left: auto; }
 /* V9.7：日历事件条撑满格宽（库里 chip 是收缩布局），聚合条才能左右分布 */
 /* V9.13：统计条占格子高度一半——bar-top 库里已算到格子垂直中点，从这起落到格底 */

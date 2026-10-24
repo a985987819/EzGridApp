@@ -1,29 +1,22 @@
 /**
- * 2D 价格树（V9.18）：概览页的纵轴是一棵手绘线条风的 Canvas 2D 树。
+ * 2D 价格树（V9.18）：概览页的纵轴是一棵 Canvas 2D 的「图鉴素雅风」树。
  *
- * V9.21 数据牌 + 参考插画风配色：
- *   枝加粗，枝梢挂圆角数据牌（同侧纵向避让不重叠）——待买/待卖牌写「买/卖 价 × 份额」，
- *   枯枝牌写「已盈利 +¥xx」（该价位已成交盈利合计，成本缺失的卖出不计）；
- *   合并间距按数据牌行高推算——放大时聚合枝自动分散回原始档位数；
- *   叶色绿/橄榄/黄绿参差，散开的单档枝缀 1~2 片装饰叶；
- *   干体改浅棕、树皮排线加密，整体对齐手绘插画参考。
+ * V9.22 图鉴素雅风（做减法，取代 V9.18~V9.21 的随机抖动插画风）：
+ *   删掉云、装饰叶、树皮排线、树轮与「沸腾」抖动动画——素雅来自统一克制的
+ *   线语言，不靠随机抖动；
+ *   干体 = 细锥形双线勾边 + 极淡水彩晕染；整步价签是钉在树干正中的小泡牌
+ *   （图鉴挂牌），半步档只留左侧短刻度；
+ *   枝 = 统一弧线：同侧同仰角（待卖右上扬 / 待买左上扬 / 枯枝右下垂）、
+ *   根粗梢细收尖，无逐枝随机；聚合档数 = 枝上小点（叶痕）；
+ *   数据牌 = 图鉴注记：单行「买/卖 价 ×份额」，衬线数字、纸色细边、枝梢
+ *   小点引线；枯枝牌「已盈利 ±¥xx」（成本缺失的卖出不计）。
+ *   色板收敛 5 色：纸白 / 墨褐 / 青灰蓝(买) / 赭红(卖) / 枯褐(已成交)。
  *
- * V9.18 改版：弃用 three.js（依赖与 PWA 预缓存不再背 3D 引擎），单个 <canvas>
- * 按需直绘，正交无透视。构图延续 V9.14~V9.17 的手绘插画风——纸底米白、深棕
- * 线稿、低饱和自然色：
- *   树干 = 左右两条带噪声的轮廓曲线（上细下粗）+ 浅木色填充 + 纵向树皮排线，
- *          树干上的横向刻度线当树轮（近景 0.1 一道，拉远换 0.5 / 1）；
- *   树枝 = 二次贝塞尔从粗到细收尖：待买左蓝上扬 / 待卖右红上扬 /
- *          已成交枯黄下垂（更长，垫在树干后面一层）；
- *   装饰 = 浅灰蓝手绘云，世界坐标锚定随滚动移动，贴屏/缩没就跳过。
- * 手绘沸腾：交互后 ~140ms 内每 2 帧进 1 个种子，所有线条抖动随之重排——
- *   笔触肉眼可见地重画；停手即静止，回归按需渲染。
- *
- * 数据逻辑与 V9.9~V9.17 一致：
- *   待买/待卖枝长随数量；相邻档间距 < gap 合并成一枝，枝上「聚合档数」片
- *   绿叶表密度；不同树枝至少隔 0.5 元；拉远时枝长按 span 等比放大（画面
- *   占比恒定）；价签按最小屏幕间距从 1-2-5 档取步长、钉在树干正中；轴全程
- *   线性等比例，视野下沿钳 0。
+ * 数据逻辑与 V9.9~V9.21 一致：
+ *   待买/待卖枝长随数量；相邻档间距 < gap 合并成一枝（gap 按数据牌行高
+ *   CARD_ROW_PX 推算，放大时聚合枝自动分散回原档位数）；拉远时枝长按
+ *   span 等比放大（画面占比恒定）；价签按最小屏幕间距从 1-2-5 档取步长、
+ *   钉在树干正中；轴全程线性等比例，视野下沿钳 0。
  *
  * 交互：滚轮 / 双指捏合缩放，拖动攀爬，左右拖动把整棵树平移出画面中心
  *   （两侧的枝拖过来对着看），点枝跳明细（已成交枝跳转自动放开「隐藏已完成」）。
@@ -47,8 +40,8 @@ const TRUNK_MAX = 300
 const CAM_MAX = 288
 const SPAN_MIN = 0.5
 const SPAN_MAX = 150
-/** 枝上数据牌占的屏幕行高（px）：相邻档间距不足就合并，放大后自动分散回原档位数 */
-const CARD_ROW_PX = 34
+/** 枝上数据牌占的屏幕行高（px，V9.22 单行注记）：相邻档间距不足就合并，放大后自动分散回原档位数 */
+const CARD_ROW_PX = 27
 /** 价签最小屏幕间距（px）：任何缩放下相邻两个数字至少隔这么远 */
 const LABEL_MIN_GAP = 80
 /** 价签步长档位（1-2-5 序列；0.1 档对应 A 股最小报价单位） */
@@ -56,31 +49,19 @@ const LABEL_LADDER = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100]
 /** 树干最多拖离画面中心 ±45% 画布宽：能看两侧的枝，又不至于整棵拖没 */
 const PAN_X_MAX = 0.45
 
-/** 墨色盘（V9.21 参考手绘插画）：纸底 / 灰棕线稿 / 浅棕干体 / 低饱和枝色 */
+/** 墨色盘（V9.22 图鉴素雅风）：纸白 / 墨褐线稿 / 极淡水彩晕染 / 低饱和枝色 */
 const INK = {
-  paper: '#f6efdc',
-  trunk: '#7d6449',
-  wood: '#dcc7a3',
-  buy: '#5f83b5',
-  sell: '#b65c4f',
-  fallen: '#b3935f',
-  cloud: '#fdfbf2',
-  cloudLine: 'rgba(151, 166, 178, 0.45)',
-  cardFill: '#fffdf5',
-  cardLine: 'rgba(139, 122, 98, 0.78)',
-  cardText: '#5c4b38',
+  paper: '#f4eee0',
+  ink: '#5f5344',
+  wash: 'rgba(203, 185, 152, 0.30)',
+  buy: '#6e8aa8',
+  sell: '#b0685c',
+  sold: '#a38f70',
+  tag: '#fcf8ee',
 }
-/** 叶色盘：绿 / 橄榄 / 黄绿参差（V9.21） */
-const LEAF_COLORS = ['#7fa65b', '#a3b168', '#c9c46e', '#6f9a55']
-
-/** 云朵：[高度(元), 横位(元), 尺度]——锚在世界坐标，随攀爬滚动 */
-const CLOUDS: [number, number, number][] = [
-  [16, -4.4, 1.0],
-  [44, 4.8, 0.85],
-  [92, -5.2, 1.1],
-  [150, 4.4, 0.95],
-  [215, -4.6, 1.05],
-]
+const inkA = (a: number) => `rgba(95, 83, 68, ${a})`
+/** 图鉴注记字体：衬线数字（中文回退宋体，标本注记感） */
+const SERIF = 'Georgia, "Noto Serif SC", SimSun, serif'
 
 function aggregate(
   stockName: string,
@@ -115,10 +96,10 @@ function aggregate(
   return [...map.values()].sort((a, b) => a.priceCents - b.priceCents)
 }
 
-/** 价格 → 树干半径（元单位，上细下粗） */
+/** 价格 → 树干半径（元单位，上细下粗；V9.22 收窄成素描细干） */
 function trunkRadiusAt(y: number): number {
   const t = Math.min(1, Math.max(0, (y - TRUNK_MIN) / (TRUNK_MAX - TRUNK_MIN)))
-  return 0.55 - 0.19 * t
+  return 0.26 - 0.12 * t
 }
 
 /** 价格 → 树干外表面半径（枝的锚点） */
@@ -191,115 +172,29 @@ export function TreeTrunk({
     const sx = (wx: number) => W / 2 + view.panX + wx * k
     const sy = (wy: number) => H / 2 + (view.camY - wy) * k
 
-    // ---------- 手绘噪声：全场共用一个种子，沸腾时所有线条一起重排 ----------
-    let boilSeed = 0
-    /** 平滑手抖（世界坐标 t 锚定 → 滚动时形状连续；salt 区分线条）→ [-1, 1] */
-    const wob = (t: number, salt: number) =>
-      Math.sin(t * 1.7 + (boilSeed + salt) * 2.13) * 0.55 +
-      Math.sin(t * 3.1 + (boilSeed + salt) * 4.71) * 0.3 +
-      Math.sin(t * 5.7 + (boilSeed + salt) * 7.87) * 0.15
-
-    /** 树干外轮廓半径（元）：贴 3D 版的鼓包手感，加一点沿高的起伏 */
+    // ---------- 树干外轮廓：贴 3D 版的鼓包手感，加一点沿高的起伏（静态、平滑） ----------
     const trunkR = (y: number) =>
       trunkRadiusAt(y) * (1 + 0.05 * Math.sin(y * 0.9 + 1.3) + 0.03 * Math.sin(y * 2.17))
 
-    // ---------- 云（浅灰蓝手绘轮廓，先描后填让外缘只剩一圈线） ----------
-    const drawClouds = (y0: number, y1: number) => {
-      ctx.lineWidth = 1.2
-      for (const [cy, cx0, s] of CLOUDS) {
-        if (cy < y0 - 6 || cy > y1 + 6) continue
-        const rx0 = 0.62 * s * 1.25 * k
-        if (rx0 < 2 || rx0 > W * 0.55) continue // 缩没了/贴满屏都不画
-        for (const [dx, dy, r] of [
-          [0, 0, 0.62],
-          [0.55, -0.08, 0.44],
-          [-0.52, -0.1, 0.4],
-          [0.12, 0.26, 0.4],
-        ] as const) {
-          const px = sx(cx0 + dx * s + wob(cy + dx, 11.3) * 0.06)
-          const py = sy(cy + dy * s)
-          ctx.beginPath()
-          ctx.ellipse(px, py, r * s * 1.25 * k, r * s * 0.8 * k, 0, 0, Math.PI * 2)
-          ctx.strokeStyle = INK.cloudLine
-          ctx.stroke()
-          ctx.fillStyle = INK.cloud
-          ctx.fill()
-        }
-      }
-    }
-
-    // ---------- 树干：轮廓曲线 + 浅木填充 + 树皮排线 + 树轮刻度 ----------
+    // ---------- 树干：细锥形双线勾边 + 极淡水彩晕染（V9.22，无排线无树轮） ----------
     const drawTrunk = (y0: number, y1: number) => {
-      const stepY = 5 / k // ≈5px 一个采样点，抖动分辨率跟着屏幕走
+      const stepY = 5 / k // ≈5px 一个采样点
       const n = Math.max(2, Math.ceil((y1 - y0) / stepY))
       const yAt = (i: number) => y0 + ((y1 - y0) * i) / n
-      const edge = (side: 1 | -1) => {
-        const pts: [number, number][] = []
-        for (let i = 0; i <= n; i += 1) {
-          const y = yAt(i)
-          const r = trunkR(y) + (wob(y * 2.6, side * 3.7) * 1.2) / k
-          pts.push([sx(side * r), sy(y)])
-        }
-        return pts
-      }
-      const L = edge(-1)
-      const R = edge(1)
       ctx.beginPath()
-      L.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)))
-      for (let i = R.length - 1; i >= 0; i -= 1) ctx.lineTo(R[i][0], R[i][1])
+      for (let i = 0; i <= n; i += 1) {
+        const x = sx(-trunkR(yAt(i)))
+        if (i) ctx.lineTo(x, sy(yAt(i)))
+        else ctx.moveTo(x, sy(yAt(i)))
+      }
+      for (let i = n; i >= 0; i -= 1) ctx.lineTo(sx(trunkR(yAt(i))), sy(yAt(i)))
       ctx.closePath()
-      ctx.fillStyle = INK.wood
+      ctx.fillStyle = INK.wash
       ctx.fill()
-      ctx.strokeStyle = INK.trunk
-      ctx.lineWidth = 1.5
+      ctx.strokeStyle = inkA(0.85)
+      ctx.lineWidth = 1.2
       ctx.lineJoin = 'round'
       ctx.stroke()
-
-      const midY = (y0 + y1) / 2
-      const trunkPx = trunkR(midY) * k * 2
-      // 树皮纵排线：树干够宽才画，按宽度决定几根；长波慢抖，别变成规整竖线
-      const cols = trunkPx > 20 ? Math.max(2, Math.min(8, Math.round(trunkPx / 11))) : 0
-      ctx.strokeStyle = 'rgba(125, 100, 73, 0.32)'
-      ctx.lineWidth = 1
-      for (let c = 0; c < cols; c += 1) {
-        const frac = ((c + 0.5) / cols) * 2 - 1
-        ctx.beginPath()
-        for (let i = 0; i <= n; i += 1) {
-          const y = yAt(i)
-          const wx = frac * trunkR(y) * 0.75 + (wob(y * 1.8, c * 7.1) * 3) / k
-          if (i === 0) ctx.moveTo(sx(wx), sy(y))
-          else ctx.lineTo(sx(wx), sy(y))
-        }
-        ctx.stroke()
-      }
-      // 树轮：两侧短刻度（断面年轮感），整元一道贯穿淡线当主刻度
-      const minorStep = view.span < 8 ? 0.1 : view.span < 60 ? 0.5 : 1
-      const majorEvery = Math.round(1 / minorStep)
-      if (trunkPx > 8) {
-        ctx.lineWidth = 1
-        let count = 0
-        for (let m = Math.ceil(y0 / minorStep); m * minorStep <= y1 && count < 300; m += 1) {
-          const y = m * minorStep
-          const r = trunkR(y)
-          const major = m % majorEvery === 0
-          const tick = r * (major ? 0.3 : 0.16)
-          ctx.strokeStyle = major ? 'rgba(125, 100, 73, 0.35)' : 'rgba(125, 100, 73, 0.18)'
-          ctx.beginPath()
-          ctx.moveTo(sx(-r), sy(y))
-          ctx.lineTo(sx(-r + tick), sy(y))
-          ctx.moveTo(sx(r), sy(y))
-          ctx.lineTo(sx(r - tick), sy(y))
-          ctx.stroke()
-          if (major) {
-            ctx.strokeStyle = 'rgba(125, 100, 73, 0.1)'
-            ctx.beginPath()
-            ctx.moveTo(sx(-r), sy(y))
-            ctx.lineTo(sx(r), sy(y))
-            ctx.stroke()
-          }
-          count += 1
-        }
-      }
     }
 
     // ---------- 数据枝叶 ----------
@@ -359,13 +254,12 @@ export function TreeTrunk({
       return u * u * s0 + 2 * u * t * s1 + t * t * s2
     }
 
-    /** 枝上数据牌（V9.21）：同侧纵向避让，连接线回到枝梢 */
+    /** 枝梢注记（V9.22 单行图鉴风）：同侧纵向避让，引线回枝梢 */
     interface CardSpec {
       side: 1 | -1
       tipX: number
       tipY: number
-      seed: number
-      lines: { text: string; color: string }[]
+      segs: { text: string; color: string }[]
     }
     const cards: CardSpec[] = []
 
@@ -375,22 +269,19 @@ export function TreeTrunk({
       for (const bin of bins) {
         if (bin.hi < y0 - 2 || bin.lo > y1 + 2) continue // 视口外不画
         const isSold = bin.kind === 'sold'
-        // 每枝固定随机（锚在 bin.lo），重绘/沸腾都不会跳
-        let seed = Math.round(bin.lo * 7919) + (side > 0 ? 31 : 57)
-        const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647)
         const y = bin.y
         const r = outlineRadiusAt(y)
         const len = isSold
           ? Math.min(2.2, 0.75 + Math.sqrt(bin.qty) / 32) * kzLen
           : Math.min(1.5, 0.5 + Math.sqrt(bin.qty) / 38) * kzLen
         const thick = (1 + Math.min(1.1, Math.sqrt(bin.qty) / 650)) * kzThick * (isSold ? 0.8 : 0.85)
-        const tilt = isSold ? -(0.35 + rnd() * 0.15) : 0.28 + rnd() * 0.3
-        // 世界坐标贝塞尔：根部藏进树干，待成交抬头、枯枝低头下垂
+        // 统一弧线（V9.22）：同侧同仰角、控制点统一略低于弦——先平出再上扬/下垂
+        const up = isSold ? -0.42 : 0.4
         const p0x = side * r * 0.8
-        const p2x = p0x + side * Math.cos(tilt) * len
-        const p2y = y + Math.sin(tilt) * len
-        const p1x = (p0x + p2x) / 2 + (rnd() - 0.5) * 0.2 * len
-        const p1y = (y + p2y) / 2 + (isSold ? -1 : 1) * (0.05 + rnd() * 0.12) * len
+        const p2x = p0x + side * Math.cos(up) * len
+        const p2y = y - Math.sin(up) * len
+        const p1x = p0x + side * Math.cos(up) * len * 0.55
+        const p1y = y + (isSold ? 0.1 : 0.05) * len
         const S0x = sx(p0x)
         const S0y = sy(y)
         const S1x = sx(p1x)
@@ -398,11 +289,11 @@ export function TreeTrunk({
         const S2x = sx(p2x)
         const S2y = sy(p2y)
 
-        // 从粗到细收尖：分段变宽描线，圆头衔接（V9.21 加粗到能撑起数据牌）
-        const M = 12
+        // 从粗到细收尖：分段变宽描线，圆头衔接
+        const M = 16
         const w0 = Math.max(2, 0.17 * thick * k)
-        const w1 = Math.max(0.9, w0 * 0.3)
-        ctx.strokeStyle = isSold ? INK.fallen : bin.kind === 'sell' ? INK.sell : INK.buy
+        const w1 = Math.max(0.7, w0 * 0.3)
+        ctx.strokeStyle = isSold ? INK.sold : bin.kind === 'sell' ? INK.sell : INK.buy
         ctx.lineCap = 'round'
         let px = S0x
         let py = S0y
@@ -419,47 +310,38 @@ export function TreeTrunk({
           py = qy
         }
 
-        // 叶：聚合档数 = 叶数（密度），散开后每枝缀 1~2 片装饰叶；绿/橄榄/黄绿参差
-        if (!isSold) {
-          const ls = Math.max(0.55, 1.15 - bin.count * 0.045) * kzThick
-          const long = Math.max(3.5, 0.16 * ls * k)
-          const short = long * 0.38
-          const baseAng = Math.atan2(S2y - S0y, S2x - S0x)
-          const leafN = bin.count > 1 ? Math.min(bin.count, 12) : 2
-          ctx.lineWidth = 0.8
-          for (let m = 0; m < leafN; m += 1) {
-            const t = leafN === 1 ? 0.5 : (m + 0.5) / leafN
-            const lx = bez(S0x, S1x, S2x, t * 0.94 + 0.03)
-            const ly = bez(S0y, S1y, S2y, t * 0.94 + 0.03)
-            const ang = baseAng + (m % 2 === 0 ? -0.95 : 0.95)
-            ctx.fillStyle = LEAF_COLORS[Math.floor(rnd() * LEAF_COLORS.length)]
-            ctx.strokeStyle = 'rgba(84, 110, 58, 0.55)'
+        // 聚合档数 = 枝上小点（叶痕，V9.22）：单档枝不缀点
+        if (bin.count > 1) {
+          const dots = Math.min(bin.count, 8)
+          ctx.fillStyle = isSold ? INK.sold : bin.kind === 'sell' ? INK.sell : INK.buy
+          ctx.globalAlpha = 0.75
+          for (let m = 0; m < dots; m += 1) {
+            const t = 0.42 + (0.38 * m) / (dots - 1)
             ctx.beginPath()
-            ctx.ellipse(lx + Math.cos(ang) * long * 0.4, ly + Math.sin(ang) * long * 0.4, long, short, ang, 0, Math.PI * 2)
+            ctx.arc(bez(S0x, S1x, S2x, t), bez(S0y, S1y, S2y, t), 1.6, 0, Math.PI * 2)
             ctx.fill()
-            ctx.stroke()
           }
+          ctx.globalAlpha = 1
         }
 
-        // 枝上数据牌（V9.21）：买/卖标价与份额；枯枝标该价位已盈利（成本缺失的卖出不计）
+        // 枝梢注记（V9.22）：买/卖标价与份额；枯枝标该价位已盈利（成本缺失的卖出不计）
         if (isSold) {
           cards.push({
             side,
             tipX: S2x,
             tipY: S2y,
-            seed: bin.lo,
-            lines:
+            segs:
               bin.profitCents !== 0
                 ? [
-                    { text: '已盈利', color: INK.cardText },
+                    { text: '已盈利 ', color: inkA(0.8) },
                     {
                       text: `${bin.profitCents > 0 ? '+' : '−'}¥${(Math.abs(bin.profitCents) / 100).toLocaleString('zh-CN')}`,
-                      color: bin.profitCents > 0 ? INK.sell : '#6f9a55',
+                      color: bin.profitCents > 0 ? INK.sell : '#7a9163',
                     },
                   ]
                 : [
-                    { text: '已成交', color: INK.cardText },
-                    { text: `× ${bin.qty.toLocaleString('zh-CN')} 股`, color: INK.fallen },
+                    { text: '已成交 ', color: inkA(0.8) },
+                    { text: `× ${bin.qty.toLocaleString('zh-CN')}`, color: INK.sold },
                   ],
           })
         } else {
@@ -467,10 +349,10 @@ export function TreeTrunk({
             side,
             tipX: S2x,
             tipY: S2y,
-            seed: bin.lo,
-            lines: [
-              { text: `${bin.kind === 'sell' ? '卖' : '买'} ${(bin.repCents / 100).toFixed(2)}`, color: INK.cardText },
-              { text: `× ${bin.qty.toLocaleString('zh-CN')} 股`, color: bin.kind === 'sell' ? INK.sell : INK.buy },
+            segs: [
+              { text: `${bin.kind === 'sell' ? '卖' : '买'} `, color: bin.kind === 'sell' ? INK.sell : INK.buy },
+              { text: `${(bin.repCents / 100).toFixed(2)}`, color: INK.ink },
+              { text: ` ×${bin.qty.toLocaleString('zh-CN')}`, color: inkA(0.72) },
             ],
           })
         }
@@ -484,76 +366,91 @@ export function TreeTrunk({
       }
     }
 
-    /** 数据牌绘制：同侧按枝梢高度排序后纵向避让，绝不重叠 */
+    /** 注记绘制：同侧按枝梢高度排序后纵向避让，绝不重叠（V9.22 单行图鉴注记） */
     const drawCards = () => {
-      ctx.font = '600 10.5px "Segoe UI", system-ui, -apple-system, sans-serif'
-      ctx.textAlign = 'center'
+      ctx.font = `11.5px ${SERIF}`
+      ctx.textAlign = 'left'
       ctx.textBaseline = 'middle'
       for (const side of [-1, 1] as const) {
         const list = cards.filter((c) => c.side === side).sort((a, b) => a.tipY - b.tipY)
         let lastBottom = -Infinity
         for (const c of list) {
-          const w = Math.max(...c.lines.map((l) => ctx.measureText(l.text).width)) + 16
-          const h = 34
+          const w = Math.round(c.segs.reduce((acc, sg) => acc + ctx.measureText(sg.text).width, 0)) + 16
+          const h = 21
           let cy = c.tipY
-          if (cy - h / 2 < lastBottom + 4) cy = lastBottom + 4 + h / 2
+          if (cy - h / 2 < lastBottom + 5) cy = lastBottom + 5 + h / 2
           lastBottom = cy + h / 2
-          const cx = Math.min(
-            W - w / 2 - 2,
-            Math.max(w / 2 + 2, c.tipX + side * (10 + w / 2)),
-          )
-          // 连接线：枝梢 → 牌边（先画，压在牌下面）
-          ctx.strokeStyle = INK.cardLine
-          ctx.lineWidth = 1
+          const innerX = c.tipX + side * 16
+          const bx = Math.max(4, Math.min(W - w - 4, side > 0 ? innerX : innerX - w))
+          // 引线：枝梢小点 → 牌边（先画，压在牌下面）
+          ctx.fillStyle = inkA(0.9)
+          ctx.beginPath()
+          ctx.arc(c.tipX, c.tipY, 1.4, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.strokeStyle = inkA(0.45)
+          ctx.lineWidth = 0.8
           ctx.beginPath()
           ctx.moveTo(c.tipX, c.tipY)
-          ctx.lineTo(cx - side * (w / 2), cy)
+          ctx.lineTo(side > 0 ? bx : bx + w, cy)
           ctx.stroke()
-          ctx.save()
-          ctx.translate(cx, cy)
-          ctx.rotate(wob(c.seed, side * 9.1) * 0.012)
           ctx.beginPath()
-          ctx.roundRect(-w / 2, -h / 2, w, h, 9)
-          ctx.fillStyle = INK.cardFill
+          ctx.roundRect(bx, cy - h / 2, w, h, 4)
+          ctx.fillStyle = INK.tag
           ctx.fill()
-          ctx.strokeStyle = INK.cardLine
+          ctx.strokeStyle = inkA(0.38)
           ctx.stroke()
-          c.lines.forEach((l, i) => {
-            ctx.fillStyle = l.color
-            ctx.fillText(l.text, 0, i === 0 ? -7.5 : 7.5)
-          })
-          ctx.restore()
+          let tx = bx + 8
+          for (const sg of c.segs) {
+            ctx.fillStyle = sg.color
+            ctx.fillText(sg.text, tx, cy + 0.5)
+            tx += ctx.measureText(sg.text).width
+          }
         }
       }
     }
 
-    // ---------- 价签：钉在树干正中的手绘纸牌（1-2-5 档步长） ----------
+    // ---------- 轴刻度（V9.22）：整步 = 钉在树干正中的小泡牌；半步 = 左侧短刻度 ----------
     const labelStep = (span: number, heightPx: number) => {
       const raw = (LABEL_MIN_GAP * span) / Math.max(1, heightPx)
       return LABEL_LADDER.find((s) => s >= raw) ?? LABEL_LADDER[LABEL_LADDER.length - 1]
     }
 
-    const drawLabels = (y0: number, y1: number) => {
+    const drawAxis = (y0: number, y1: number) => {
       const step = labelStep(view.span, H)
-      ctx.font = '600 11px "Segoe UI", system-ui, -apple-system, sans-serif'
+      const half = step / 2
+      ctx.lineWidth = 1
+      let count = 0
+      for (let m = Math.ceil((y0 + half * 0.01) / half); m * half <= y1 && count < 400; m += 1) {
+        const y = m * half
+        if (Math.abs(y / step - Math.round(y / step)) < 1e-6) continue // 整步处画泡牌
+        const py = sy(y)
+        if (py < -4 || py > H + 4) continue
+        const r = trunkR(y)
+        ctx.strokeStyle = inkA(0.3)
+        ctx.beginPath()
+        ctx.moveTo(sx(-r - 5), py)
+        ctx.lineTo(sx(-r + 2), py)
+        ctx.stroke()
+        count += 1
+      }
+      ctx.font = `11.5px ${SERIF}`
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
       for (let m = Math.ceil((y0 + 0.1) / step); m * step <= y1 - 0.1; m += 1) {
         const y = m * step
         const py = sy(y)
         if (py < -12 || py > H + 12) continue
-        const px = sx(0) + wob(y, 5.5) * 0.8
         const text = step < 1 ? y.toFixed(1) : String(Math.round(y))
-        const w = ctx.measureText(text).width + 12
+        const w = ctx.measureText(text).width + 14
         ctx.beginPath()
-        ctx.roundRect(px - w / 2, py - 9, w, 18, 9)
-        ctx.fillStyle = 'rgba(255, 250, 238, 0.95)'
+        ctx.roundRect(sx(0) - w / 2, py - 10, w, 20, 10)
+        ctx.fillStyle = INK.tag
         ctx.fill()
-        ctx.strokeStyle = 'rgba(203, 191, 169, 0.8)'
-        ctx.lineWidth = 1
+        ctx.strokeStyle = inkA(0.4)
+        ctx.lineWidth = 0.9
         ctx.stroke()
-        ctx.fillStyle = '#6b4a2e'
-        ctx.fillText(text, px, py + 0.5)
+        ctx.fillStyle = inkA(0.95)
+        ctx.fillText(text, sx(0), py + 0.5)
       }
     }
 
@@ -576,13 +473,12 @@ export function TreeTrunk({
       work.bins.buy = groupLevels(buyList, (l) => l.buyQty, gap, 'buy')
 
       cards.length = 0
-      drawClouds(y0, y1)
       drawSide(work.bins.sold, 1, y0, y1) // 枯枝垫底（树干后面）
       drawTrunk(y0, y1)
       drawSide(work.bins.sell, 1, y0, y1)
       drawSide(work.bins.buy, -1, y0, y1)
       drawCards()
-      drawLabels(y0, y1)
+      drawAxis(y0, y1) // 泡牌最后画，压住枝根保持干面干净
     }
 
     // ---------- 交互：滚轮 / 捏合缩放，拖动攀爬 + 左右平移，点枝跳明细 ----------
@@ -592,32 +488,25 @@ export function TreeTrunk({
     let pinchMidY = 0
     let dragMoved = 0
     let dirty = true
-    /** 手绘沸腾窗口：交互后的这段时间里持续重画并推进种子，笔触肉眼可见地重排 */
-    let boilUntil = 0
-    let boilFrame = 0
     const markDirty = () => {
       dirty = true
-    }
-    const boil = () => {
-      boilUntil = performance.now() + 140
-      markDirty()
     }
 
     // 手指往下拖 → 树往下走 → 看更高价（和地图 / 列表同向）；左右拖 → 整棵树跟手平移
     const panBy = (dyPx: number) => {
       view.camY += dyPx * (view.span / (H || 1))
       clampView()
-      boil()
+      markDirty()
     }
     const panXBy = (dxPx: number) => {
       view.panX += dxPx
       clampView()
-      boil()
+      markDirty()
     }
     const zoomBy = (factor: number) => {
       view.span /= factor
       clampView()
-      boil()
+      markDirty()
     }
 
     const onWheel = (e: WheelEvent) => {
@@ -753,17 +642,11 @@ export function TreeTrunk({
       },
     }
 
-    // 按需渲染：交互后的沸腾窗口里继续逐帧重画并推进共享种子（每 2 帧进 1
-    // ≈ 30fps），笔触肉眼可见地重排，停手即静
+    // 按需渲染：只有交互 / 改尺寸 / 回前台才重画（V9.22 去掉沸腾抖动，静态即素雅）
     let raf = 0
     const tick = () => {
       raf = requestAnimationFrame(tick)
       if (document.hidden || !dirty) return
-      if (performance.now() < boilUntil) {
-        boilFrame += 1
-        if (boilFrame % 2 === 0) boilSeed = (boilSeed + 1) % 1024
-        dirty = true
-      }
       dirty = false
       renderFrame()
     }
@@ -789,8 +672,8 @@ export function TreeTrunk({
       <div className="tree-legend">
         <span className="dot buy">待买枝 · 左</span>
         <span className="dot sell">待卖枝 · 右</span>
-        <span className="dot leaf">叶 · 聚合档数</span>
         <span className="dot fallen">枯枝 · 已盈利</span>
+        <span className="dot agg">枝上点 · 聚合档数</span>
         <span className="hint">滚轮缩放 · 拖动攀爬 / 平移 · 点枝看明细</span>
       </div>
     </div>
