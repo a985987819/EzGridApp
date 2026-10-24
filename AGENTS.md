@@ -61,7 +61,7 @@ store/useApp（唯一写库入口，全部动作写 auditLogs）
 | 计划价 P8 | plans 只影响展示/导出，永不参与计算 |
 | 软删除 | `deletedAt` 非空的行不参与一切派生；导入幂等按 importKey，同 key 不覆盖 |
 | 基准 | `defaults.ts` BASELINE 只对「26年网格记录」fixture 成立，金额 ±1 元容差（E 列三位小数取整）；改任何派生逻辑跑 `io/baseline.spec.ts` 是红线 |
-| 价格树 | `components/TreeTrunk.tsx` = Canvas 2D 单画布手绘线条风（V9.18，无 three.js）。e2e 桥 `canvas.__tree`：levels/span/center/panX/panXBy/setView/pickAt/zoomBy/projectPrice。命中检测按圆心距离最近者胜、等距才按 待卖→待买→枯枝 |
+| 价格树 | `components/TreeTrunk.tsx` = Canvas 2D 单画布手绘线条风（V9.18，无 three.js；V9.21 枝上数据牌）。合并粒度由 `CARD_ROW_PX=34`（数据牌行高）按当前缩放推算——放大时聚合枝自动分散回原档位数，无固定 0.5 元下限；每枝挂圆角数据牌（买/卖 价×份额、枯枝「已盈利+¥xx」=该价位 soldProfitCents 合计），同侧纵向避让不重叠；e2e 桥 `canvas.__tree`：levels/span/center/panX/panXBy/setView/pickAt/zoomBy/projectPrice（projectPrice 返回所在合并组的 repCents——点击跳的是组内代表档，不是所选档）。命中检测按圆心距离最近者胜、等距才按 待卖→待买→枯枝 |
 
 ## ID 前缀约定
 
