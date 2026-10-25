@@ -1,5 +1,5 @@
 import Dexie, { type Table } from 'dexie'
-import type { Account, AuditLog, ExtraTarget, RawRecord, RebuyExecution, StockConfig, TradePlan } from '../domain/types'
+import type { Account, AuditLog, ExtraTarget, HedgeLink, RawRecord, RebuyExecution, StockConfig, TradePlan } from '../domain/types'
 
 export interface MetaRow {
   key: string
@@ -27,6 +27,7 @@ class GridTradingDB extends Dexie {
   plans!: Table<TradePlan, string>
   extraTargets!: Table<ExtraTarget, string>
   accounts!: Table<Account, string>
+  hedges!: Table<HedgeLink, string>
 
   constructor() {
     super('grid-trading')
@@ -52,6 +53,10 @@ class GridTradingDB extends Dexie {
     // V7：账户维度
     this.version(5).stores({
       accounts: 'id, name',
+    })
+    // V9.26：先卖后买挂钩（裸卖 → 高位批次的分配，活跃与否纯派生）
+    this.version(6).stores({
+      hedges: 'id, sellRow',
     })
   }
 }

@@ -133,6 +133,16 @@ export interface SellExecution {
   lotId: string | null
   /** 关联的自动卖出目标（§7.1），派生后回填 */
   targetId: string | null
+  /**
+   * 挂钩暂记卖出（V9.26）：这条卖不是真实成交，是裸卖挂钩在高位批次上的
+   * 暂记（按 卖价−买价 记负盈利）；sourceRow 指向被挂的买入行。
+   */
+  hedgedFromSellRow?: number
+  /**
+   * 裸卖被挂钩（V9.26）：盈利暂缓（profitCents 置 null），买回后按回补价
+   * 结算；一直不买回则挂钩暂记的负盈利就是真实亏损。
+   */
+  hedgedHold?: boolean
 }
 
 /** 计划价（P8）：只挂在页面上与导出里，不动真实成交与任何计算 */
@@ -152,6 +162,20 @@ export interface ExtraTarget {
   lotId: string
   priceCents: number
   qty: number
+  at: number
+}
+
+/**
+ * 先卖后买挂钩（V9.26）：裸卖在未回补期间人工指定挂到哪些未卖的高位批次上。
+ * 纯派生输入——活跃条件由 buildLedger 判定（裸卖 + 无回补成交），回补一出现
+ * 挂钩即失效（批次复原），撤销成交又自动恢复；这里只存分配，不存状态。
+ */
+export interface HedgeLink {
+  /** hedge:<sellRow> */
+  id: string
+  sellRow: number
+  /** 挂到哪些买入行、各挂多少股（合计应等于卖单股数） */
+  items: { row: number; qty: number }[]
   at: number
 }
 
@@ -272,7 +296,16 @@ export interface MonthlyBucket {
 }
 
 export interface Anomaly {
-  kind: 'needsPrice' | 'needsCost' | 'dateMissing' | 'negativeProfit' | 'targetOverflow' | 'oversell'
+  kind:
+    | 'needsPrice'
+    | 'needsCost'
+    | 'dateMissing'
+    | 'negativeProfit'
+    | 'targetOverflow'
+    | 'oversell'
+    | 'hedgeInvalid'
+    | 'hedgeOverflow'
+    | 'hedgeMismatch'
   sourceRow: number
   stockName: string
   detail: string

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Button, Card, Drawer, Input, Modal, Select, Switch, Tag, notificationOpen } from 'animal-island-ui'
 import { useApp } from '../store/useApp'
 import { serialToIso } from '../domain/defaults'
@@ -10,7 +10,7 @@ import { replaceRoute, type TradesQuery } from '../ui/nav'
 import { buildNanoIdIndex } from '../ui/nanoid'
 import { toCents } from '../domain/money'
 import { downloadText, toCsv } from '../ui/csv'
-import type { Lot, RawRecord, SellExecution } from '../domain/types'
+import { TradeItem, buyDateOf, isDone, sellDateOf, type TradeRow } from '../components/TradeItem'
 
 /** 状态筛选可多选（V9 可叠加）：命中的行要满足每一个勾选的状态 */
 const STATUS_KEYS = ['holding', 'soldout', 'pending', 'exposure', 'buyDateMissing', 'sellDateMissing', 'needsPrice'] as const
@@ -40,11 +40,8 @@ type SortBy =
   | 'profitDesc'
   | 'profitAsc'
 
-interface Row {
-  rec: RawRecord
-  lot: Lot | null
-  sell: SellExecution | null
-}
+/** 行集合 = record + 派生 lot / sell（V9.25 起行卡片本体在 components/TradeItem） */
+type Row = TradeRow
 
 const SORT_KEYS: readonly string[] = ['rowDesc', 'rowAsc', 'buyDateDesc', 'buyDateAsc', 'sellDateDesc', 'sellDateAsc', 'profitDesc', 'profitAsc']
 
@@ -58,16 +55,6 @@ const SORT_CHIPS: { key: string; label: string; desc: SortBy; asc: SortBy }[] = 
   { key: 'sellDate', label: '卖出日期', desc: 'sellDateDesc', asc: 'sellDateAsc' },
   { key: 'profit', label: '盈利', desc: 'profitDesc', asc: 'profitAsc' },
 ]
-
-/** 行上的买入日期（可空） */
-function buyDateOf(r: Row): string | null {
-  return r.lot?.buyDate ?? serialToIso(r.rec.buyDateSerial)
-}
-
-/** 行上的卖出日期（可空） */
-function sellDateOf(r: Row): string | null {
-  return r.sell?.soldAt ?? null
-}
 
 /** 日期区间筛选用：卖出日期优先，其次买入日期 */
 function tradeDate(r: Row): string | null {
@@ -103,10 +90,7 @@ function statusMatch(r: Row, key: StatusKey): boolean {
   }
 }
 
-/** 已完成：卖出已落袋（有卖出、没有剩余持仓），也没有待回补挂着——这类行默认从明细里藏起来 */
-function isDone(r: Row): boolean {
-  return r.sell !== null && r.sell.rebuyStatus !== 'pending' && (r.lot === null || r.lot.remainingQty === 0)
-}
+/** 已完成行的判定与隐藏口径在 components/TradeItem（明细行与价格树 hover 共用） */
 
 /** 日期区间的 chip 文案：恰好整月就写成「月份 2026-02」（统计页月度/日历跳转都是整月或单日） */
 function dateChipLabel(from: string, to: string): string {
@@ -147,12 +131,22 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     historyOf,
     addExtraTarget,
     removeExtraTarget,
+    hedges,
+    setHedgeLink,
+    clearHedgeLink,
   } = useApp()
   const [stockFilter, setStockFilter] = useState(urlQuery.stock ?? 'all')
   const [statuses, setStatuses] = useState<StatusKey[]>(() => (urlQuery.status ?? []).filter(isStatusKey))
   const [keyword, setKeyword] = useState(urlQuery.q ?? '')
   const [priceFilter, setPriceFilter] = useState<number | null>(
     typeof urlQuery.price === 'number' ? urlQuery.price : null,
+  )
+  // 价格区间（V9.25）：价格树聚合枝点击跳转——lo..hi 含两端；单档仍走 price 精确匹配
+  const [priceLo, setPriceLo] = useState<number | null>(
+    typeof urlQuery.priceLo === 'number' ? urlQuery.priceLo : null,
+  )
+  const [priceHi, setPriceHi] = useState<number | null>(
+    typeof urlQuery.priceHi === 'number' ? urlQuery.priceHi : null,
   )
   const [fromDate, setFromDate] = useState(urlQuery.from ?? '')
   const [toDate, setToDate] = useState(urlQuery.to ?? '')
@@ -179,6 +173,8 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     setStatuses((q.status ?? []).filter(isStatusKey))
     setKeyword(q.q ?? '')
     setPriceFilter(typeof q.price === 'number' ? q.price : null)
+    setPriceLo(typeof q.priceLo === 'number' ? q.priceLo : null)
+    setPriceHi(typeof q.priceHi === 'number' ? q.priceHi : null)
     setFromDate(q.from ?? '')
     setToDate(q.to ?? '')
     setIdFilter(typeof q.id === 'string' && q.id ? q.id : null)
@@ -194,6 +190,8 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       status: statuses.length > 0 ? statuses : undefined,
       q: keyword || undefined,
       price: priceFilter ?? undefined,
+      priceLo: priceLo ?? undefined,
+      priceHi: priceHi ?? undefined,
       from: fromDate || undefined,
       to: toDate || undefined,
       id: idFilter ?? undefined,
@@ -201,7 +199,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       del: showDeleted || undefined,
       showDone: !hideDone || undefined,
     })
-  }, [stockFilter, statuses, keyword, priceFilter, fromDate, toDate, idFilter, sortBy, showDeleted, hideDone])
+    }, [stockFilter, statuses, keyword, priceFilter, priceLo, priceHi, fromDate, toDate, idFilter, sortBy, showDeleted, hideDone])
 
   // nanoId 索引：展示 / 筛选 / 跳转的唯一行级 id（V9.4）
   const nano = useMemo(() => buildNanoIdIndex(scopedRecords), [scopedRecords])
@@ -241,6 +239,14 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
         const prices = [r.rec.targetPriceCents, r.rec.buyPriceCents, r.sell?.priceCents ?? null, r.rec.earlyBuyPriceCents]
         if (!prices.includes(priceFilter)) return false
       }
+      // 价格区间（聚合枝跳转）：四个价格字段任一落进 [lo, hi] 即命中（与精确 price 同口径的 OR）
+      if (priceLo !== null || priceHi !== null) {
+        const prices = [r.rec.targetPriceCents, r.rec.buyPriceCents, r.sell?.priceCents ?? null, r.rec.earlyBuyPriceCents]
+        const hit = prices.some(
+          (p) => p !== null && (priceLo === null || p >= priceLo) && (priceHi === null || p <= priceHi),
+        )
+        if (!hit) return false
+      }
       if (idFilter !== null && rId !== idFilter) return false
       // 状态多选取交集：勾了几个状态，行必须全都满足
       if (statuses.length > 0 && !statuses.every((k) => statusMatch(r, k))) return false
@@ -259,7 +265,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       return true
     })
     return { filtered: list, noDateHidden: hidden }
-  }, [rows, stockFilter, keyword, priceFilter, statuses, showDeleted, enabledSet, fromDate, toDate, idFilter, nano, hideDone])
+  }, [rows, stockFilter, keyword, priceFilter, priceLo, priceHi, statuses, showDeleted, enabledSet, fromDate, toDate, idFilter, nano, hideDone])
 
   /** 已生效的条件 chips：每颗都能单独点掉 */
   const activeChips = useMemo(() => {
@@ -270,6 +276,15 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       chips.push({ key: `st-${k}`, label: STATUS_LABEL[k], clear: () => setStatuses((s) => s.filter((x) => x !== k)) })
     if (priceFilter !== null)
       chips.push({ key: 'price', label: `价格 ${(priceFilter / 100).toFixed(2)}`, clear: () => setPriceFilter(null) })
+    if (priceLo !== null || priceHi !== null)
+      chips.push({
+        key: 'priceRange',
+        label: `价格 ${(priceLo ?? 0) / 100}~${(priceHi ?? 0) / 100}`,
+        clear: () => {
+          setPriceLo(null)
+          setPriceHi(null)
+        },
+      })
     if (fromDate || toDate)
       chips.push({
         key: 'date',
@@ -285,13 +300,15 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       chips.push({ key: 'id', label: rec ? `行 ${rec.sourceRow}` : `#${idFilter}`, clear: () => setIdFilter(null) })
     }
     return chips
-  }, [stockFilter, statuses, priceFilter, fromDate, toDate, keyword, idFilter, nano])
+  }, [stockFilter, statuses, priceFilter, priceLo, priceHi, fromDate, toDate, keyword, idFilter, nano])
 
-  /** 一键复位：股票 / 状态 / 日期 / 价格 / 关键词 / nanoId 全清（排序与已删除开关不动），已完成恢复默认隐藏 */
+  /** 一键复位：股票 / 状态 / 日期 / 价格（含区间）/ 关键词 / nanoId 全清（排序与已删除开关不动），已完成恢复默认隐藏 */
   function resetFilters() {
     setStockFilter('all')
     setStatuses([])
     setPriceFilter(null)
+    setPriceLo(null)
+    setPriceHi(null)
     setFromDate('')
     setToDate('')
     setKeyword('')
@@ -324,6 +341,83 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   }, [filtered, sortBy])
 
   const current = visible.find((r) => r.rec.sourceRow === openRow) ?? null
+
+  // ---------- V9.26 先卖后买挂钩 ----------
+  const hedgeOf = useMemo(() => new Map(hedges.map((h) => [h.sellRow, h])), [hedges])
+  const sellByRow = useMemo(() => new Map(ledger.sells.map((s) => [s.sourceRow, s])), [ledger.sells])
+  /** 还没回补过的裸卖单（可挂/可改挂）——判定不依赖敞口标记：全额挂住的单敞口已置否 */
+  const openNakedRows = useMemo(() => {
+    const m = new Map<number, boolean>()
+    const recByRow = new Map(scopedRecords.map((r) => [r.sourceRow, r]))
+    for (const o of ledger.orders) {
+      const rec = recByRow.get(o.sourceRow)
+      if (rec && rec.buyPriceCents === null && o.execQty === 0) m.set(o.sourceRow, true)
+    }
+    return m
+  }, [ledger.orders, scopedRecords])
+  const [hedgeDraft, setHedgeDraft] = useState<Record<number, string>>({})
+  useEffect(() => {
+    if (openRow === null) return
+    const h = hedges.find((x) => x.sellRow === openRow)
+    const d: Record<number, string> = {}
+    if (h) for (const it of h.items) d[it.row] = String(it.qty)
+    setHedgeDraft(d)
+  }, [openRow, hedges])
+  /** 候选高位批次：同股票、未卖出、有剩余；可挂量扣除其它裸卖已占的份额 */
+  function hedgeCandidates(row: Row) {
+    const ownByRow = new Map((hedgeOf.get(row.rec.sourceRow)?.items ?? []).map((i) => [i.row, i.qty]))
+    const othersUsed = new Map<number, number>()
+    for (const h of hedges) {
+      if (h.sellRow === row.rec.sourceRow) continue
+      const s = sellByRow.get(h.sellRow)
+      if (!s || s.hedgedHold !== true) continue // 只扣活跃挂钩
+      for (const it of h.items) othersUsed.set(it.row, (othersUsed.get(it.row) ?? 0) + it.qty)
+    }
+    const hasRealSell = new Set(
+      ledger.sells.filter((s) => s.hedgedFromSellRow === undefined).map((s) => s.sourceRow),
+    )
+    return ledger.lots
+      .filter(
+        (l) =>
+          !l.id.startsWith('lot:exec:') &&
+          l.stockName === row.rec.stockName &&
+          l.remainingQty > 0 &&
+          !hasRealSell.has(l.sourceRow),
+      )
+      .map((l) => ({
+        lot: l,
+        available: l.remainingQty + (ownByRow.get(l.sourceRow) ?? 0) - (othersUsed.get(l.sourceRow) ?? 0),
+      }))
+      .filter((c) => c.available > 0)
+      .sort((a, b) => a.lot.sourceRow - b.lot.sourceRow)
+  }
+  async function saveHedge(row: Row) {
+    const soldQty = row.rec.soldQty ?? 0
+    const items: { row: number; qty: number }[] = []
+    for (const [k, v] of Object.entries(hedgeDraft)) {
+      const n = Math.floor(Number(v))
+      if (v.trim() !== '' && Number.isFinite(n) && n > 0) items.push({ row: Number(k), qty: n })
+    }
+    const sum = items.reduce((a, i) => a + i.qty, 0)
+    const cands = hedgeCandidates(row)
+    for (const it of items) {
+      const avail = cands.find((c) => c.lot.sourceRow === it.row)?.available
+      if (avail === undefined || it.qty > avail) {
+        notificationOpen({ message: `第 ${it.row} 行最多挂 ${avail ?? 0} 股`, type: 'warning' })
+        return
+      }
+    }
+    if (sum !== soldQty) {
+      notificationOpen({ message: `挂钩合计 ${sum} 股，要等于卖出 ${soldQty} 股`, type: 'warning' })
+      return
+    }
+    try {
+      await setHedgeLink(row.rec.sourceRow, items)
+      notificationOpen({ message: '已挂钩', description: '高位批次暂记亏损，低位买回后自动复原', type: 'success' })
+    } catch (e) {
+      notificationOpen({ message: '挂钩失败', description: e instanceof Error ? e.message : String(e), type: 'error' })
+    }
+  }
 
   function open(r: Row) {
     const next = { ...BLANK_DRAFT }
@@ -543,75 +637,27 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
         </Card>
       ) : (
         visible.map((r) => {
-          const deleted = Boolean(r.rec.deletedAt)
-          // 待办配色（V9.11）：只标还没做的事——持仓中（含部分卖出）→待卖（目标价/剩余量红）；
-          // 已卖完待回补 / 先卖后买→待买（买入价·回补价/量蓝）；已完成的动作一律不再强调
-          const holding = (r.lot?.remainingQty ?? 0) > 0
-          const awaitingBuy = !holding && r.sell?.rebuyStatus === 'pending'
-          const buyP = r.rec.buyPriceCents ?? r.rec.earlyBuyPriceCents
-          const buyQ = r.lot ? r.lot.qty : r.rec.soldQty ?? 0
+          // V9.26 挂钩状态标签：未回补的裸卖 → 已挂钩/未挂钩；被挂的高位批次 → 挂钩暂记
+          let hedgeTag: ReactNode = null
+          if (r.rec.buyPriceCents === null && (r.rec.soldQty ?? 0) > 0) {
+            if (openNakedRows.has(r.rec.sourceRow)) {
+              hedgeTag = hedgeOf.has(r.rec.sourceRow) ? (
+                <Tag size="small" variant="soft" color="app-teal">已挂钩</Tag>
+              ) : (
+                <Tag size="small" variant="soft" color="app-yellow">裸卖未挂钩</Tag>
+              )
+            }
+          } else if (r.sell && r.sell.hedgedFromSellRow !== undefined) {
+            hedgeTag = <Tag size="small" variant="soft" color="app-orange">挂钩暂记</Tag>
+          }
           return (
-            <Card
+            <TradeItem
               key={r.rec.sourceRow}
-              hoverable
+              row={r}
+              nanoId={nano.rowToId.get(r.rec.sourceRow)}
               onClick={() => open(r)}
-              className={`trade-item${deleted ? ' deleted' : ''}`}
-              data-row={r.rec.sourceRow}
-            >
-              <div className="head">
-                <Tag size="small" variant="soft">{r.rec.origin === 'manual' ? '手动' : `行 ${r.rec.sourceRow}`}</Tag>
-                <span className="tiny muted mono" title={`nanoId ${nano.rowToId.get(r.rec.sourceRow)}`}>
-                  #{nano.rowToId.get(r.rec.sourceRow)}
-                </span>
-                <span className="name">{r.rec.stockName}</span>
-                <div className="spacer" />
-                <span className={`profit ${tone(r.sell?.profitCents ?? null)}`}>
-                  {r.sell ? signedMoney(r.sell.profitCents) : '—'}
-                </span>
-              </div>
-              {/* 待办配色（V9.11）：红=待卖（目标价+剩余量），蓝=待回补买（买入/回补价+量）；已完成不标色 */}
-              <div className="mid">
-                <span className="path num">
-                  {buyP !== null ? (
-                    <span className={awaitingBuy ? 'c-buy' : undefined}>
-                      买 {price(buyP)}
-                      {buyQ > 0 && <b> × {qty(buyQ)}</b>}
-                    </span>
-                  ) : (
-                    '无买入批次'
-                  )}
-                  {r.rec.soldQty ? ` · 卖 ${qty(r.rec.soldQty)}` : ''}
-                  {' → '}
-                  <span className={holding ? 'c-sell' : undefined}>
-                    目标 {price(r.lot?.targetPriceCents ?? r.rec.targetPriceCents)}
-                  </span>
-                </span>
-                <span className={`right-qty num${holding ? ' c-sell' : ''}`}>
-                  {r.lot ? `剩余 ${qty(r.lot.remainingQty)}` : r.rec.soldQty ? `已卖 ${qty(r.rec.soldQty)}` : ''}
-                </span>
-              </div>
-              {/* 买入 / 卖出日期都显示；没有就显示 —（R60–63 是先卖后买，买入日期本来就空） */}
-              <div className="dates num">
-                <span className={buyDateOf(r) === null ? 'missing' : undefined}>
-                  买入 <b>{buyDateOf(r) ?? '—'}</b>
-                </span>
-                <span className="sep" aria-hidden />
-                <span className={sellDateOf(r) === null ? 'missing' : undefined}>
-                  卖出 <b>{sellDateOf(r) ?? '—'}</b>
-                </span>
-              </div>
-              <div className="tag-row">
-                {r.sell?.rebuyStatus === 'pending' && <Tag size="small" variant="soft" color="app-orange">待回补</Tag>}
-                {r.sell?.sellBeforeBuy && <Tag size="small" variant="soft" color="app-teal">先卖后买</Tag>}
-                {r.sell?.dateMissing && <Tag size="small" variant="soft" color="app-yellow">缺卖出日期</Tag>}
-                {buyDateOf(r) === null && (r.lot !== null || r.rec.buyPriceCents !== null) && (
-                  <Tag size="small" variant="soft" color="app-yellow">缺买入日期</Tag>
-                )}
-                {r.sell && r.sell.priceCents === null && <Tag size="small" variant="soft" color="app-red">缺价格</Tag>}
-                {r.rec.editedAt && <Tag size="small" variant="soft" color="purple">改过</Tag>}
-                {deleted && <Tag size="small" variant="soft" color="app-red">已删除</Tag>}
-              </div>
-            </Card>
+              extraTag={hedgeTag}
+            />
           )
         })
       )}
@@ -715,6 +761,17 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                   </div>
                 </div>
 
+                {current.sell?.hedgedHold === true && (
+                  <p className="tiny muted" style={{ margin: '0 0 4px' }}>
+                    已挂钩：盈利暂缓计算——低位买回后按回补价结算；一直不买回则按挂钩暂记为真实亏损。
+                  </p>
+                )}
+                {current.sell?.hedgedFromSellRow !== undefined && (
+                  <p className="tiny muted" style={{ margin: '0 0 4px' }}>
+                    挂钩暂记：这是第 {current.sell.hedgedFromSellRow} 行裸卖暂挂到本批次的份额，买回后自动复原。
+                  </p>
+                )}
+
                 <div className="tag-row">
                   {current.sell?.rebuyStatus === 'pending' && <Tag size="small" variant="soft" color="app-orange">待回补</Tag>}
                   {current.rec.rebuyPriceSource === 'lot' && (
@@ -810,6 +867,67 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                     <p className="tiny muted" style={{ margin: '6px 0 0' }}>
                       分批止盈：手动目标先占份额，剩下的仍挂在 E 列价上；合计超过批次剩余会被截断并标红。
                     </p>
+                  </div>
+                )}
+
+                {/* V9.26 先卖后买挂钩：裸卖未回补时人工指定高位批次 */}
+                {current.rec.buyPriceCents === null && (current.rec.soldQty ?? 0) > 0 && (
+                  <div className="divider-top" data-testid="hedge-section">
+                    <div className="sec-head sm">
+                      <strong>挂钩高位买入</strong>
+                      <div className="spacer" />
+                      <span className="sec-sub">卖出 {qty(current.rec.soldQty ?? 0)} 股</span>
+                    </div>
+                    {openNakedRows.has(current.rec.sourceRow) ? (
+                      <>
+                        <p className="tiny muted" style={{ margin: '0 0 6px' }}>
+                          挂着的份额按（卖价−买价）暂记亏损、退出待卖；低位买回后自动复原，
+                          高位批次继续按原目标等卖出；一直不买回才是真实亏损。合计须等于卖出量。
+                        </p>
+                        <div className="data-block">
+                          {hedgeCandidates(current).map(({ lot, available }) => (
+                            <div key={lot.sourceRow} className="line">
+                              <div className="left">
+                                <div className="t1 num">
+                                  买 {price(lot.buyPriceCents)} × {qty(lot.qty)}
+                                </div>
+                                <div className="t2">
+                                  行 {lot.sourceRow} · 买入 {buyDateOf({ rec: current.rec, lot, sell: null }) ?? '—'} ·
+                                  可挂 {qty(available)}
+                                </div>
+                              </div>
+                              <Input
+                                className="hedge-qty"
+                                value={hedgeDraft[lot.sourceRow] ?? ''}
+                                placeholder="0"
+                                onChange={(e) => setHedgeDraft({ ...hedgeDraft, [lot.sourceRow]: e.target.value })}
+                                data-field={`hedge-${lot.sourceRow}`}
+                                aria-label={`挂到第${lot.sourceRow}行的股数`}
+                              />
+                            </div>
+                          ))}
+                          {hedgeCandidates(current).length === 0 && (
+                            <p className="tiny muted" style={{ margin: 0 }}>
+                              没有可挂的未卖批次（同股票、未卖出、有剩余份额）
+                            </p>
+                          )}
+                        </div>
+                        <div className="row nowrap" style={{ gap: 8, marginTop: 8 }}>
+                          <Button size="small" type="primary" data-action="save-hedge" onClick={() => void saveHedge(current)}>
+                            保存挂钩
+                          </Button>
+                          {hedgeOf.has(current.rec.sourceRow) && (
+                            <Button size="small" danger onClick={() => void clearHedgeLink(current.rec.sourceRow)}>
+                              解除挂钩
+                            </Button>
+                          )}
+                        </div>
+                      </>
+                    ) : (
+                      <p className="tiny muted" style={{ margin: 0 }}>
+                        已有回补成交，挂钩已失效（高位批次已复原）；撤销成交会自动恢复挂钩。
+                      </p>
+                    )}
                   </div>
                 )}
 

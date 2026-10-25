@@ -1,28 +1,39 @@
 /**
  * 2D 价格树 · 逻辑层：数据聚合 / 分档合并 / 视野与交互 / 命中 / e2e 桥 / 风格注册。
  *
- * V9.23：
- *   缩放锚定指针——滚轮以光标、双指捏合以双指中点为锚（想看最下方就对准最下方放大，
- *   不再从画面正中缩放）；`__tree.zoomBy` 桥保持「正中缩放」旧语义，e2e 不受影响；
- *   绘制风格可切换：图鉴素雅风（treeStyleAtlas，默认）↔ 手绘抖动风
- *   （treeStyleSketch，V9.18~V9.21 存档），偏好存 localStorage（UI 偏好，不落台账库）。
+ * V9.26.2（用户拍板）：移除 hover 明细预览（浮层/高亮全套），只保留点击跳转；
+ * 聚合档数的展示从「·N档」文字改为枝上垂直刻线（一道 = 一档，样式层画）。
+ *
+ * V9.25：数轴风默认；点击传**价格区间**（合并组 lo~hi，分）——单档走 price= 精确
+ * 跳转、聚合组走 priceLo/priceHi 区间筛选；缩放锚定指针（V9.23）。
+ * 风格注册：数轴（treeStyleAxis，默认）↔ 图鉴素雅（treeStyleAtlas）↔ 手绘抖动
+ * （treeStyleSketch，V9.18~V9.21 存档），图例按钮循环切换，偏好存 localStorage。
  *
  * 逻辑层与样式层的分工（全方位改样式请去样式模块，别改这里）：
  *   - 本文件：aggregate（档位聚合）→ groupLevels（按当前风格的数据牌行高分档合并，
  *     放大时聚合枝自动分散回原档位数）、视野钳位、滚轮/拖动/捏合、hitTest、__tree 桥；
- *   - treeStyle*.ts：一帧怎么画（干/枝/注记/价签），并负责给每个 bin 设拾取圆。
+ *   - treeStyle*.ts：一帧怎么画（干/枝/注记/价签/刻线），并负责给每个 bin 设拾取圆。
  *
- * 交互：滚轮 / 双指捏合缩放（锚定指针），拖动攀爬，左右拖动把整棵树平移出画面中心
- *   （两侧的枝拖过来对着看），点枝跳明细（已成交枝跳转自动放开「隐藏已完成」）。
+ * 交互：滚轮 / 双指捏合缩放（锚定指针），拖动攀爬，左右拖动平移，
+ *   点枝跳明细（命中面 = 拾取圆 + 枝梢注记文字热区；已成交枝自动放开「隐藏已完成」）。
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useApp } from '../store/useApp'
 import type { SellTarget } from '../domain/types'
 import { atlasStyle } from './treeStyleAtlas'
 import { sketchStyle } from './treeStyleSketch'
+import { axisStyle } from './treeStyleAxis'
 import { TRUNK_MAX, TRUNK_MIN, type BranchBin, type TreeLevel, type TreeStyle, type WorkBins } from './treeStyle'
 
 export type { TreeLevel } from './treeStyle'
+
+/** 点击枝条（合并组）时的跳转载荷：区间 [loCents, hiCents]（分，含两端） */
+export interface TreePick {
+  loCents: number
+  hiCents: number
+  /** 已成交组：跳明细要放开「隐藏已完成」 */
+  done?: boolean
+}
 
 const CAM_MAX = 288
 const SPAN_MIN = 0.5
@@ -31,9 +42,11 @@ const SPAN_MAX = 150
 const PAN_X_MAX = 0.45
 
 type TreeStyleId = TreeStyle['id']
-const STYLES: Record<TreeStyleId, TreeStyle> = { atlas: atlasStyle, sketch: sketchStyle }
+const STYLES: Record<TreeStyleId, TreeStyle> = { atlas: atlasStyle, sketch: sketchStyle, axis: axisStyle }
+/** 切换顺序：图鉴素雅 → 手绘插画 → 数轴 → 循环 */
+const STYLE_ORDER: TreeStyleId[] = ['atlas', 'sketch', 'axis']
 const STYLE_KEY = 'ezgrid.treeStyle'
-const STYLE_NAME: Record<TreeStyleId, string> = { atlas: '图鉴素雅', sketch: '手绘插画' }
+const STYLE_NAME: Record<TreeStyleId, string> = { atlas: '图鉴素雅', sketch: '手绘插画', axis: '数轴' }
 
 function aggregate(
   stockName: string,
@@ -73,7 +86,8 @@ export function TreeTrunk({
   onPick,
 }: {
   stockName: string
-  onPick: (priceCents: number, opts?: { done?: boolean }) => void
+  /** 点击枝条（合并组）：区间 + 是否已成交组 */
+  onPick: (pick: TreePick) => void
 }) {
   const { ledger } = useApp()
   const levels = useMemo(
@@ -82,14 +96,16 @@ export function TreeTrunk({
   )
   const [styleId, setStyleId] = useState<TreeStyleId>(() => {
     try {
-      return localStorage.getItem(STYLE_KEY) === 'sketch' ? 'sketch' : 'atlas'
+      // V9.25 起默认数轴风；localStorage 记住的偏好（旧值也算）优先
+      const v = localStorage.getItem(STYLE_KEY)
+      return v === 'atlas' || v === 'sketch' ? v : 'axis'
     } catch {
-      return 'atlas'
+      return 'axis'
     }
   })
   const switchStyle = () => {
     setStyleId((s) => {
-      const next: TreeStyleId = s === 'atlas' ? 'sketch' : 'atlas'
+      const next = STYLE_ORDER[(STYLE_ORDER.indexOf(s) + 1) % STYLE_ORDER.length]
       try {
         localStorage.setItem(STYLE_KEY, next)
       } catch {
@@ -296,29 +312,39 @@ export function TreeTrunk({
         const rect = canvas.getBoundingClientRect()
         const bin = hitTest(e.clientX - rect.left, e.clientY - rect.top)
         if (bin) {
-          // 已成交跳明细要放开「隐藏已完成」，否则点过去是空列表
-          pickRef.current(bin.repCents, bin.kind === 'sold' ? { done: true } : undefined)
+          // 聚合组传整段区间（跳到这组全部记录）；已成交组带 done 放开「隐藏已完成」
+          pickRef.current({
+            loCents: Math.round(bin.lo * 100),
+            hiCents: Math.round(bin.hi * 100),
+            done: bin.kind === 'sold' ? true : undefined,
+          })
         }
       }
     }
 
-    /** 命中检测：圆心离点击最近者胜（2D 无深度，距离当远近）；等距再按 待卖→待买→枯枝 */
+    /** 命中检测：拾取圆按圆心距离最近者胜（等距再按 待卖→待买→已成交）；
+     *  枝梢注记文字热区（bin.note，数轴风）也算命中——点击的扩靶 */
     const hitTest = (x: number, y: number): BranchBin | null => {
       const rank: Record<'buy' | 'sell' | 'sold', number> = { sell: 0, buy: 1, sold: 2 }
       let best: BranchBin | null = null
       let bestD = Infinity
       let bestRank = Infinity
+      const offer = (bin: BranchBin, kind: 'buy' | 'sell' | 'sold', d: number) => {
+        if (d < bestD - 1e-6 || (d <= bestD + 1e-6 && rank[kind] < bestRank)) {
+          best = bin
+          bestD = Math.min(d, bestD)
+          bestRank = rank[kind]
+        }
+      }
       for (const kind of ['sell', 'buy', 'sold'] as const) {
         for (const bin of work[kind]) {
           const p = bin.pick
-          if (!p) continue
-          const d = Math.hypot(x - p.cx, y - p.cy)
-          if (d > p.r) continue
-          if (d < bestD - 1e-6 || (d <= bestD + 1e-6 && rank[kind] < bestRank)) {
-            best = bin
-            bestD = Math.min(d, bestD)
-            bestRank = rank[kind]
+          if (p) {
+            const d = Math.hypot(x - p.cx, y - p.cy)
+            if (d <= p.r) offer(bin, kind, d)
           }
+          const n = bin.note
+          if (n && x >= n.x && x <= n.x + n.w && y >= n.y && y <= n.y + n.h) offer(bin, kind, 0)
         }
       }
       return best
@@ -423,17 +449,15 @@ export function TreeTrunk({
   }, [levels, stockName, style])
 
   return (
-    <div className="tree-wrap">
+    <div className="tree-wrap" data-style={styleId}>
       <div ref={hostRef} className="tree-host" />
-      <div className="tree-legend" data-style={styleId}>
-        <span className="dot buy">待买枝 · 左</span>
-        <span className="dot sell">待卖枝 · 右</span>
-        <span className="dot fallen">枯枝 · 已盈利</span>
-        {styleId === 'atlas' ? (
-          <span className="dot agg">枝上点 · 聚合档数</span>
-        ) : (
-          <span className="dot leaf">叶 · 聚合档数</span>
-        )}
+      <div className="tree-legend">
+        <span className="dot buy">待买 · 左</span>
+        <span className="dot sell">待卖 · 右</span>
+        <span className="dot fallen">{styleId === 'axis' ? '已成交 · 已盈利' : '枯枝 · 已盈利'}</span>
+        {styleId === 'atlas' && <span className="dot agg">枝上点 · 聚合档数</span>}
+        {styleId === 'sketch' && <span className="dot leaf">叶 · 聚合档数</span>}
+        {styleId === 'axis' && <span className="dot agg">线上刻线 · 聚合档数</span>}
         <button
           type="button"
           className="style-toggle"
@@ -443,7 +467,7 @@ export function TreeTrunk({
         >
           风格 · {STYLE_NAME[styleId]}
         </button>
-        <span className="hint">滚轮/捏合缩放对准指针 · 拖动攀爬 / 平移 · 点枝看明细</span>
+        <span className="hint">滚轮/捏合缩放对准指针 · 拖动平移 · 点击看明细</span>
       </div>
     </div>
   )

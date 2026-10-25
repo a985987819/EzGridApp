@@ -7,7 +7,7 @@ import { mulCents } from './money'
 import { deriveBuyQty } from './qty'
 import { serialToIso, stockIdOf } from './defaults'
 import { accountIdOf } from './accounts'
-import { DEFAULT_ACCOUNT_ID, type Anomaly, type ExtraTarget, type RebuyExecution, type TradePlan, type CheckResult, type GroupPool, type Ledger, type Lot, type DayBucket, type MonthlyBucket, type RawRecord, type RebuyOrder, type SellExecution, type SellTarget, type StockConfig, type StockSummary } from './types'
+import { DEFAULT_ACCOUNT_ID, type Anomaly, type ExtraTarget, type HedgeLink, type RebuyExecution, type TradePlan, type CheckResult, type GroupPool, type Ledger, type Lot, type DayBucket, type MonthlyBucket, type RawRecord, type RebuyOrder, type SellExecution, type SellTarget, type StockConfig, type StockSummary } from './types'
 
 export interface BuildOptions {
   /** 基准金额，默认 6000 元 */
@@ -24,6 +24,8 @@ export interface BuildOptions {
   plans?: TradePlan[]
   /** 手动拆出来的卖出目标（V6 分批止盈） */
   extraTargets?: ExtraTarget[]
+  /** 先卖后买挂钩（V9.26）：裸卖 → 高位批次的人工分配 */
+  hedges?: HedgeLink[]
 }
 
 /** 组池分组键（v9.20 起带账户维度）：账户|股票|成本分，'all' 视图下不同账户不混池 */
@@ -214,6 +216,107 @@ export function buildLedger(
     else execByOrder.set(e.orderId, [e])
   }
 
+  // V9.26 先卖后买挂钩（H）：裸卖在未回补期间，把人工指定的高位批次按挂股数
+  // 「暂记卖出」——批次退出待卖（份额置已卖）、按（卖价−买价）记负盈利挂到
+  // 批次行上；裸卖自身盈利暂缓（置 null）。纯派生：回补成交一出现挂钩即失效
+  // （批次复原、裸卖恢复按回补价结算），撤销成交又自动恢复——不写任何解除记录。
+  // 全额挂住的裸卖不再计敞口（交割股由挂的批次提供），守恒式两边同减保持平衡。
+  const hedgeLinks = opts.hedges ?? []
+  const sellByRow = new Map(sells.map((s) => [s.sourceRow, s]))
+  const lotByRow = new Map(lots.map((l) => [l.sourceRow, l]))
+  const fullyHedgedRows = new Set<number>()
+  const hedgeUsedByLot = new Map<number, number>()
+  /** 每张裸卖实际挂住的股数（敞口按差额计：baseQty − hedgeApplied） */
+  const hedgeAppliedByRow = new Map<number, number>()
+  for (const h of hedgeLinks) {
+    const rec = byRow.get(h.sellRow)
+    const naked =
+      rec && rec.buyPriceCents === null && (rec.soldQty ?? 0) > 0 ? sellByRow.get(h.sellRow) : undefined
+    if (!rec || !naked) continue // 行没了 / 不是裸卖 → 挂钩失效
+    // 已有回补成交 → 挂钩失效（不应用即复原，天然达成）
+    const execQty = (execByOrder.get(`rb:${naked.id}`) ?? []).reduce((a, e) => a + e.qty, 0)
+    if (execQty > 0) continue
+    if (naked.priceCents === null) {
+      anomalies.push({
+        kind: 'hedgeInvalid',
+        sourceRow: h.sellRow,
+        stockName: rec.stockName,
+        detail: '裸卖缺成交价（E 列），挂钩暂记不了',
+      })
+      continue
+    }
+    const price = naked.priceCents
+    let applied = 0
+    for (const it of h.items) {
+      const lot = lotByRow.get(it.row)
+      const lotRec = lot ? byRow.get(it.row) : undefined
+      if (!lot || !lotRec || lot.stockName !== rec.stockName || (lotRec.soldQty ?? 0) > 0) {
+        anomalies.push({
+          kind: 'hedgeInvalid',
+          sourceRow: h.sellRow,
+          stockName: rec.stockName,
+          detail: `第 ${it.row} 行不是「${rec.stockName}」的未卖买入批次，跳过`,
+        })
+        continue
+      }
+      if (!Number.isFinite(it.qty) || it.qty <= 0) continue
+      const used = hedgeUsedByLot.get(it.row) ?? 0
+      const cap = Math.max(0, lot.remainingQty - used)
+      const q = Math.min(Math.floor(it.qty), cap)
+      if (q < it.qty) {
+        anomalies.push({
+          kind: 'hedgeOverflow',
+          sourceRow: h.sellRow,
+          stockName: rec.stockName,
+          detail: `第 ${it.row} 行只挂得下 ${cap} 股（剩余 ${lot.remainingQty}${used ? ` − 其它裸卖已挂 ${used}` : ''}），已按 ${q} 股截断`,
+        })
+      }
+      if (q <= 0) continue
+      lot.soldQty += q
+      lot.remainingQty -= q
+      hedgeUsedByLot.set(it.row, used + q)
+      applied += q
+      // 暂记卖出：价格 = 裸卖成交价，成本 = 批次买价，盈利为负挂到批次行上展示
+      sells.push({
+        id: `sell:hedged:${h.sellRow}:${it.row}`,
+        sourceRow: it.row,
+        stockId: lot.stockId,
+        stockName: lot.stockName,
+        qty: q,
+        priceCents: price,
+        costCents: lot.buyPriceCents,
+        profitCents: mulCents(price - lot.buyPriceCents, q),
+        soldAt: naked.soldAt,
+        dateMissing: naked.dateMissing,
+        priceSource: 'target',
+        rebuyStatus: 'repaid',
+        sellBeforeBuy: false,
+        // 暂记不进组池（P4 的额度消耗只认真实卖出）
+        groupKey: null,
+        costComplete: false,
+        lotId: lot.id,
+        targetId: null,
+        hedgedFromSellRow: h.sellRow,
+      })
+    }
+    if (applied > 0) {
+      // 裸卖盈利暂缓：买回后按回补价结算；不买回则上面暂记的负盈利就是真实亏损
+      naked.profitCents = null
+      naked.hedgedHold = true
+      hedgeAppliedByRow.set(h.sellRow, applied)
+    }
+    if (applied === naked.qty) {
+      fullyHedgedRows.add(h.sellRow)
+    } else if (applied > 0) {
+      anomalies.push({
+        kind: 'hedgeMismatch',
+        sourceRow: h.sellRow,
+        stockName: rec.stockName,
+        detail: `挂了 ${applied} 股 ≠ 卖出 ${naked.qty} 股，差额仍按敞口计（守恒式会亮红灯）`,
+      })
+    }
+  }
+
   // R1 待卖：有剩余持仓的批次 × E；手动拆分的先占额度，剩下的才走自动目标
   const targets: SellTarget[] = []
   for (const lot of lots) {
@@ -305,7 +408,8 @@ export function buildLedger(
       grossProfitCents: 0,
       hands: 0,
       createdAt: sell.sourceRow,
-      exposure: rec.buyPriceCents === null,
+      // 全额挂住的裸卖不算敞口：交割股由挂的高位批次提供（V9.26）
+      exposure: rec.buyPriceCents === null && !fullyHedgedRows.has(rec.sourceRow),
       planPriceCents: planByRef.get(orderId)?.priceCents ?? null,
       planQty: planByRef.get(orderId)?.qty ?? null,
       rewardSourceOrderIds: [],
@@ -381,13 +485,16 @@ export function buildLedger(
   }
 
   // 汇总（v9.20：回补批次已是派生批次计入 Σ买入，净持仓不再单独加回补量）
+  // 暂记卖出（hedgedFromSellRow）不重复计入卖出量/金额/笔数——同一批股的另一种
+  // 记账视角；其负盈利计入 profitCents（V9.26「暂记真实亏损」口径）
+  const realSells = sells.filter((s) => s.hedgedFromSellRow === undefined)
   const totals = {
     rows: live.length,
     buyQty: sumBy(allLots, (l) => l.qty),
     buyAmountCents: sumBy(allLots, (l) => mulCents(l.buyPriceCents, l.qty)),
-    sellCount: sells.length,
-    sellQty: sumBy(sells, (s) => s.qty),
-    sellAmountCents: sumBy(sells, (s) => (s.priceCents === null ? 0 : mulCents(s.priceCents, s.qty))),
+    sellCount: realSells.length,
+    sellQty: sumBy(realSells, (s) => s.qty),
+    sellAmountCents: sumBy(realSells, (s) => (s.priceCents === null ? 0 : mulCents(s.priceCents, s.qty))),
     profitCents: sumBy(sells, (s) => s.profitCents ?? 0),
     targetCount: targets.length,
     targetQty: sumBy(targets, (t) => t.qty),
@@ -408,16 +515,22 @@ export function buildLedger(
     rebuyRemainingQty: sumBy(orders, (o) => o.remainingQty),
     netQty: 0,
     // 只算真空头敞口：无买入批次、且还没回补掉的那部分（D5）。
-    // 奖励股是额外买入，不算欠账，所以从已成交里剔除。
+    // 奖励股是额外买入，不算欠账；V9.26：挂住的份额已由高位批次交割，按差额计。
     exposureQty: sumBy(
       orders.filter((o) => o.exposure),
-      (o) => Math.max(0, o.baseQty - Math.max(0, o.execQty - o.doneRewardQty)),
+      (o) =>
+        Math.max(
+          0,
+          o.baseQty -
+            (hedgeAppliedByRow.get(o.sourceRow) ?? 0) -
+            Math.max(0, o.execQty - o.doneRewardQty),
+        ),
     ),
   }
   // 回补批次已在 Σ买入 里，净持仓 = Σ买入 − Σ卖出
   totals.netQty = totals.buyQty - totals.sellQty
 
-  const byStock = summarizeByStock(live, allLots, sells, targets, orders)
+  const byStock = summarizeByStock(live, allLots, sells, targets, orders, hedgeAppliedByRow)
   const monthly = summarizeMonthly(sells)
   const daily = summarizeDaily(sells)
 
@@ -549,11 +662,15 @@ function summarizeByStock(
   sells: SellExecution[],
   targets: SellTarget[],
   orders: RebuyOrder[],
+  /** 每张裸卖挂住的股数（敞口按差额计，V9.26） */
+  hedgeAppliedByRow: Map<number, number>,
 ): StockSummary[] {
   const names = [...new Set(records.map((r) => r.stockName))]
   return names.map((name) => {
     const ls = lots.filter((l) => l.stockName === name)
     const ss = sells.filter((s) => s.stockName === name)
+    // 暂记卖出只贡献盈利，不重复计卖出量/金额/笔数（V9.26）
+    const real = ss.filter((s) => s.hedgedFromSellRow === undefined)
     const ts = targets.filter((t) => t.stockName === name)
     const os = orders.filter((o) => o.stockName === name)
     return {
@@ -562,9 +679,9 @@ function summarizeByStock(
       rows: records.filter((r) => r.stockName === name).length,
       buyQty: sumBy(ls, (l) => l.qty),
       buyAmountCents: sumBy(ls, (l) => mulCents(l.buyPriceCents, l.qty)),
-      sellCount: ss.length,
-      sellQty: sumBy(ss, (s) => s.qty),
-      sellAmountCents: sumBy(ss, (s) => (s.priceCents === null ? 0 : mulCents(s.priceCents, s.qty))),
+      sellCount: real.length,
+      sellQty: sumBy(real, (s) => s.qty),
+      sellAmountCents: sumBy(real, (s) => (s.priceCents === null ? 0 : mulCents(s.priceCents, s.qty))),
       profitCents: sumBy(ss, (s) => s.profitCents ?? 0),
       targetCount: ts.length,
       targetQty: sumBy(ts, (t) => t.qty),
@@ -573,16 +690,22 @@ function summarizeByStock(
       rebuyCount: os.length,
       rebuyQty: sumBy(os, (o) => o.baseQty + o.rewardQty),
       // 与 totals 同口径：lots 已含回补批次（虚拟批次），净持仓 = Σ买入 − Σ卖出
-      netQty: sumBy(ls, (l) => l.qty) - sumBy(ss, (s) => s.qty),
+      netQty: sumBy(ls, (l) => l.qty) - sumBy(real, (s) => s.qty),
       exposureQty: sumBy(
         os.filter((o) => o.exposure),
-        (o) => Math.max(0, o.baseQty - Math.max(0, o.execQty - o.doneRewardQty)),
+        (o) =>
+          Math.max(
+            0,
+            o.baseQty -
+              (hedgeAppliedByRow.get(o.sourceRow) ?? 0) -
+              Math.max(0, o.execQty - o.doneRewardQty),
+          ),
       ),
     }
   })
 }
 
-/** 按天聚合（日历和月度共用同一套卖出口径） */
+/** 按天聚合（日历和月度共用同一套卖出口径）；暂记卖出只把盈利记到当天，不重复计卖出量/笔数（V9.26） */
 function summarizeDaily(sells: SellExecution[]): DayBucket[] {
   const map = new Map<string, DayBucket>()
   for (const s of sells) {
@@ -592,8 +715,10 @@ function summarizeDaily(sells: SellExecution[]): DayBucket[] {
       b = { day, sellCount: 0, sellQty: 0, profitCents: 0, dateMissing: day === '未填日期' }
       map.set(day, b)
     }
-    b.sellCount += 1
-    b.sellQty += s.qty
+    if (s.hedgedFromSellRow === undefined) {
+      b.sellCount += 1
+      b.sellQty += s.qty
+    }
     b.profitCents += s.profitCents ?? 0
   }
   return [...map.values()].sort((a, b) => (a.day < b.day ? -1 : 1))
@@ -615,9 +740,11 @@ function summarizeMonthly(sells: SellExecution[]): MonthlyBucket[] {
       }
       map.set(month, b)
     }
-    b.sellCount += 1
-    b.sellQty += s.qty
-    b.sellAmountCents += s.priceCents === null ? 0 : mulCents(s.priceCents, s.qty)
+    if (s.hedgedFromSellRow === undefined) {
+      b.sellCount += 1
+      b.sellQty += s.qty
+      b.sellAmountCents += s.priceCents === null ? 0 : mulCents(s.priceCents, s.qty)
+    }
     b.profitCents += s.profitCents ?? 0
   }
   return [...map.values()].sort((a, b) => (a.month < b.month ? -1 : 1))

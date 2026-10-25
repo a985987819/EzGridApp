@@ -309,6 +309,10 @@ try {
   console.log('  树干:', treeInfo)
   const tree = treeInfo ? JSON.parse(treeInfo) : null
   check('画布有尺寸且解析出档位', Boolean(tree && tree.w > 150 && tree.h > 150 && tree.levels >= 10), treeInfo)
+  check(
+    '默认风格=数轴（V9.25）',
+    (await evaluate(`document.querySelector('canvas[data-tree="price"]').__tree.style()`)) === 'axis',
+  )
   const treeShot = await send('Page.captureScreenshot', { format: 'png' })
   writeFileSync(join(OUT, 'mobile-tree.png'), Buffer.from(treeShot.data, 'base64'))
 
@@ -364,7 +368,8 @@ try {
   await evaluate(`document.querySelector('canvas[data-tree="price"]').__tree.setView(${v0span}, ${v0center})`)
   await sleep(200)
 
-  // V9.23 双风格切换：图鉴素雅（默认）↔ 手绘插画（V9.18~21 存档），偏好落 localStorage
+  // V9.23/24/25 多风格循环：数轴（默认）→ 图鉴素雅 → 手绘插画（V9.18~21 存档）→ 回数轴；
+  // 偏好落 localStorage
   await evaluate(`document.querySelector('[data-testid="tree-style-toggle"]').click()`)
   await sleep(700) // 重挂 effect + 首帧
   const style1 = await evaluate(`(() => {
@@ -372,13 +377,39 @@ try {
     return JSON.stringify({ style: c.__tree.style(), stored: localStorage.getItem('ezgrid.treeStyle') })
   })()`)
   const s1 = JSON.parse(style1)
-  check('切到手绘插画并落 localStorage', s1.style === 'sketch' && s1.stored === 'sketch', style1)
+  check('切到图鉴素雅并落 localStorage', s1.style === 'atlas' && s1.stored === 'atlas', style1)
+  await evaluate(`document.querySelector('[data-testid="tree-style-toggle"]').click()`)
+  await sleep(700)
+  const style2 = await evaluate(`(() => {
+    const c = document.querySelector('canvas[data-tree="price"]')
+    return JSON.stringify({ style: c.__tree.style(), stored: localStorage.getItem('ezgrid.treeStyle') })
+  })()`)
+  const s2 = JSON.parse(style2)
+  check('切到手绘插画（三风格循环）', s2.style === 'sketch' && s2.stored === 'sketch', style2)
   const sketchShot = await send('Page.captureScreenshot', { format: 'png' })
   writeFileSync(join(OUT, 'mobile-tree-sketch.png'), Buffer.from(sketchShot.data, 'base64'))
   await evaluate(`document.querySelector('[data-testid="tree-style-toggle"]').click()`)
-  await sleep(600)
-  const style2 = await evaluate(`document.querySelector('canvas[data-tree="price"]').__tree.style()`)
-  check('切回图鉴素雅', style2 === 'atlas', String(style2))
+  await sleep(700)
+  const style3 = await evaluate(`(() => {
+    const c = document.querySelector('canvas[data-tree="price"]')
+    return JSON.stringify({ style: c.__tree.style(), stored: localStorage.getItem('ezgrid.treeStyle') })
+  })()`)
+  const s3 = JSON.parse(style3)
+  check('切回数轴（默认风格）', s3.style === 'axis' && s3.stored === 'axis', style3)
+
+  // V9.26.2：hover 预览已移除（点击跳转保留）；枝梢注记文字区仍是点击热区（扩靶）
+  const hoverPt = await evaluate(`(() => {
+    const c = document.querySelector('canvas[data-tree="price"]')
+    const lv = c.__tree.levels().filter((l) => l.sell > 0).sort((a, b) => b.sell - a.sell)
+    return JSON.stringify(c.__tree.projectPrice(lv[0].cents))
+  })()`)
+  const hp = JSON.parse(hoverPt)
+  const noteZone = await evaluate(`(() => {
+    const c = document.querySelector('canvas[data-tree="price"]')
+    return JSON.stringify(c.__tree.pickAt(${hp.x} + 60, ${hp.y}))
+  })()`)
+  check('注记文字区也是热区', Boolean(noteZone && JSON.parse(noteZone).cents), noteZone ?? '')
+  check('hover 浮层已移除', !(await evaluate(`Boolean(document.querySelector('[data-testid="tree-hover"]'))`)))
 
   // V9.18 左右拖动平移：真实鼠标拖（按下→横移 120px→松手；dragMoved>7 不触发拾取）
   // 画布多半在视口外/被吸顶层盖住：滚到位并临时藏掉吸顶层，否则 CDP 坐标落空
@@ -429,7 +460,12 @@ try {
   await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: clickAt.x, y: clickAt.y, button: 'left', clickCount: 1 })
   await sleep(700)
   const treeHash = await evaluate('location.hash')
-  check('点叶跳明细带价格档', treeHash.startsWith('#/trades') && treeHash.includes(`price=${topCents}`), treeHash)
+  check(
+    '点叶跳明细带价格档（单档=精确、聚合=区间）',
+    treeHash.startsWith('#/trades') &&
+      (treeHash.includes(`price=${topCents}`) || (treeHash.includes('priceLo=') && treeHash.includes('priceHi='))),
+    treeHash,
+  )
   // V9.2 起导航回明细会恢复上次筛选：当场清掉价格筛选，让 [6] 从干净明细开始
   check('清空树干点击留下的筛选', await clickByText('[data-testid="active-chips"] .filter-chip', '清空筛选'))
   await sleep(400)
@@ -465,7 +501,12 @@ try {
     await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: sp.p.x, y: sp.p.y, button: 'left', clickCount: 1 })
     await sleep(700)
     const soldHash = await evaluate('location.hash')
-    check('点枯枝跳明细带价格', soldHash.startsWith('#/trades') && soldHash.includes(`price=${repCents}`), soldHash)
+    check(
+      '点枯枝跳明细带价格（单档=精确、聚合=区间）',
+      soldHash.startsWith('#/trades') &&
+        (soldHash.includes(`price=${repCents}`) || (soldHash.includes('priceLo=') && soldHash.includes('priceHi='))),
+      soldHash,
+    )
     if (sp.lonely) check('枯枝跳转放开隐藏已完成（showDone=1）', soldHash.includes('showDone=1'), soldHash)
     check('清掉枯枝留下的筛选', await clickByText('[data-testid="active-chips"] .filter-chip', '清空筛选'))
     await sleep(400)
@@ -538,15 +579,16 @@ try {
   const r2Text = await evaluate(`document.querySelector('[data-row="2"] .dates')?.textContent.trim() ?? ''`)
   check('R2 两个日期都有值', /买入 \d{4}-\d{2}-\d{2}/.test(r2Text) && /卖出 \d{4}-\d{2}-\d{2}/.test(r2Text), r2Text)
   check(
-    'R2 已完成行不再强调配色',
+    'R2 已完成行无状态边框',
     Boolean(
-      await evaluate(`!document.querySelector('[data-row="2"] .c-buy') && !document.querySelector('[data-row="2"] .c-sell')`),
+      await evaluate(`!document.querySelector('[data-row="2"].pending-sell') && !document.querySelector('[data-row="2"].pending-buy')`),
     ),
   )
-  // V9.11 待办配色：红=待卖（持仓行目标价+剩余量），蓝=待买（待回补行买价×量）
-  check('持仓行待卖侧标红', Boolean(await evaluate(`Boolean(document.querySelector('.trade-item .path .c-sell'))`)))
-  check('待回补行待买侧标蓝', Boolean(await evaluate(`Boolean(document.querySelector('.trade-item .path .c-buy'))`)))
-  check('R63 先卖后买显示蓝色回补买价', Boolean(await evaluate(`Boolean(document.querySelector('[data-row="63"] .c-buy'))`)))
+  // V9.26.1 状态区分：文字统一默认色，待卖红边框 / 待买蓝边框 + 右下角同色挂单角标
+  check('持仓行待卖红边框 + 挂卖角标', Boolean(await evaluate(`Boolean(document.querySelector('.trade-item.pending-sell') && document.querySelector('.trade-item.pending-sell .order-chip.sell'))`)))
+  check('待回补行待买蓝边框 + 挂买角标', Boolean(await evaluate(`Boolean(document.querySelector('.trade-item.pending-buy') && document.querySelector('.trade-item.pending-buy .order-chip.buy'))`)))
+  check('R63 先卖后买是待买行（蓝边框）', Boolean(await evaluate(`Boolean(document.querySelector('[data-row="63"].pending-buy'))`)))
+  check('挂单角标带价格与股数', Boolean(await evaluate(`(() => { const c = document.querySelector('.order-chip'); return Boolean(c && /\\d/.test(c.textContent) && c.textContent.includes('×')) })()`)))
   check('恢复「隐藏已完成」', await toggleHideDoneHere())
 
   // 状态多选 chips（V9）：可叠加取交集，已生效条件 chip 可点掉，一键复位
@@ -697,8 +739,10 @@ try {
   await sleep(600)
   const gridHash = await evaluate('location.hash')
   check(
-    '树干跳转带股票和价格档',
-    gridHash.startsWith('#/trades') && gridHash.includes(`price=${gridTarget.cents}`) && decodeURIComponent(gridHash).includes('stock=柳工'),
+    '树干跳转带股票和价格档（单档=精确、聚合=区间）',
+    gridHash.startsWith('#/trades') &&
+      (gridHash.includes(`price=${gridTarget.cents}`) || (gridHash.includes('priceLo=') && gridHash.includes('priceHi='))) &&
+      decodeURIComponent(gridHash).includes('stock=柳工'),
     gridHash,
   )
 
@@ -1039,7 +1083,51 @@ try {
   text = await bodyText()
   check('抽屉标出「回补价 = 卖出价 − 间隔」', text.includes('回补价 = 卖出价 − 间隔'))
   check('推导出的回补价 8.11', text.includes('8.11'))
-  await closeDrawer()
+
+  // V9.26 先卖后买挂钩：裸卖 8.68×500 挂到未卖的高位批次上
+  check('抽屉出现挂钩区', text.includes('挂钩高位买入'))
+  const hedgeCands = await evaluate(`(() => {
+    const sec = document.querySelector('[data-testid="hedge-section"]')
+    if (!sec) return null
+    const lines = [...sec.querySelectorAll('.line')]
+    return JSON.stringify(
+      lines
+        .map((el) => {
+          const input = el.querySelector('input')
+          const m = el.textContent.match(/可挂\\s*([\\d,]+)/)
+          return { field: input ? input.getAttribute('data-field') : null, avail: m ? Number(m[1].replace(/,/g, '')) : 0 }
+        })
+        .filter((c) => c.field && c.avail > 0),
+    )
+  })()`)
+  const cands = hedgeCands ? JSON.parse(hedgeCands) : []
+  check('有可挂的候选批次', cands.length > 0, hedgeCands ?? '')
+  if (cands.length > 0) {
+    // 贪心分配：候选批次可挂量依次填满 500 股
+    let left = 500
+    for (const c of cands) {
+      if (left <= 0) break
+      const q = Math.min(c.avail, left)
+      await setInput(`input[data-field="${c.field}"]`, String(q))
+      left -= q
+      await sleep(150)
+    }
+    check('候选量够挂满 500 股', left === 0, `还差 ${left}`)
+    check('点「保存挂钩」', await clickByText('button', '保存挂钩'))
+    await sleep(900)
+    await closeDrawer()
+    await sleep(500)
+    text = await bodyText()
+    check('裸卖行标「已挂钩」', text.includes('已挂钩'))
+    // 敞口回到 2,000（挂住的 500 由高位批次交割）；净持仓不变（没发生真实交易）
+    await nav('overview')
+    await sleep(900)
+    text = await bodyText()
+    check('挂钩后敞口 2,000', text.includes('2,000'), '')
+    check('挂钩后净持仓 12,700', text.includes('12,700'), '')
+  } else {
+    await closeDrawer()
+  }
 
   console.log('\n[11] 删掉这笔手动卖出，恢复原状')
   await nav('trades')

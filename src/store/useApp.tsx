@@ -23,6 +23,7 @@ import type {
   AuditLog,
   CheckResult,
   ExtraTarget,
+  HedgeLink,
   Ledger,
   RawRecord,
   RebuyExecution,
@@ -84,6 +85,8 @@ interface AppContextValue {
   executions: RebuyExecution[]
   plans: TradePlan[]
   extraTargets: ExtraTarget[]
+  /** 先卖后买挂钩（V9.26）：裸卖 → 高位批次的人工分配 */
+  hedges: HedgeLink[]
   ledger: Ledger
   baseline: CheckResult[]
   deriveSellPrice: boolean
@@ -103,6 +106,9 @@ interface AppContextValue {
   removeRebuy: (id: string) => Promise<void>
   setPlan: (kind: 'buy' | 'sell', refId: string, priceCents: number, qty: number) => Promise<void>
   clearPlan: (refId: string) => Promise<void>
+  /** 保存/替换一条裸卖的挂钩分配（合计应等于卖单股数，buildLedger 里还会再校验） */
+  setHedgeLink: (sellRow: number, items: { row: number; qty: number }[]) => Promise<void>
+  clearHedgeLink: (sellRow: number) => Promise<void>
   addExtraTarget: (lotId: string, priceCents: number, qty: number) => Promise<void>
   removeExtraTarget: (id: string) => Promise<void>
   historyOf: (sourceRow: number) => AuditLog[]
@@ -150,6 +156,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [executions, setExecutions] = useState<RebuyExecution[]>([])
   const [plans, setPlans] = useState<TradePlan[]>([])
   const [extraTargets, setExtraTargets] = useState<ExtraTarget[]>([])
+  const [hedges, setHedges] = useState<HedgeLink[]>([])
   const [batches, setBatches] = useState<ImportBatch[]>([])
   const [deriveSellPrice, setDeriveSellPrice] = useState(false)
   const [preview, setPreview] = useState<ParseResult | null>(null)
@@ -173,18 +180,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [ordersSession])
 
   const reloadRecords = useCallback(async () => {
-    const [r, a, x, pl, et] = await Promise.all([
+    const [r, a, x, pl, et, hd] = await Promise.all([
       db.records.toArray(),
       db.auditLogs.toArray(),
       db.rebuyExecutions.toArray(),
       db.plans.toArray(),
       db.extraTargets.toArray(),
+      db.hedges.toArray(),
     ])
     setRecords(r)
     setAudits(a)
     setExecutions(x)
     setPlans(pl)
     setExtraTargets(et)
+    setHedges(hd)
   }, [])
 
   useEffect(() => {
@@ -198,7 +207,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if ((await db.accounts.count()) === 0) {
         await db.accounts.put({ id: DEFAULT_ACCOUNT_ID, name: '默认账户', createdAt: Date.now() })
       }
-      const [sRaw, r, a, b, x, backupMeta, pl, et, accs, accMeta, fontMeta] = await Promise.all([
+      const [sRaw, r, a, b, x, backupMeta, pl, et, accs, accMeta, fontMeta, hd] = await Promise.all([
         db.stocks.toArray(),
         db.records.toArray(),
         db.auditLogs.toArray(),
@@ -210,6 +219,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         db.accounts.toArray(),
         db.meta.get('activeAccountId'),
         db.meta.get('useSystemFont'),
+        db.hedges.toArray(),
       ])
       if (!alive) return
       // 老库补齐 order / enabled 并压平序号
@@ -222,6 +232,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setExecutions(x)
       setPlans(pl)
       setExtraTargets(et)
+      setHedges(hd)
       setBatches(b)
       setBasename(b[0]?.fileName ?? '—')
       setLastBackupAt(backupMeta ? Number(backupMeta.value) : null)
@@ -241,8 +252,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const scopedRecords = useMemo(() => filterByAccount(records, activeAccountId), [records, activeAccountId])
 
   const ledger = useMemo(
-    () => buildLedger(scopedRecords, stocks, { deriveSellPrice, executions, plans, extraTargets }),
-    [scopedRecords, stocks, deriveSellPrice, executions, plans, extraTargets],
+    () => buildLedger(scopedRecords, stocks, { deriveSellPrice, executions, plans, extraTargets, hedges }),
+    [scopedRecords, stocks, deriveSellPrice, executions, plans, extraTargets, hedges],
   )
 
   const baseline = useMemo(() => compareBaseline(ledger), [ledger])
@@ -511,6 +522,53 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setExtraTargets(await db.extraTargets.toArray())
   }, [])
 
+  const setHedgeLink = useCallback(
+    async (sellRow: number, items: { row: number; qty: number }[]) => {
+      for (const it of items) {
+        if (!Number.isInteger(it.row) || !Number.isFinite(it.qty) || it.qty <= 0) {
+          throw new Error('挂钩分配不合法（买入行号 / 股数）')
+        }
+      }
+      const link: HedgeLink = { id: `hedge:${sellRow}`, sellRow, items, at: Date.now() }
+      await db.transaction('rw', db.hedges, db.auditLogs, async () => {
+        await db.hedges.put(link)
+        await db.auditLogs.add(
+          audit(
+            `record:${sellRow}`,
+            '挂钩高位买入',
+            items.map((i) => `第${i.row}行×${i.qty}`).join(' + '),
+            '暂记亏损，买回后自动复原',
+            'hedge',
+          ),
+        )
+      })
+      setHedges(await db.hedges.toArray())
+    },
+    [],
+  )
+
+  const clearHedgeLink = useCallback(
+    async (sellRow: number) => {
+      const prev = await db.hedges.get(`hedge:${sellRow}`)
+      await db.transaction('rw', db.hedges, db.auditLogs, async () => {
+        await db.hedges.delete(`hedge:${sellRow}`)
+        if (prev) {
+          await db.auditLogs.add(
+            audit(
+              `record:${sellRow}`,
+              '解除挂钩',
+              prev.items.map((i) => `第${i.row}行×${i.qty}`).join(' + '),
+              '',
+              'hedge',
+            ),
+          )
+        }
+      })
+      setHedges(await db.hedges.toArray())
+    },
+    [],
+  )
+
   const setActiveAccount = useCallback(async (id: string) => {
     await db.meta.put({ key: 'activeAccountId', value: id })
     setActiveAccountId(id)
@@ -553,6 +611,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       db.rebuyExecutions.clear(),
       db.plans.clear(),
       db.extraTargets.clear(),
+      db.hedges.clear(),
     ])
     setRecords([])
     setBatches([])
@@ -560,12 +619,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setExecutions([])
     setPlans([])
     setExtraTargets([])
+    setHedges([])
     setBasename('—')
     setPreview(null)
   }, [])
 
   const exportBackup = useCallback(async () => {
-    const [s, r, b, a, x, pl, et, accs] = await Promise.all([
+    const [s, r, b, a, x, pl, et, accs, hd] = await Promise.all([
       db.stocks.toArray(),
       db.records.toArray(),
       db.batches.toArray(),
@@ -574,13 +634,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       db.plans.toArray(),
       db.extraTargets.toArray(),
       db.accounts.toArray(),
+      db.hedges.toArray(),
     ])
     const stamp = String(Date.now())
     await db.meta.put({ key: 'lastBackupAt', value: stamp })
     setLastBackupAt(Number(stamp))
     return JSON.stringify(
       {
-        schemaVersion: 5,
+        schemaVersion: 6,
         exportedAt: new Date().toISOString(),
         stocks: s,
         records: r,
@@ -590,6 +651,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         plans: pl,
         extraTargets: et,
         accounts: accs,
+        hedges: hd,
       },
       null,
       2,
@@ -608,15 +670,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
         plans?: TradePlan[]
         extraTargets?: ExtraTarget[]
         accounts?: Account[]
+        hedges?: HedgeLink[]
       }
       const version = data.schemaVersion ?? 1
-      if (version > 5) throw new Error('备份版本高于当前程序，拒绝导入（P11）')
+      if (version > 6) throw new Error('备份版本高于当前程序，拒绝导入（P11）')
       // P11 之外的第二道闸：结构坏掉的备份整包拒绝，不让半截 JSON 污染本地库
       const problem = validateBackup(data)
       if (problem) throw new Error(`备份内容校验失败：${problem}`)
       await db.transaction(
         'rw',
-        [db.stocks, db.records, db.batches, db.auditLogs, db.rebuyExecutions, db.plans, db.extraTargets, db.accounts],
+        [db.stocks, db.records, db.batches, db.auditLogs, db.rebuyExecutions, db.plans, db.extraTargets, db.accounts, db.hedges],
         async () => {
         if (data.stocks) {
           await db.stocks.clear()
@@ -642,6 +705,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // 否则旧库里残留的成交会污染恢复后的净持仓与奖励预算
         await db.rebuyExecutions.clear()
         if (data.rebuyExecutions) await db.rebuyExecutions.bulkPut(data.rebuyExecutions)
+        // 挂钩分配同样整表替换（V9.26）
+        await db.hedges.clear()
+        if (data.hedges) await db.hedges.bulkPut(data.hedges)
         await db.auditLogs.clear()
         if (data.auditLogs) {
           // 去掉自增 id，让 Dexie 重新分配
@@ -692,10 +758,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     removeRebuy,
     setPlan,
     clearPlan,
+    setHedgeLink,
+    clearHedgeLink,
     addExtraTarget,
     removeExtraTarget,
     plans,
     extraTargets,
+    hedges,
     historyOf,
     updateStock,
     addStock,

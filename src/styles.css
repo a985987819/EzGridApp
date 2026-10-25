@@ -208,23 +208,34 @@ button { font-family: inherit; }
 .trade-item .profit { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .trade-item.deleted { opacity: 0.5; }
 
-/* 方向色（V9.5）：买蓝卖红，数量加粗；目标价维持中性色不抢视线 */
-.trade-item .c-buy { color: var(--buy, #2f6fd6); }
-.trade-item .c-sell { color: var(--up, #d0453f); }
-.trade-item .c-buy b,
-.trade-item .c-sell b { font-weight: 700; }
+/* 状态边框（V9.26.1，取代 V9.5/V9.11 的文字配色）：待卖红 / 待买蓝，文字一律默认色 */
+.trade-item.pending-sell { border-left: 3px solid var(--up, #d0453f); }
+.trade-item.pending-buy { border-left: 3px solid var(--buy, #2f6fd6); }
 
-/* 右侧「剩余 / 已卖」是扫读时最关心的数字，加大加粗、卖方向红 */
+/* 右侧「剩余 / 已卖」仍加大加粗（扫读重点），但颜色回归默认 */
 .trade-item .right-qty {
   font-size: 15px;
   font-weight: 700;
-  color: var(--up, #d0453f);
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
 .trade-item .right-qty:empty { display: none; }
 
-.tag-row { display: flex; gap: 4px; flex-wrap: wrap; }
+.tag-row { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+
+/* 右下角挂单角标（V9.26.1）：这条该挂的单子数值，与状态边框同色系 */
+.trade-item .order-chip {
+  margin-left: auto;
+  border: 1px solid;
+  border-radius: 6px;
+  padding: 1px 8px;
+  font-size: 11.5px;
+  line-height: 1.7;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.trade-item .order-chip.sell { color: var(--up, #d0453f); border-color: var(--up, #d0453f); }
+.trade-item .order-chip.buy { color: var(--buy, #2f6fd6); border-color: var(--buy, #2f6fd6); }
 
 /* ---------- 价格网格 ---------- */
 /* 表格外面套一层边框，表头单独给底色 + 实线，避免表头和数据糊在一起 */
@@ -607,9 +618,17 @@ button { font-family: inherit; }
 .tree-legend .dot.fallen::before { background: #a38f70; }
 .tree-legend .dot.leaf::before { background: #5f9a4a; }
 /* 手绘插画风（V9.18~21 存档）的图例沿用旧配色 */
-.tree-legend[data-style="sketch"] .dot.buy::before { background: #5b8fd9; }
-.tree-legend[data-style="sketch"] .dot.sell::before { background: #d95f57; }
-.tree-legend[data-style="sketch"] .dot.fallen::before { background: #d9b56a; }
+.tree-wrap[data-style="sketch"] .tree-legend .dot.buy::before { background: #5b8fd9; }
+.tree-wrap[data-style="sketch"] .tree-legend .dot.sell::before { background: #d95f57; }
+.tree-wrap[data-style="sketch"] .tree-legend .dot.fallen::before { background: #d9b56a; }
+/* 数轴风（V9.24）：Apple 简约配色 + 冷白底 */
+.tree-wrap[data-style="axis"] { background: #fbfbfd; border-color: #e3e3e8; }
+.tree-wrap[data-style="axis"] .tree-legend { border-top-color: #e8e8ed; color: #8e8e93; }
+.tree-wrap[data-style="axis"] .tree-legend .dot.buy::before { background: #007aff; }
+.tree-wrap[data-style="axis"] .tree-legend .dot.sell::before { background: #ff3b30; }
+.tree-wrap[data-style="axis"] .tree-legend .dot.fallen::before { background: #8e8e93; }
+.tree-wrap[data-style="axis"] .tree-legend .style-toggle { background: #fff; border-color: #d8d8dd; }
+.tree-wrap[data-style="axis"] .tree-legend .style-toggle:hover { background: #f2f2f7; }
 /* 风格切换：低调的文字按钮，藏在图例条里 */
 .tree-legend .style-toggle {
   border: 1px solid rgba(120, 104, 78, 0.35);
@@ -623,6 +642,17 @@ button { font-family: inherit; }
 }
 .tree-legend .style-toggle:hover { background: #f3ecdb; }
 .tree-legend .hint { margin-left: auto; }
+/* V9.25 图例防遮挡：图例条不透明（与画布同底色），和画布内容有明确分界；
+   移动端藏长提示与聚合说明，图例保持一行，把垂直空间还给画布 */
+.tree-legend { background: #f4eee0; }
+.tree-wrap[data-style="axis"] .tree-legend { background: #fbfbfd; }
+@media (max-width: 560px) {
+  .tree-legend { gap: 4px 10px; padding: 6px 10px; }
+  .tree-legend .hint { display: none; }
+  .tree-legend .dot.agg { display: none; }
+}
+/* V9.26 挂钩编辑器：候选行右端的股数输入 */
+.data-block .line .hedge-qty { width: 92px; flex: 0 0 auto; }
 /* V9.7：日历事件条撑满格宽（库里 chip 是收缩布局），聚合条才能左右分布 */
 /* V9.13：统计条占格子高度一半——bar-top 库里已算到格子垂直中点，从这起落到格底 */
 [class*='animal-event-'] {

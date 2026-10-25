@@ -21,6 +21,9 @@ export interface TradesQuery {
   q?: string
   /** 价格档（整数分） */
   price?: number
+  /** 价格区间（整数分，含两端）：价格树聚合枝点击跳转用；单档跳转仍用 price */
+  priceLo?: number
+  priceHi?: number
   /** 日期区间（卖出日期优先，其次买入日期） */
   from?: string
   to?: string
@@ -44,6 +47,8 @@ export function serializeTradesQuery(q: TradesQuery): string {
   if (q.status && q.status.length > 0) p.set('status', q.status.join(','))
   if (q.q) p.set('q', q.q)
   if (typeof q.price === 'number') p.set('price', String(q.price))
+  if (typeof q.priceLo === 'number') p.set('priceLo', String(q.priceLo))
+  if (typeof q.priceHi === 'number') p.set('priceHi', String(q.priceHi))
   if (q.from) p.set('from', q.from)
   if (q.to) p.set('to', q.to)
   if (q.id) p.set('id', q.id)
@@ -64,6 +69,10 @@ export function parseTradesQuery(search: string): TradesQuery {
   if (kw) q.q = kw
   const price = Number(p.get('price'))
   if (p.get('price') !== null && Number.isFinite(price)) q.price = price
+  const priceLo = Number(p.get('priceLo'))
+  if (p.get('priceLo') !== null && Number.isFinite(priceLo)) q.priceLo = priceLo
+  const priceHi = Number(p.get('priceHi'))
+  if (p.get('priceHi') !== null && Number.isFinite(priceHi)) q.priceHi = priceHi
   const from = p.get('from')
   if (from) q.from = from
   const to = p.get('to')

@@ -29,6 +29,8 @@ export interface BranchBin {
   /** 已成交组的已盈利合计（元 → 分，成本缺失的卖出不计） */
   profitCents: number
   pick?: { cx: number; cy: number; r: number } // 拾取圆（canvas 内 px），点击/投影共用
+  /** 注记文字热区（canvas 内 px）：hover/点击的扩靶——枝梢注记也能命中（数轴风 V9.25.1） */
+  note?: { x: number; y: number; w: number; h: number }
 }
 
 export interface WorkBins {
@@ -55,7 +57,7 @@ export interface TreeFrame {
 }
 
 export interface TreeStyle {
-  id: 'atlas' | 'sketch'
+  id: 'atlas' | 'sketch' | 'axis'
   /** 数据牌行高（px）：合并粒度按它随缩放推算 */
   cardRowPx: number
   /** 交互后是否短窗口逐帧重画（手绘沸腾） */

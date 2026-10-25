@@ -280,11 +280,16 @@ export function Overview({
                 <div className={`v long ${tone(current.profitCents)}`}>{signedMoney(current.profitCents)}</div>
               </div>
             </div>
-            {/* 已成交枯枝跳明细要放开「隐藏已完成」，否则点过去看不到行 */}
+            {/* 已成交枯枝跳明细要放开「隐藏已完成」，否则点过去看不到行；
+                聚合组传整段价格区间（V9.25），单档仍走 price= 精确跳转 */}
             <TreeTrunk
               stockName={current.stockName}
-              onPick={(p, opts) =>
-                goTrades({ stock: current.stockName, price: p, showDone: opts?.done === true || undefined })
+              onPick={({ loCents, hiCents, done }) =>
+                goTrades(
+                  loCents === hiCents
+                    ? { stock: current.stockName, price: loCents, showDone: done === true || undefined }
+                    : { stock: current.stockName, priceLo: loCents, priceHi: hiCents, showDone: done === true || undefined },
+                )
               }
             />
           </div>
