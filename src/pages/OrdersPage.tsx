@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Button, Card, Input, Modal, Tag, notificationOpen } from 'animal-island-ui'
 import { Select } from '../ui/Select'
 import { useApp } from '../store/useApp'
@@ -97,6 +97,18 @@ export function OrdersPage({
   const [editingLimit, setEditingLimit] = useState(false)
   const [upText, setUpText] = useState('')
   const [downText, setDownText] = useState('')
+
+  // V9.42：往下滑把吸顶设置收成一行摘要，回顶才展开。阈值留回差，避免在临界点反复收放
+  const [compact, setCompact] = useState(false)
+  useEffect(() => {
+    const onScroll = () => {
+      const y = window.scrollY
+      setCompact((wasCompact) => (wasCompact ? y > 24 : y > 96))
+    }
+    onScroll()
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => window.removeEventListener('scroll', onScroll)
+  }, [])
 
   const range =
     limitOverride && limitOverride.stock === effectiveStock
@@ -413,7 +425,30 @@ export function OrdersPage({
 
   return (
     <div className="stack">
-      <div className="page-sticky" data-sticky="orders">
+      <div className={`page-sticky orders-sticky${compact ? ' is-compact' : ''}`} data-sticky="orders">
+      {compact && (
+        <button
+          type="button"
+          className="orders-compact"
+          data-testid="orders-compact"
+          onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+          aria-label="回到顶部展开挂单设置"
+        >
+          <span className="oc-stock">{effectiveStock || '未选股'}</span>
+          <span className="oc-piece">昨收 <b>{confirmed ? price(confirmed.closeCents) : lastClose.trim() || '—'}</b></span>
+          {range ? (
+            <>
+              <span className="oc-piece oc-up">涨停 <b>{price(range.upCents)}</b></span>
+              <span className="oc-piece oc-down">跌停 <b>{price(range.downCents)}</b></span>
+            </>
+          ) : (
+            <span className="oc-piece oc-muted">涨跌停未确认</span>
+          )}
+          {sandbox.active && <span className="oc-chip">沙盒</span>}
+          <span className="oc-expand" aria-hidden="true">↑</span>
+        </button>
+      )}
+      <div className="orders-setup" hidden={compact}>
       <div className="page-title">
         <h2>挂单</h2>
         <div className="row" style={{ gap: 6 }}>
@@ -607,6 +642,7 @@ export function OrdersPage({
           )}
         </div>
       </Card>
+      </div>
       </div>
 
       {/* 2. 今日挂单 */}

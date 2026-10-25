@@ -6,7 +6,6 @@ describe('明细筛选的 URL 序列化（S7）', () => {
     const q = {
       stock: '柳工',
       status: ['pending', 'sellDateMissing'],
-      q: '63',
       price: 801,
       from: '2026-02-01',
       to: '2026-02-28',

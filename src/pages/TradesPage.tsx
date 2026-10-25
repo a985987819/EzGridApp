@@ -152,7 +152,6 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   } = useApp()
   const [stockFilter, setStockFilter] = useState(urlQuery.stock ?? 'all')
   const [statuses, setStatuses] = useState<StatusKey[]>(() => (urlQuery.status ?? []).filter(isStatusKey))
-  const [keyword, setKeyword] = useState(urlQuery.q ?? '')
   const [priceFilter, setPriceFilter] = useState<number | null>(
     typeof urlQuery.price === 'number' ? urlQuery.price : null,
   )
@@ -172,6 +171,17 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   const [showDeleted, setShowDeleted] = useState(urlQuery.del === true)
   // V9.5：默认隐藏「已完成」行（卖完且无待回补），URL 带 showDone=1 时放开
   const [hideDone, setHideDone] = useState(urlQuery.showDone !== true)
+  // V9.42：往下滑把股票 tab / 状态筛选收起来，只留标题计数；回顶才展开。阈值留回差防抖
+  const [filtersHidden, setFiltersHidden] = useState(false)
+  useEffect(() => {
+    const onScroll = () => {
+      const y = window.scrollY
+      setFiltersHidden((wasHidden) => (wasHidden ? y > 24 : y > 96))
+    }
+    onScroll()
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => window.removeEventListener('scroll', onScroll)
+  }, [])
   const [openRow, setOpenRow] = useState<number | null>(null)
   // V9.40：Drawer 打开时库会把 body 锁成 overflow:hidden，文档高度塌回一屏、scrollY 被清零；
   // 打开前记下位置，关掉后补回去——否则编辑完一笔要从头往下划才能找回这一行。
@@ -191,7 +201,6 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     const q = JSON.parse(urlKey) as TradesQuery
     setStockFilter(q.stock ?? 'all')
     setStatuses((q.status ?? []).filter(isStatusKey))
-    setKeyword(q.q ?? '')
     setPriceFilter(typeof q.price === 'number' ? q.price : null)
     setPriceLo(typeof q.priceLo === 'number' ? q.priceLo : null)
     setPriceHi(typeof q.priceHi === 'number' ? q.priceHi : null)
@@ -208,7 +217,6 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     replaceRoute('trades', {
       stock: stockFilter === 'all' ? undefined : stockFilter,
       status: statuses.length > 0 ? statuses : undefined,
-      q: keyword || undefined,
       price: priceFilter ?? undefined,
       priceLo: priceLo ?? undefined,
       priceHi: priceHi ?? undefined,
@@ -219,7 +227,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       del: showDeleted || undefined,
       showDone: !hideDone || undefined,
     })
-    }, [stockFilter, statuses, keyword, priceFilter, priceLo, priceHi, fromDate, toDate, idFilter, sortBy, showDeleted, hideDone])
+    }, [stockFilter, statuses, priceFilter, priceLo, priceHi, fromDate, toDate, idFilter, sortBy, showDeleted, hideDone])
 
   // nanoId 索引：展示 / 筛选 / 跳转的唯一行级 id（V9.4）
   const nano = useMemo(() => buildNanoIdIndex(records), [records])
@@ -264,7 +272,6 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
         // 停用的股票不出现在明细里
         if (!enabledSet.has(r.rec.stockName)) return false
       } else if (r.rec.stockName !== stockFilter) return false
-      if (keyword && !String(r.rec.sourceRow).includes(keyword) && !r.rec.stockName.includes(keyword) && !(rId ?? '').includes(keyword)) return false
       if (priceFilter !== null) {
         const prices = [r.rec.targetPriceCents, r.rec.buyPriceCents, r.sell?.priceCents ?? null, r.rec.earlyBuyPriceCents]
         if (!prices.includes(priceFilter)) return false
@@ -296,7 +303,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       return true
     })
     return { filtered: list, noDateHidden: hidden }
-  }, [rows, stockFilter, keyword, priceFilter, priceLo, priceHi, statuses, showDeleted, enabledSet, fromDate, toDate, idFilter, nano, hideDone, ledger.repairChains])
+  }, [rows, stockFilter, priceFilter, priceLo, priceHi, statuses, showDeleted, enabledSet, fromDate, toDate, idFilter, nano, hideDone, ledger.repairChains])
 
   /** 已生效的条件 chips：每颗都能单独点掉 */
   const activeChips = useMemo(() => {
@@ -325,15 +332,14 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
           setToDate('')
         },
       })
-    if (keyword) chips.push({ key: 'q', label: `搜索 ${keyword}`, clear: () => setKeyword('') })
     if (idFilter !== null) {
       const rec = nano.byId.get(idFilter)
       chips.push({ key: 'id', label: rec ? `行 ${rec.sourceRow}` : `#${idFilter}`, clear: () => setIdFilter(null) })
     }
     return chips
-  }, [stockFilter, statuses, priceFilter, priceLo, priceHi, fromDate, toDate, keyword, idFilter, nano])
+  }, [stockFilter, statuses, priceFilter, priceLo, priceHi, fromDate, toDate, idFilter, nano])
 
-  /** 一键复位：股票 / 状态 / 日期 / 价格（含区间）/ 关键词 / nanoId 全清（排序与已删除开关不动），已完成恢复默认隐藏 */
+  /** 一键复位：股票 / 状态 / 日期 / 价格（含区间）/ nanoId 全清（排序与已删除开关不动），已完成恢复默认隐藏 */
   function resetFilters() {
     setStockFilter('all')
     setStatuses([])
@@ -342,7 +348,6 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     setPriceHi(null)
     setFromDate('')
     setToDate('')
-    setKeyword('')
     setIdFilter(null)
     setHideDone(true)
   }
@@ -539,12 +544,13 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
 
   return (
     <div className="stack">
-      <div className="page-sticky" data-sticky="trades">
+      <div className={`page-sticky trades-sticky${filtersHidden ? ' is-condensed' : ''}`} data-sticky="trades">
         <div className="page-title">
           <h2>明细</h2>
           <p>{filtered.length} / {rows.length} 行</p>
         </div>
 
+        <div className="trades-filters" hidden={filtersHidden}>
         <div className="stock-tabs" style={{ marginBottom: 8 }}>
           <Tag
             size="medium"
@@ -566,15 +572,6 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
             </Tag>
           ))}
         </div>
-
-        <Input
-          value={keyword}
-          onChange={(e) => setKeyword(e.target.value)}
-          placeholder="搜股票名 / 行号"
-          allowClear
-          onClear={() => setKeyword('')}
-          aria-label="搜索"
-        />
 
         {/* 状态可多选（V9 可叠加）：命中的行要满足每个勾选的状态；单行横滑省吸顶高度 */}
         <div className="filter-chips status-chips scroll" role="group" aria-label="按状态筛选">
@@ -623,6 +620,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
             </button>
           </div>
         )}
+        </div>
       </div>
 
       <Card>

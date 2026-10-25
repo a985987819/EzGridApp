@@ -659,6 +659,59 @@ button { font-family: inherit; }
   opacity: 0.9;
 }
 
+/* ---------- 挂单页吸顶设置：下滑收成一行，回顶展开（V9.42） ---------- */
+.orders-sticky { transition: padding 0.18s var(--ease-soft); }
+.orders-sticky.is-compact { padding: 4px 2px 6px; }
+.orders-setup[hidden] { display: none; }
+.orders-compact {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: rgba(255, 253, 247, 0.96);
+  color: #40382c;
+  font-family: inherit;
+  font-size: 11.5px;
+  line-height: 18px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.orders-compact:active { opacity: 0.72; }
+.orders-compact .oc-stock {
+  flex: none;
+  max-width: 76px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  font-weight: 700;
+}
+.orders-compact .oc-piece { flex: none; color: #8a7c68; }
+.orders-compact .oc-piece b { color: #40382c; font-weight: 600; }
+.orders-compact .oc-piece.oc-up b { color: var(--up); }
+.orders-compact .oc-piece.oc-down b { color: var(--down); }
+.orders-compact .oc-muted { color: #a09080; }
+.orders-compact .oc-chip {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(138, 91, 214, 0.12);
+  color: #7d5bbd;
+  font-size: 10.5px;
+  line-height: 17px;
+}
+.orders-compact .oc-expand { margin-left: auto; flex: none; color: #a09080; font-size: 12px; }
+
+/* ---------- 明细页吸顶：下滑只留标题计数，筛选项回顶再出来（V9.42） ---------- */
+.trades-sticky { transition: padding 0.18s var(--ease-soft); }
+.trades-sticky.is-condensed { padding: 4px 2px 6px; }
+.trades-sticky.is-condensed .page-title { margin-bottom: 0; }
+.trades-filters[hidden] { display: none; }
+
 /* 抽屉/小卡片里的小节标题 */
 .sec-head.sm { margin-bottom: 8px; padding-bottom: 6px; }
 .sec-head.sm > strong { font-size: 13px; }

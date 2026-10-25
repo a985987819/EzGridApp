@@ -17,8 +17,6 @@ export interface TradesQuery {
   stock?: string
   /** 状态多选，取交集；序列化时逗号分隔 */
   status?: string[]
-  /** 关键词：股票名 / 行号 */
-  q?: string
   /** 价格档（整数分） */
   price?: number
   /** 价格区间（整数分，含两端）：价格树聚合枝点击跳转用；单档跳转仍用 price */
@@ -45,7 +43,6 @@ export function serializeTradesQuery(q: TradesQuery): string {
   const p = new URLSearchParams()
   if (q.stock) p.set('stock', q.stock)
   if (q.status && q.status.length > 0) p.set('status', q.status.join(','))
-  if (q.q) p.set('q', q.q)
   if (typeof q.price === 'number') p.set('price', String(q.price))
   if (typeof q.priceLo === 'number') p.set('priceLo', String(q.priceLo))
   if (typeof q.priceHi === 'number') p.set('priceHi', String(q.priceHi))
@@ -65,8 +62,6 @@ export function parseTradesQuery(search: string): TradesQuery {
   if (stock) q.stock = stock
   const status = p.get('status')
   if (status) q.status = status.split(',').filter(Boolean)
-  const kw = p.get('q')
-  if (kw) q.q = kw
   const price = Number(p.get('price'))
   if (p.get('price') !== null && Number.isFinite(price)) q.price = price
   const priceLo = Number(p.get('priceLo'))

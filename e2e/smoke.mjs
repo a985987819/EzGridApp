@@ -709,6 +709,72 @@ try {
   check('明细顶部吸顶', (await stickyOf('trades')) === 'sticky')
   const tradePills = await evaluate(`JSON.stringify([...document.querySelectorAll('.stock-tabs > *')].map(e => e.textContent.trim()))`)
   check('明细也有股票药丸（含「全部」）', JSON.parse(tradePills)[0] === '全部' && JSON.parse(tradePills).length === 5, tradePills)
+
+  console.log('\n[6.1] 明细删除搜索框；下滑收起筛选与排序，回顶恢复')
+  check(
+    '搜索框已删除',
+    (await evaluate(`Boolean(document.querySelector('input[aria-label="搜索"]'))`)) === false &&
+      !(await bodyText()).includes('搜股票名'),
+  )
+  const tradesFullH = Number(await evaluate(`document.querySelector('[data-sticky="trades"]')?.getBoundingClientRect().height ?? 0`))
+  const topFiltersRaw = await evaluate(`(() => {
+    const shown = (sel) => {
+      const el = document.querySelector(sel)
+      return Boolean(el && getComputedStyle(el).display !== 'none' && el.getBoundingClientRect().bottom > 0)
+    }
+    return JSON.stringify({
+      tabs: shown('.stock-tabs'),
+      status: shown('.status-chips'),
+      sort: shown('.sort-chips'),
+      search: Boolean(document.querySelector('input[aria-label="搜索"]')),
+    })
+  })()`)
+  const topFilters = JSON.parse(topFiltersRaw)
+  console.log('  顶部控件:', topFiltersRaw)
+  check('顶部显示股票 tab / 状态筛选 / 排序', topFilters.tabs && topFilters.status && topFilters.sort, topFiltersRaw)
+  await evaluate(`window.scrollTo(0, 900)`)
+  await sleep(700)
+  const condensedRaw = await evaluate(`(() => {
+    const sticky = document.querySelector('[data-sticky="trades"]')
+    const filters = document.querySelector('.trades-filters')
+    const sort = document.querySelector('.sort-chips')
+    const sr = sort?.getBoundingClientRect()
+    return JSON.stringify({
+      filtersHidden: filters ? getComputedStyle(filters).display === 'none' : null,
+      sortOut: !sr || sr.bottom <= 0,
+      title: document.querySelector('[data-sticky="trades"] .page-title')?.textContent.replace(/\\s+/g, ' ').trim() ?? '',
+      position: sticky ? getComputedStyle(sticky).position : 'missing',
+      h: Math.round(sticky?.getBoundingClientRect().height ?? 0),
+      y: Math.round(window.scrollY),
+    })
+  })()`)
+  const condensed = JSON.parse(condensedRaw)
+  console.log('  收起后:', condensedRaw)
+  check('下滑后筛选项隐藏', condensed.filtersHidden === true && condensed.y > 96, condensedRaw)
+  check('下滑后排序方式离开视野', condensed.sortOut === true, condensedRaw)
+  check('收起后标题与计数仍在吸顶', condensed.position === 'sticky' && condensed.title.includes('明细') && condensed.title.includes('行'), condensedRaw)
+  check('收起后吸顶高度变小', condensed.h > 0 && condensed.h < tradesFullH / 2, `full=${tradesFullH} condensed=${condensed.h}`)
+  const condensedShot = await send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync(join(OUT, 'mobile-trades-condensed.png'), Buffer.from(condensedShot.data, 'base64'))
+  await evaluate(`window.scrollTo(0, 0)`)
+  await sleep(800)
+  const tradesRestoredRaw = await evaluate(`(() => {
+    const filters = document.querySelector('.trades-filters')
+    const sort = document.querySelector('.sort-chips')
+    return JSON.stringify({
+      y: Math.round(window.scrollY),
+      filtersShown: Boolean(filters && getComputedStyle(filters).display !== 'none'),
+      tabs: Boolean(document.querySelector('.stock-tabs')),
+      sortShown: Boolean(sort && sort.getBoundingClientRect().top < innerHeight),
+    })
+  })()`)
+  const tradesRestored = JSON.parse(tradesRestoredRaw)
+  console.log('  回顶后:', tradesRestoredRaw)
+  check(
+    '回到顶部恢复筛选项与排序',
+    tradesRestored.y === 0 && tradesRestored.filtersShown && tradesRestored.tabs && tradesRestored.sortShown,
+    tradesRestoredRaw,
+  )
   check(
     '点开第 63 行',
     await evaluate(`(() => {
@@ -1165,6 +1231,56 @@ try {
   check('返回后区间还在（涨停 8.91）', keptUp.includes('8.91'), keptUp)
   check('返回后输入框还留着昨收 8.10', (await evaluate(`document.querySelector('input[aria-label="昨收价"]')?.value ?? ''`)) === '8.10')
   check('今日挂单不用重新确认就可用', (await bodyText()).includes('可挂买'))
+
+  console.log('\n[8.1.2] 下滑收成一行摘要，回顶恢复完整设置')
+  const fullH = Number(await evaluate(`document.querySelector('[data-sticky="orders"]')?.getBoundingClientRect().height ?? 0`))
+  check(
+    '顶部时显示完整设置',
+    await evaluate(`Boolean(document.querySelector('input[aria-label="昨收价"]')) && !document.querySelector('[data-testid="orders-compact"]')`),
+  )
+  await evaluate(`window.scrollTo(0, 900)`)
+  await sleep(700)
+  const compactRaw = await evaluate(`(() => {
+    const bar = document.querySelector('[data-testid="orders-compact"]')
+    const sticky = document.querySelector('[data-sticky="orders"]')
+    const setup = document.querySelector('.orders-setup')
+    return JSON.stringify({
+      exists: Boolean(bar),
+      text: bar?.textContent.replace(/\\s+/g, ' ').trim() ?? '',
+      setupHidden: setup ? getComputedStyle(setup).display === 'none' : null,
+      position: sticky ? getComputedStyle(sticky).position : 'missing',
+      h: Math.round(sticky?.getBoundingClientRect().height ?? 0),
+      y: Math.round(window.scrollY),
+    })
+  })()`)
+  const compactBar = JSON.parse(compactRaw)
+  console.log('  收起后:', compactRaw)
+  check('下滑后出现单行摘要', compactBar.exists && compactBar.y > 96, compactRaw)
+  check(
+    '摘要含股票/昨收/涨停/跌停',
+    ['柳工', '8.10', '8.91', '7.29'].every((s) => compactBar.text.includes(s)),
+    compactRaw,
+  )
+  check('完整设置已隐藏', compactBar.setupHidden === true, compactRaw)
+  check('收起后仍吸顶', compactBar.position === 'sticky', compactRaw)
+  check('收起后高度明显变小', compactBar.h > 0 && compactBar.h < fullH / 2, `full=${fullH} compact=${compactBar.h}`)
+  const compactShot = await send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync(join(OUT, 'mobile-orders-compact.png'), Buffer.from(compactShot.data, 'base64'))
+  check('点摘要回顶', await evaluate(`document.querySelector('[data-testid="orders-compact"]')?.click() ?? true`))
+  await sleep(1400)
+  const restoredRaw = await evaluate(`(() => {
+    const setup = document.querySelector('.orders-setup')
+    return JSON.stringify({
+      y: Math.round(window.scrollY),
+      compact: Boolean(document.querySelector('[data-testid="orders-compact"]')),
+      setupShown: setup ? getComputedStyle(setup).display !== 'none' : false,
+      input: document.querySelector('input[aria-label="昨收价"]')?.value ?? '',
+    })
+  })()`)
+  const restoredTop = JSON.parse(restoredRaw)
+  console.log('  回顶后:', restoredRaw)
+  check('回到顶部恢复完整设置', restoredTop.y === 0 && !restoredTop.compact && restoredTop.setupShown, restoredRaw)
+  check('恢复后昨收仍是 8.10', restoredTop.input === '8.10', restoredRaw)
 
   console.log('\n[8.2] 挂单计划价')
   check('点第一个「计划」', await clickByText('button', '计划'))

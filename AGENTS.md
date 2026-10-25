@@ -10,7 +10,7 @@ npm run dev        # 127.0.0.1:5173
 npm test           # vitest，175 条（domain 纯函数 + 真实 xlsx fixture 回归）
 npm run lint       # eslint
 npm run build      # tsc --noEmit && vite build；GITHUB_PAGES=true 时启用 /EzGridApp/ 子路径 base
-node e2e/smoke.mjs http://127.0.0.1:5173   # 无头 Chrome CDP，382 项断言，需先起 dev
+node e2e/smoke.mjs http://127.0.0.1:5173   # 无头 Chrome CDP，399 项断言，需先起 dev
                    # 数据种子 = tests/fixtures 经 CDP DOM.setFileInputFiles 塞进上传框（站点不带示例数据）
 ```
 
@@ -73,6 +73,8 @@ store/useApp（唯一写库入口，全部动作写 auditLogs）
 | 编辑抽屉滚动 / 输入法 V9.40 | **抽屉打开会丢滚动位置**：animal-island-ui `Drawer` 打开时给 body 写 `overflow:hidden`，而页面是普通文档流（`.app` 只有 `min-height:100%`）——文档高度塌成一屏，窗口 `scrollY` 被浏览器清零，关掉后也回不去。`TradesPage` 在 `open()` 里先记 `window.scrollY`，抽屉**真正关闭**（`current === null`，不是 `openRow`——行被筛掉时抽屉也会关）后一帧 `scrollTo` 补回来。**输入法避让**：`ui/viewport.ts` 的 `useKeyboardInset(open)` 监听 `visualViewport`，把键盘高度写进 `--kb-inset`、可见高写进 `--kb-vh`、面板高写进 `--ed-h`；Drawer 的 `height` prop 传 `var(--ed-h, 84vh)`（内联样式支持 CSS 变量），`styles.css` 的 `.trades-edit-drawer` 用 `bottom: var(--kb-inset)` + `max-height: calc(var(--kb-vh) - 8px)`，键盘弹出时面板整体抬到键盘上沿、高度收进可见区；`.animal-body` 的 `scroll-padding-bottom` 保证聚焦最下面几行时输入框不被页脚挡住。e2e `[7.2]` 用 `Object.defineProperty(visualViewport, 'height')` 模拟键盘并断言面板几何与滚动复原 |
 | PWA 更新 V9.40 | `vite.config.ts` 的 `registerType` 从 `autoUpdate` 改成 `prompt`：**新版本只提示、绝不自动 reload**（旧 autoUpdate 在部署后强制刷新页面，编辑到一半会丢弹窗和滚动位置）。`main.tsx` 的 `onNeedRefresh` 只弹「手动刷新页面后生效」，每小时 `reg.update()` 照旧检查。用户手动刷新后新 SW 才接管。**别改回 autoUpdate**——用户明确要求「数据更新后只有在手动刷新时才更新页面数据」 |
 | 布局 V9.41 | **删全局「网格交易」header**（`App.tsx` 不再渲染 `.app-header`，`--header-h` 只剩 `env(safe-area-inset-top)`；`.app-main` 自己让出状态栏安全区）。**概览首屏重排**：股票 tab 置顶（原「选股 · 当前股票汇总」标题行删除）；树上方只留高频四项（已实现盈利 / 理想可卖到 / 理想剩余可赚 / 今年共卖），树用 `height: calc(100dvh − --nav-h − 20px − safe-top)` 铺到导航上沿（390×844 画布实测 568px）；可卖/待补/净持仓/已实现 + 回本链下移到树下方，全局三格/标签等低频内容继续往下，必须滚动才看得到。**统计 · 成交日历**当日明细行首加红框「卖出」chip（`.side-chip.sell`），成本文案改「买入成本」（日历只按卖出日归集） |
+| 挂单吸顶 V9.42 | 下滑超过 96px 把挂单页吸顶块（标题 + 沙盒面板 + 选股/昨收/涨跌停设置）收成**一行摘要**（`[data-testid="orders-compact"]`：股票 · 昨收 · 涨停 · 跌停 · 沙盒标记），回顶 24px 内恢复完整布局。阈值带回差防临界抖动；摘要只读，切股/改价要回顶（点摘要平滑回顶）。完整设置包在 `.orders-setup` 里用 `hidden` 收掉，输入值都在会话状态、展开不丢。e2e `[8.1.2]` 钉了收起高度 44px、摘要内容、仍吸顶、回顶复原与昨收保留 |
+| 明细吸顶 V9.42 | **删除明细页搜索框**（原「搜股票名 / 行号」）：连带 `TradesPage` 的 keyword 过滤、搜索条件 chip、URL `q` 参数一起删（`TradesQuery` 不再有 `q`）。下滑超过 96px 把股票 tab / 状态筛选 / 条件 chips 整块用 `.trades-filters[hidden]` 收掉，只留「明细 x / y 行」标题（吸顶高 42px）；回到 24px 内恢复。排序 / 导出 / 新增仍在那张卡里，随页面自然滚走，回顶一起回来。e2e `[6.1]` 钉了搜索框不存在、收起与恢复、排序离开视野、标题仍吸顶 |
 | 动效 V9.37 | 统一缓动 `--ease-soft / --ease-back` + 三档时长（`--dur-1/2/3`）；只动 transform / opacity / 色彩，不动 layout（唯一例外是删除那一行用 max-height 收高度）。**切页带方向**：`.app-main[data-dir=forward\|back]` → `page-in-forward / page-in-back`，方向由 App.tsx 比较 tab 序号得出。**明细行三态**用 `data-anim` 属性驱动（样式在 styles.css）：`new` = 新增落位 + 微光（承接「弹窗收成一条明细」）、`leaving` = 删除向右滑出并收高度（**先播 300ms 动画再真删**，别直接消失）、`done` = 刚完成洗一层青。通用 hook：`ui/motion.ts` 的 `useFlashOnAppear(keys)`（首帧不闪、依赖用 key 签名避免每帧重跑）。底部导航短横线常驻 + scaleX 过渡、图标弹跳；挂单页回补成交的那行同样会闪。`prefers-reduced-motion: reduce` 时全部退化为瞬切。 |
 
 ## ID 前缀约定
