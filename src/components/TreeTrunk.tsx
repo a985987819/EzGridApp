@@ -18,8 +18,10 @@
  *   点枝跳明细（命中面 = 拾取圆 + 枝梢注记文字热区；已成交枝自动放开「隐藏已完成」）。
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { Select } from 'animal-island-ui'
 import { useApp } from '../store/useApp'
 import type { SellTarget } from '../domain/types'
+import { price } from '../ui/format'
 import { atlasStyle } from './treeStyleAtlas'
 import { sketchStyle } from './treeStyleSketch'
 import { axisStyle } from './treeStyleAxis'
@@ -84,15 +86,35 @@ function aggregate(
 export function TreeTrunk({
   stockName,
   onPick,
+  closeCents = null,
+  idealPriceCents = null,
 }: {
   stockName: string
   /** 点击枝条（合并组）：区间 + 是否已成交组 */
   onPick: (pick: TreePick) => void
+  /** 已确认昨收价（分，挂单页来的）：数轴风画异色虚线标记（V9.28） */
+  closeCents?: number | null
+  /** 理想可卖到的股价（分 = 最高待卖目标价）：数轴风画水平参考线 + 标签（V9.29，
+   *  取代 V9.28 的「理想可卖金额」左上角数据牌——金额没有价格位置） */
+  idealPriceCents?: number | null
 }) {
   const { ledger } = useApp()
+  // V9.31 年份筛选：只筛「已成交」（按卖出日期年份）——待买/待卖是当前挂单，不随年份消失。
+  // 数据里出现过哪些年份就列哪些，将来多年度数据直接可切。
+  const years = useMemo(() => {
+    const set = new Set<string>()
+    for (const s of ledger.sells) if (s.soldAt) set.add(s.soldAt.slice(0, 4))
+    return [...set].sort()
+  }, [ledger.sells])
+  const [year, setYear] = useState('all')
+  const effYear = year !== 'all' && years.includes(year) ? year : 'all'
+  const scopedSells = useMemo(
+    () => (effYear === 'all' ? ledger.sells : ledger.sells.filter((s) => (s.soldAt ?? '').startsWith(effYear))),
+    [ledger.sells, effYear],
+  )
   const levels = useMemo(
-    () => aggregate(stockName, ledger.sells, ledger.targets, ledger.orders),
-    [stockName, ledger],
+    () => aggregate(stockName, scopedSells, ledger.targets, ledger.orders),
+    [stockName, scopedSells, ledger.targets, ledger.orders],
   )
   const [styleId, setStyleId] = useState<TreeStyleId>(() => {
     try {
@@ -119,6 +141,15 @@ export function TreeTrunk({
   // onPick 是父组件的内联箭头，引用每次渲染都变——走 ref，避免整棵树反复重建
   const pickRef = useRef(onPick)
   pickRef.current = onPick
+  // 昨收价 / 理想可卖到价走 ref + 手动标脏：值变了只重画一帧，不重挂画布（视角不丢）
+  const closeRef = useRef(closeCents)
+  closeRef.current = closeCents
+  const idealRef = useRef(idealPriceCents)
+  idealRef.current = idealPriceCents
+  const bumpCanvas = useRef<() => void>(() => {})
+  useEffect(() => {
+    bumpCanvas.current()
+  }, [closeCents, idealPriceCents])
 
   useEffect(() => {
     const host = hostRef.current
@@ -180,6 +211,7 @@ export function TreeTrunk({
         let qty = 0
         let wy = 0
         let profit = 0
+        let times = 0
         let repQty = -1
         let repCents = list[i].priceCents
         while (j < list.length && (j === i || list[j].priceCents / 100 - list[j - 1].priceCents / 100 < gap)) {
@@ -188,6 +220,7 @@ export function TreeTrunk({
           qty += q
           wy += (l.priceCents / 100) * q
           profit += l.soldProfitCents
+          times += l.soldCount
           if (q > repQty) {
             repQty = q
             repCents = l.priceCents
@@ -202,6 +235,7 @@ export function TreeTrunk({
           qty,
           count: j - i,
           kind,
+          times,
           profitCents: profit,
         })
         i = j
@@ -223,7 +257,14 @@ export function TreeTrunk({
       work.sold = groupLevels(soldList, (l) => l.soldQty, gap, 'sold')
       work.sell = groupLevels(sellList, (l) => l.sellQty, gap, 'sell')
       work.buy = groupLevels(buyList, (l) => l.buyQty, gap, 'buy')
-      style.drawFrame({ ctx, W, H, k, span: view.span, camY: view.camY, panX: view.panX, sx, sy, y0, y1, boilSeed }, work)
+      style.drawFrame(
+        {
+          ctx, W, H, k, span: view.span, camY: view.camY, panX: view.panX, sx, sy, y0, y1, boilSeed,
+          closeCents: closeRef.current,
+          idealCents: idealRef.current,
+        },
+        work,
+      )
     }
 
     // ---------- 交互：滚轮 / 捏合缩放（锚定指针），拖动攀爬 + 左右平移，点枝跳明细 ----------
@@ -235,6 +276,7 @@ export function TreeTrunk({
     const markDirty = () => {
       dirty = true
     }
+    bumpCanvas.current = markDirty
     /** 交互后的重画请求：手绘风顺带开 ~140ms 沸腾窗口，笔触肉眼可见地重排 */
     const bump = () => {
       if (style.boils) boilUntil = performance.now() + 140
@@ -383,6 +425,16 @@ export function TreeTrunk({
       panX: () => view.panX,
       /** 当前绘制风格 id（'atlas' | 'sketch'），e2e 切换断言用 */
       style: () => style.id,
+      /** 当前已成交年份筛选（'all' 或 'YYYY'），e2e 断言用（V9.31） */
+      year: () => effYear,
+      /** 当前分档结果（V9.31 数轴格子）：count = 档数、over = 塞不下画成「+N」的档数、times = 卖出笔数 */
+      bins: () => ({
+        sell: work.sell.map((b) => ({ count: b.count, over: b.over ?? 0, times: b.times, cents: b.repCents })),
+        buy: work.buy.map((b) => ({ count: b.count, over: b.over ?? 0, times: b.times, cents: b.repCents })),
+        sold: work.sold.map((b) => ({ count: b.count, over: b.over ?? 0, times: b.times, cents: b.repCents })),
+      }),
+      /** 理想可卖到的股价（分，null = 无待卖）：e2e 断言轴上的参考线有值 */
+      ideal: () => idealRef.current,
       /** e2e 恢复视角用：与拖动同一入口 */
       panXBy: (dx: number) => {
         view.panX += dx
@@ -446,18 +498,36 @@ export function TreeTrunk({
       delete (canvas as HTMLCanvasElement & { __tree?: unknown }).__tree
       canvas.remove()
     }
-  }, [levels, stockName, style])
+  }, [levels, stockName, style, effYear])
 
   return (
     <div className="tree-wrap" data-style={styleId}>
-      <div ref={hostRef} className="tree-host" />
+      <div ref={hostRef} className="tree-host">
+        {/* V9.29：数轴风把「理想可卖到」画成轴上的水平参考线；图鉴/手绘风没有价格刻度，
+            退回左上角只读角标（同一个股价口径） */}
+        {idealPriceCents != null && styleId !== 'axis' && (
+          <div className="tree-stat ideal">理想可卖到 {price(idealPriceCents)}</div>
+        )}
+      </div>
       <div className="tree-legend">
         <span className="dot buy">待买 · 左</span>
         <span className="dot sell">待卖 · 右</span>
         <span className="dot fallen">{styleId === 'axis' ? '已成交 · 已盈利' : '枯枝 · 已盈利'}</span>
         {styleId === 'atlas' && <span className="dot agg">枝上点 · 聚合档数</span>}
         {styleId === 'sketch' && <span className="dot leaf">叶 · 聚合档数</span>}
-        {styleId === 'axis' && <span className="dot agg">线上刻线 · 聚合档数</span>}
+        {styleId === 'axis' && <span className="dot agg">格子 · 一格一档</span>}
+        {/* V9.31 年份限制：只筛已成交（按卖出日期），待买/待卖是当前挂单不受影响 */}
+        {years.length > 0 && (
+          <span className="tree-year" title="只筛已成交：按卖出日期年份；待买/待卖是当前挂单，不随年份变">
+            <span>已成交年份</span>
+            <Select
+              options={[{ key: 'all', label: '全部' }, ...years.map((y) => ({ key: y, label: y }))]}
+              value={effYear}
+              onChange={setYear}
+              aria-label="已成交年份"
+            />
+          </span>
+        )}
         <button
           type="button"
           className="style-toggle"

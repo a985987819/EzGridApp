@@ -34,7 +34,6 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
   const {
     stocks,
     records,
-    scopedRecords,
     preview,
     setPreview,
     commitImport,
@@ -42,8 +41,6 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
     setDeriveSellPrice,
     batches,
     rollbackBatch,
-    activeAccountId,
-    accounts,
   } = useApp()
   const [busy, setBusy] = useState(false)
   const [lastFile, setLastFile] = useState('导入文件.xlsx')
@@ -53,7 +50,7 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
     [preview, stocks, deriveSellPrice],
   )
   // 异常行跳明细用 nanoId 定位（V9.4），与明细页筛选同源
-  const nano = useMemo(() => buildNanoIdIndex(scopedRecords), [scopedRecords])
+  const nano = useMemo(() => buildNanoIdIndex(records), [records])
   const previewChecks = useMemo(() => (previewLedger ? compareBaseline(previewLedger) : []), [previewLedger])
 
   // P9 幂等：同 importKey 不覆盖。这里把「key 相同但文件内容改过」的行挑出来，
@@ -155,10 +152,7 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
           </Button>
           <div className="spacer" />
           <span className="tiny muted">
-            本地已有 {records.filter((r) => !r.deletedAt).length} 行 · 写入账户：
-            {activeAccountId === 'all'
-              ? '默认账户'
-              : accounts.find((a) => a.id === activeAccountId)?.name ?? '默认账户'}
+            本地已有 {records.filter((r) => !r.deletedAt).length} 行
           </span>
         </div>
         <label className="row" style={{ gap: 8, marginTop: 10, fontSize: 12 }}>

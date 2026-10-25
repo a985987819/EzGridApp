@@ -2,8 +2,6 @@ import { describe, expect, it } from 'vitest'
 import * as XLSX from 'xlsx'
 import { buildLedger } from './ledger'
 import { DEFAULT_STOCKS } from './defaults'
-import { DEFAULT_ACCOUNT_ID } from './types'
-import { filterByAccount, countByAccount } from './accounts'
 import { parseWorkbook } from '../io/parseWorkbook'
 import type { ExtraTarget, RawRecord, TradePlan } from './types'
 
@@ -104,35 +102,6 @@ describe('V6 计划价（P8）', () => {
     const l = buildLedger(records, DEFAULT_STOCKS, { plans: [plan] })
     expect(l.orders[0].planPriceCents).toBe(790)
     expect(l.totals.rebuyAmountCents).toBe(base.totals.rebuyAmountCents)
-  })
-})
-
-describe('V7 账户', () => {
-  const records = [
-    rec({ stockName: '柳工', sourceRow: 1, accountId: 'acc:a', buyPriceCents: 800, buyQtyRaw: 700, targetPriceCents: 857 }),
-    rec({ stockName: '柳工', sourceRow: 2, accountId: 'acc:b', buyPriceCents: 800, buyQtyRaw: 300, targetPriceCents: 857 }),
-    rec({ stockName: '柳工', sourceRow: 3, buyPriceCents: 800, buyQtyRaw: 200, targetPriceCents: 857 }),
-  ]
-
-  it('activeId=all 不筛；指定账户只留该账户（含老数据落到默认账户）', () => {
-    expect(filterByAccount(records, 'all')).toHaveLength(3)
-    expect(filterByAccount(records, 'acc:a').map((r) => r.sourceRow)).toEqual([1])
-    expect(filterByAccount(records, DEFAULT_ACCOUNT_ID).map((r) => r.sourceRow)).toEqual([3])
-  })
-
-  it('按账户过滤后再算账，数字跟着账户走', () => {
-    const all = buildLedger(records, DEFAULT_STOCKS)
-    const onlyA = buildLedger(filterByAccount(records, 'acc:a'), DEFAULT_STOCKS)
-    expect(all.totals.targetQty).toBe(1200)
-    expect(onlyA.totals.targetQty).toBe(700)
-    for (const c of onlyA.checks) expect(c.ok, `${c.name}: ${c.actual}`).toBe(true)
-  })
-
-  it('countByAccount 跳过软删除', () => {
-    const withDeleted = [...records, { ...records[0], sourceRow: 9, deletedAt: 1 }]
-    const counts = countByAccount(withDeleted)
-    expect(counts.get('acc:a')).toBe(1)
-    expect(counts.get(DEFAULT_ACCOUNT_ID)).toBe(1)
   })
 })
 

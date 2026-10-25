@@ -20,15 +20,6 @@ export interface StockConfig {
   enabled?: boolean
 }
 
-/** 账户：26 年 / 27 年这类分账本（V7） */
-export interface Account {
-  id: string
-  name: string
-  createdAt: number
-}
-
-export const DEFAULT_ACCOUNT_ID = 'acc:default'
-
 /** 从 Excel 解析出来的原始行，尚未派生任何规则字段 */
 export interface RawRecord {
   /** Excel 行号，可回溯；手动新增的行从 100000 起（origin='manual'） */
@@ -70,8 +61,6 @@ export interface RawRecord {
   sellDateNeedsToday?: boolean
   /** 由哪一批导入写入，用于回滚（P9 之外补充） */
   batchId?: string | null
-  /** 归属账户，缺省为默认账户 */
-  accountId?: string
 }
 
 /** 编辑审计（P10）：实体 / 字段 / 旧值 / 新值 / 时间 / 来源 */
@@ -271,6 +260,8 @@ export interface StockSummary {
   targetCount: number
   targetQty: number
   targetAmountCents: number
+  /** 待卖里的最高目标价（分）：股价涨到这里待卖全部出清；无待卖时 null（V9.29） */
+  targetMaxPriceCents: number | null
   expectProfitCents: number
   rebuyCount: number
   rebuyQty: number

@@ -6,3 +6,6 @@ e2e/out/
 *.local
 .DS_Store
 .vite/
+
+# 工具本地状态（记忆/缓存），不进仓库
+.workbuddy/

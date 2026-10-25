@@ -251,27 +251,52 @@ try {
   console.log('  概览药丸:', pills)
   check('药丸顺序跟随股票排序（三一重工在前）', JSON.parse(pills)[0] === '三一重工')
 
+  // V9.27 概览翻转：价格树全屏置顶（DOM 先于选股卡、画布接近一屏高），盈利右侧带加粗「共计x次」
   const stickyOf = (key) =>
     evaluate(`(() => {
       const el = document.querySelector('[data-sticky="${key}"]')
       if (!el) return 'missing'
       return getComputedStyle(el).position
     })()`)
-  check('概览顶部吸顶', (await stickyOf('overview')) === 'sticky')
-  // 滚动后吸顶块应停在顶栏下方
-  await evaluate(`window.scrollTo(0, 600)`)
-  await sleep(400)
-  const stickyTop = await evaluate(`(() => {
-    const el = document.querySelector('[data-sticky="overview"]')
-    const header = document.querySelector('.app-header')
-    if (!el || !header) return null
-    return JSON.stringify({ el: Math.round(el.getBoundingClientRect().top), header: Math.round(header.getBoundingClientRect().bottom) })
+  const flipInfo = await evaluate(`(() => {
+    const canvas = document.querySelector('canvas[data-tree="price"]')
+    const tabs = document.querySelector('.stock-tabs')
+    if (!canvas || !tabs) return null
+    return JSON.stringify({
+      h: Math.round(canvas.getBoundingClientRect().height),
+      tabsBeforeTree: Boolean(tabs.compareDocumentPosition(canvas) & Node.DOCUMENT_POSITION_FOLLOWING),
+      count: Boolean(document.querySelector('.profit-count b')),
+    })
   })()`)
-  console.log('  吸顶位置:', stickyTop)
-  const st = JSON.parse(stickyTop)
-  check('滚动后吸顶块贴在顶栏下沿', Math.abs(st.el - st.header) <= 8, stickyTop)
-  await evaluate(`window.scrollTo(0, 0)`)
-  await sleep(300)
+  const flip = flipInfo ? JSON.parse(flipInfo) : null
+  check('选股卡置顶（DOM 先于树）', Boolean(flip?.tabsBeforeTree), flipInfo ?? '')
+  check('树填满首屏剩余（画布 ≥ 360px 高）', Boolean(flip && flip.h >= 360), flipInfo ?? '')
+  check('盈利右侧有「共计x次」', Boolean(flip?.count), flipInfo ?? '')
+  check('共计次数文案在页面上', /共计\s*\d+\s*次/.test(text), '')
+
+  // V9.28 当前股票概述四项 + V9.29「理想可卖到」改股价并画到数轴上
+  check(
+    '当前股票概述四项',
+    text.includes('已实现盈利') && text.includes('理想可卖到') && text.includes('理想剩余可赚') && text.includes('今年共卖'),
+  )
+  const idealInfo = await evaluate(`(() => {
+    const c = document.querySelector('canvas[data-tree="price"]')
+    if (!c || !c.__tree) return null
+    const lv = c.__tree.levels()
+    const topSell = lv.filter((l) => l.sell > 0).reduce((m, l) => Math.max(m, l.cents), 0)
+    return JSON.stringify({
+      ideal: c.__tree.ideal(),
+      topSell,
+      axis: c.__tree.style() === 'axis',
+      badge: Boolean(document.querySelector('.tree-stat.ideal')),
+      card: (document.querySelector('.metric-strip') || {}).textContent || '',
+    })
+  })()`)
+  const ideal = idealInfo ? JSON.parse(idealInfo) : null
+  console.log('  理想可卖到:', idealInfo)
+  check('「理想可卖到」= 最高待卖目标价（股价口径）', Boolean(ideal && ideal.ideal > 0 && ideal.ideal === ideal.topSell), idealInfo)
+  check('该价位画在数轴上（数轴风不再留左上角金额牌）', Boolean(ideal && ideal.axis && ideal.badge === false), idealInfo)
+  check('概述卡显示的是股价而非金额', Boolean(ideal && /\d+\.\d{2}\s*元/.test(ideal.card)), ideal?.card ?? '')
 
   console.log('\n[4.5] 三格点开看构成')
   check(
@@ -936,6 +961,21 @@ try {
   const blk = JSON.parse(blocks)
   check('挂单页有带边框的数据块', blk.bordered >= 2, blocks)
   check('可挂买/可挂卖 分组标签存在', blk.labels.some((l) => l.includes('可挂买')) && blk.labels.some((l) => l.includes('可挂卖')), blocks)
+
+  // V9.29.1：可挂买 / 可挂卖 行加左侧状态边框（与明细页 trade-item 同语义：蓝=买、红=卖）
+  const rowEdge = await evaluate(`(() => {
+    const read = (cls) => {
+      const el = document.querySelector('.data-block .line.' + cls)
+      if (!el) return null
+      const s = getComputedStyle(el)
+      return { w: parseFloat(s.borderLeftWidth), c: s.borderLeftColor }
+    }
+    return JSON.stringify({ buy: read('pending-buy'), sell: read('pending-sell') })
+  })()`)
+  console.log('  挂单行左边框:', rowEdge)
+  const edge = JSON.parse(rowEdge)
+  check('可挂买行有蓝色左边框', Boolean(edge.buy && edge.buy.w >= 2.5 && edge.buy.c === 'rgb(47, 111, 214)'), rowEdge)
+  check('可挂卖行有红色左边框', Boolean(edge.sell && edge.sell.w >= 2.5 && edge.sell.c === 'rgb(208, 69, 63)'), rowEdge)
   check('今日挂单里有「记成交」', text.includes('记成交'))
 
   // 待买/待卖必须常驻，不能藏在页签后面（§04）
@@ -960,7 +1000,7 @@ try {
   const backUp = await evaluate(`document.querySelector('[data-tag="limit-up"]')?.textContent.trim() ?? ''`)
   check('恢复后回到 8.91', backUp.includes('8.91'), backUp)
 
-  console.log('\n[8.1.1] 跳明细往返：昨收与区间保留在会话里（V9.4 起不落库）')
+  console.log('\n[8.1.1] 跳明细往返：昨收与区间保留（V9.28 起昨收存 localStorage 跨会话）')
   await nav('trades')
   await nav('orders')
   const keptUp = await evaluate(`document.querySelector('[data-tag="limit-up"]')?.textContent.trim() ?? ''`)
@@ -1044,6 +1084,70 @@ try {
   check('拉远后 span 到上限 150', axis.span === 150, JSON.stringify(axis))
   check('下沿不越过 0（股价永远为正）', axis.center >= axis.span / 2 - 1e-6, JSON.stringify(axis))
 
+  // V9.31 格子进度条：缩小视图时必须还能数出「聚合了多少档」——格子数 + 格子后面的「+N」= 档数
+  // 切到柳工（待买/待卖/已成交三类都有，格子才测得全）
+  await clickByText('.stock-tabs > *', '柳工')
+  await sleep(800)
+  const cellInfo = await evaluate(`(() => {
+    const t = document.querySelector('canvas[data-tree="price"]').__tree
+    const lv = t.levels()
+    const cents = lv.map((l) => l.cents)
+    // 把视野收到数据中段、跨度 ~18 元：这就是「视图缩小」的真实场景
+    t.setView(18, (Math.min(...cents) + Math.max(...cents)) / 200)
+    const b = t.bins()
+    return JSON.stringify({
+      bins: b,
+      sellLevels: lv.filter((l) => l.sell > 0).length,
+      buyLevels: lv.filter((l) => l.buy > 0).length,
+      soldLevels: lv.filter((l) => l.sold > 0).length,
+    })
+  })()`)
+  const cells = JSON.parse(cellInfo)
+  const sumCount = (arr) => arr.reduce((a, x) => a + x.count, 0)
+  console.log('  格子分档:', JSON.stringify({ sell: sumCount(cells.bins.sell), buy: sumCount(cells.bins.buy), sold: sumCount(cells.bins.sold) }))
+  check('卖侧档数守恒（格子分档合起来 = 待卖档位数）', sumCount(cells.bins.sell) === cells.sellLevels, cellInfo)
+  check('买侧档数守恒', sumCount(cells.bins.buy) === cells.buyLevels, cellInfo)
+  check(
+    '缩小时聚合成多档但每档都能数清（画 8 格以内 + 「+N」补齐）',
+    [...cells.bins.sell, ...cells.bins.buy].every((b) => b.count > 0 && b.count - b.over >= 1 && b.count - b.over <= 8),
+    cellInfo,
+  )
+  check(
+    '已成交每档都带「共卖出几次」',
+    cells.bins.sold.every((b) => b.times >= 1),
+    cellInfo,
+  )
+  // 缩小后的样子留一张图（视觉回归用）
+  await sleep(400)
+  const zoomShot = await send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync(join(OUT, 'tree-cells-zoomed.png'), Buffer.from(zoomShot.data, 'base64'))
+
+  // V9.31 年份限制：默认「全部」；切到具体年份后整棵树照常出图（未来多年数据可切）
+  const yearInit = await evaluate(`(() => {
+    const sel = document.querySelector('[aria-label="已成交年份"]')
+    const t = document.querySelector('canvas[data-tree="price"]').__tree
+    return JSON.stringify({ has: Boolean(sel), year: t.year() })
+  })()`)
+  const yi = JSON.parse(yearInit)
+  check('树上加了已成交年份筛选，默认全部', yi.has && yi.year === 'all', yearInit)
+  check(
+    '打开年份下拉',
+    await evaluate(`(() => {
+      const el = document.querySelector('[aria-label="已成交年份"]')
+      if (!el) return false
+      el.click(); return true
+    })()`),
+  )
+  await sleep(400)
+  check('选 2026 年', await clickByText('[role="option"]', '2026'))
+  await sleep(700)
+  const yearAfter = await evaluate(`(() => {
+    const c = document.querySelector('canvas[data-tree="price"]')
+    return JSON.stringify({ year: c.__tree.year(), levels: c.__tree.levels().length })
+  })()`)
+  const ya = JSON.parse(yearAfter)
+  check('年份切到 2026 且树照常出档位', ya.year === '2026' && ya.levels > 0, yearAfter)
+
   console.log('\n[10] 新增一笔：卖出（先卖后买）')
   await nav('trades')
   check('点「新增一笔」', await clickByText('button', '新增一笔'))
@@ -1076,8 +1180,61 @@ try {
   check('卖出后净持仓 12,700', text.includes('12,700'))
   check('卖出后敞口 2,500', text.includes('2,500'))
 
-  // 回补价被自动推导出来，来源写在明细里
+  // V9.30 裸卖待挂钩：行上标签点一下直接弹绑定面板（不必先开抽屉）
   await nav('trades')
+  await sleep(600)
+  text = await bodyText()
+  check('裸卖行有「裸卖待挂钩」标签', text.includes('裸卖待挂钩'))
+  check(
+    '点「裸卖待挂钩」标签',
+    await evaluate(`(() => {
+      const el = document.querySelector('[data-hedge="100000"]')
+      if (!el) return false
+      el.click(); return true
+    })()`),
+  )
+  await sleep(700)
+  const sheetInfo = await evaluate(`(() => {
+    const inputs = [...document.querySelectorAll('input[data-field^="hedge-"]')]
+    const save = [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === '保存挂钩')
+    const wrap = document.querySelector('[class*="animal-modal-"]')
+    const r = wrap ? wrap.getBoundingClientRect() : null
+    const sr = save ? save.getBoundingClientRect() : null
+    return JSON.stringify({
+      cands: inputs.length,
+      save: Boolean(save && save.offsetParent !== null),
+      // V9.33：列表变高后「保存挂钩」曾被顶到可视区外，这条专门盯它
+      saveInView: Boolean(sr && sr.top >= 0 && sr.bottom <= window.innerHeight - 2),
+      title: document.body.textContent.includes('裸卖待挂钩'),
+      box: r ? { l: Math.round(r.left), r: Math.round(r.right), w: Math.round(r.width), vw: window.innerWidth } : null,
+    })
+  })()`)
+  console.log('  挂钩弹层:', sheetInfo)
+  const sheet = JSON.parse(sheetInfo)
+  check('弹层里列出未完成买单', sheet.cands > 0, sheetInfo)
+  check('弹层里有「保存挂钩」', sheet.save, sheetInfo)
+  check('「保存挂钩」在可视区内（列表不把按钮顶出去）', sheet.saveInView, sheetInfo)
+  check('弹层标题「裸卖待挂钩」', sheet.title, sheetInfo)
+  check('弹层没超出视口宽度', Boolean(sheet.box && sheet.box.l >= 0 && sheet.box.r <= sheet.box.vw), sheetInfo)
+  // V9.33 面板新增：自动挂满 / 允许挂不满 / 已分配提示
+  const sheetTools = await evaluate(`JSON.stringify({
+    auto: [...document.querySelectorAll('button')].some((b) => b.textContent.trim() === '自动挂满'),
+    partial: document.body.textContent.includes('必须挂满') || document.body.textContent.includes('允许挂不满'),
+    assigned: /已分配\\s*[\\d,]+\\s*\\/\\s*[\\d,]+\\s*股/.test(document.body.textContent),
+  })`)
+  console.log('  挂钩面板工具:', sheetTools)
+  const tools = JSON.parse(sheetTools)
+  check('面板有「自动挂满」', tools.auto, sheetTools)
+  check('面板有「挂满/挂不满」开关', tools.partial, sheetTools)
+  check('面板有「已分配 x / y 股」', tools.assigned, sheetTools)
+  // 留一张弹层截图（视觉回归/人工核对用）
+  const sheetShot = await send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync(join(OUT, 'hedge-sheet.png'), Buffer.from(sheetShot.data, 'base64'))
+  check('点「关闭」收起弹层', await clickByText('button', '关闭'))
+  await sleep(500)
+  check('弹层已收起', (await evaluate(`document.querySelectorAll('input[data-field^="hedge-"]').length`)) === 0, '')
+
+  // 回补价被自动推导出来，来源写在明细里
   await evaluate(`document.querySelector('[data-row="100000"]')?.click()`)
   await sleep(700)
   text = await bodyText()
@@ -1085,7 +1242,10 @@ try {
   check('推导出的回补价 8.11', text.includes('8.11'))
 
   // V9.26 先卖后买挂钩：裸卖 8.68×500 挂到未卖的高位批次上
-  check('抽屉出现挂钩区', text.includes('挂钩高位买入'))
+  check(
+    '抽屉里也有同一个挂钩面板',
+    Boolean(await evaluate(`Boolean(document.querySelector('[data-testid="hedge-section"] input[data-field^="hedge-"]'))`)),
+  )
   const hedgeCands = await evaluate(`(() => {
     const sec = document.querySelector('[data-testid="hedge-section"]')
     if (!sec) return null
@@ -1125,6 +1285,12 @@ try {
     text = await bodyText()
     check('挂钩后敞口 2,000', text.includes('2,000'), '')
     check('挂钩后净持仓 12,700', text.includes('12,700'), '')
+    // V9.30 挂单页待买行也有同一个入口（已挂的显示「已挂钩 · 改挂」）
+    await nav('orders')
+    await sleep(900)
+    text = await bodyText()
+    check('挂单页待买行有「已挂钩 · 改挂」入口', text.includes('已挂钩 · 改挂'))
+    check('挂单页标注「已挂高位，这张买单可撤」', text.includes('已挂高位，这张买单可撤'))
   } else {
     await closeDrawer()
   }
@@ -1149,19 +1315,11 @@ try {
   check('基准快照在管理页且全中', text.includes('基准快照') && text.includes('全中'))
   check('数量守恒在管理页', text.includes('数量守恒'))
 
-  console.log('\n[11.2] 账户')
+  console.log('\n[11.2] 账户功能已删除（V9.32 单账户）')
   await nav('manage')
-  check('切到账户 tab', await clickByText('[role="tab"]', '账户'))
-  await sleep(500)
   text = await bodyText()
-  check('默认账户存在', text.includes('默认账户'))
-  await setInput('input[aria-label="账户名"]', '2027 年')
-  await sleep(200)
-  check('点添加', await clickByText('button', '添加'))
-  await sleep(900)
-  text = await bodyText()
-  check('新账户出现在列表', text.includes('2027 年'))
-  check('顶部账户选择器存在', (await evaluate(`Boolean(document.querySelector('[aria-label="切换账户"]'))`)) === true)
+  check('管理页没有账户 tab', !text.includes('账户'))
+  check('顶部没有账户选择器', (await evaluate(`Boolean(document.querySelector('[aria-label="切换账户"]'))`)) === false)
 
   console.log('\n[11.5] 下拉浮层不被卡片裁掉')
   await nav('manage')
@@ -1202,6 +1360,10 @@ try {
   await settle(2500)
   const ovf = await evaluate(`JSON.stringify({ sw: document.documentElement.scrollWidth, iw: window.innerWidth })`)
   check('1920 宽无横向溢出', JSON.parse(ovf).sw <= JSON.parse(ovf).iw, ovf)
+  // V9.31 桌面宽度下的数轴格子（格子能排满 8 个，注记不压格子）——留一张图
+  await sleep(600)
+  const deskShot = await send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync(join(OUT, 'tree-cells-desktop.png'), Buffer.from(deskShot.data, 'base64'))
   // 还原移动端视口，让后面的截图保持 390 尺寸
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true })
   await send('Page.navigate', { url: `${BASE}/#/overview` })

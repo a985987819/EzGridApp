@@ -69,7 +69,8 @@ export function TradeItem({
         <span className="name">{rec.stockName}</span>
         <div className="spacer" />
         <span className={`profit ${tone(sell?.profitCents ?? null)}`}>
-          {sell ? signedMoney(sell.profitCents) : '—'}
+          {/* V9.33：被全额挂住的裸卖盈利暂缓——写「暂缓」比写「—」更像回事 */}
+          {sell ? (sell.hedgedHold ? '暂缓' : signedMoney(sell.profitCents)) : '—'}
         </span>
       </div>
       {/* 中部信息一律默认色（V9.26.1）：方向语义交给左边框与右下角挂单角标 */}

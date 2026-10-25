@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import 'animal-island-ui/style'
-import { Select } from 'animal-island-ui'
 import { AppProvider, useApp } from './store/useApp'
 import { Overview } from './pages/Overview'
 import { TradesPage } from './pages/TradesPage'
@@ -27,7 +26,7 @@ function Shell() {
     window.addEventListener('hashchange', onHash)
     return () => window.removeEventListener('hashchange', onHash)
   }, [])
-  const { ready, ledger, activeAccountId, accounts, setActiveAccount } = useApp()
+  const { ready, ledger } = useApp()
 
   const goTrades = (q: TradesQuery) => navigate('trades', q)
 
@@ -43,10 +42,6 @@ function Shell() {
     window.scrollTo({ top: 0 })
   }
   const pendingOrders = ledger.orders.length
-  const accountOptions = [
-    { key: 'all', label: '全部账户' },
-    ...accounts.map((a) => ({ key: a.id, label: a.name })),
-  ]
 
   return (
     <div className="app">
@@ -60,14 +55,6 @@ function Shell() {
           </span>
         </div>
         <div className="spacer" />
-        <div className="account-select">
-          <Select
-            options={accountOptions}
-            value={activeAccountId}
-            onChange={(v) => void setActiveAccount(v)}
-            aria-label="切换账户"
-          />
-        </div>
       </header>
 
       <main className="app-main">

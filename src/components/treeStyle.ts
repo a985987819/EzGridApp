@@ -17,15 +17,19 @@ export interface TreeLevel {
   soldProfitCents: number
 }
 
-/** 合并组（一枝）：lo/hi 元区间、数量加权摆放高度、代表档、拾取圆 */
+/** 合并组（一枝/一条格子）：lo/hi 元区间、数量加权摆放高度、代表档、拾取圆 */
 export interface BranchBin {
   lo: number // 区间下沿（元）
   hi: number
   y: number // 数量加权摆放高度
   repCents: number // 数量最大的档（点击/跳明细用它）
   qty: number
-  count: number // 合并档数（图鉴风=枝上小点数；手绘风=叶数）
+  count: number // 合并档数（数轴风 = 格子数；图鉴风=枝上小点数；手绘风=叶数）
   kind: 'buy' | 'sell' | 'sold'
+  /** 已成交笔数合计（sold 组 = 组内 soldCount 之和）——「此价位共卖出 N 次」（V9.31） */
+  times: number
+  /** 数轴风：档数塞不下时超出的部分（画成格子末尾的「+N」；0 = 全画下了）（V9.31） */
+  over?: number
   /** 已成交组的已盈利合计（元 → 分，成本缺失的卖出不计） */
   profitCents: number
   pick?: { cx: number; cy: number; r: number } // 拾取圆（canvas 内 px），点击/投影共用
@@ -54,6 +58,10 @@ export interface TreeFrame {
   y1: number
   /** 沸腾种子（手绘风交互窗口内逐帧推进；图鉴风忽略） */
   boilSeed: number
+  /** 已确认昨收价（分）：数轴风画异色虚线标记（V9.28；其它风格忽略） */
+  closeCents?: number | null
+  /** 理想可卖到的股价（分 = 最高待卖目标价）：数轴风画水平参考线 + 标签（V9.29） */
+  idealCents?: number | null
 }
 
 export interface TreeStyle {

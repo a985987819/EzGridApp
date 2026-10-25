@@ -1,0 +1,294 @@
+/**
+ * 裸卖待挂钩（V9.30 抽出；口径 V9.26 决策 E，V9.33 补部分买回语义）：
+ * 把一笔还没回补的裸卖（先卖后买、没有买入批次的行），人工挂到该股票
+ * **未完成买单**（= 还没卖完的买入批次）上。
+ *
+ * 挂上之后（纯派生，见 domain/ledger.ts）：
+ *   - 被挂份额退出待卖，按（卖价 − 买价）把亏损记在被挂的买单行上；
+ *   - 被挂那部分不再按 P 列算盈利（整笔都挂住时盈利才整笔「暂缓」）；
+ *   - 敞口按差额收缩（挂住的股已经由那个买入批次交割了）。
+ * **部分买回（V9.33）**：挂钩只作用在「还没买回」的股数上，已买回的那截按 P 列正常结算
+ *   （R6 会为它生成回补批次），全额买回才彻底解除——不再"买回一点就整条作废"。
+ *
+ * 面板里的几处提示（V9.33）：失效/截断的红条、缺成交价时拦保存、允许挂不满、自动挂满。
+ */
+import { useEffect, useMemo, useState } from 'react'
+import { Button, Input, Modal, Tag, notificationOpen } from 'animal-island-ui'
+import { useApp } from '../store/useApp'
+import { isHedgeable } from '../domain/hedge'
+import { price, qty, signedMoney, tone } from '../ui/format'
+
+export function HedgeBinder({ sellRow, onSaved }: { sellRow: number; onSaved?: () => void }) {
+  const { ledger, records, hedges, setHedgeLink, clearHedgeLink } = useApp()
+  const rec = records.find((r) => r.sourceRow === sellRow) ?? null
+  const sell = ledger.sells.find((s) => s.sourceRow === sellRow) ?? null
+  const order = ledger.orders.find((o) => o.sourceRow === sellRow) ?? null
+  const link = hedges.find((h) => h.sellRow === sellRow) ?? null
+  const soldQty = rec?.soldQty ?? 0
+  const execQty = order?.execQty ?? 0
+  /** 还需要挂的股数 = 卖出量 − 已买回（买回来的那截不参与挂钩） */
+  const required = Math.max(0, soldQty - execQty)
+  const sellPrice = sell?.priceCents ?? rec?.targetPriceCents ?? null
+  /** 还能挂 / 改挂：确实是裸卖（没买入批次）、还剩没买回的股数 */
+  const editable = rec !== null && isHedgeable(rec, execQty)
+  /** 这条挂钩现在有没有毛病（失效 / 超挂 / 挂不满）——异常由 ledger 给出，这里只显示 */
+  const issues = ledger.anomalies.filter((a) => a.sourceRow === sellRow && a.kind.startsWith('hedge'))
+
+  /** 候选未完成买单：同股票、还没卖完、有剩余；可挂量以台账当前剩余为准（已扣掉别人的挂钩） */
+  const candidates = useMemo(() => {
+    if (!rec) return []
+    const own = new Map((link?.items ?? []).map((i) => [i.row, i.qty]))
+    const realSellRows = new Set(
+      ledger.sells.filter((s) => s.hedgedFromSellRow === undefined).map((s) => s.sourceRow),
+    )
+    return ledger.lots
+      .filter(
+        (l) =>
+          !l.id.startsWith('lot:exec:') && // 回补批次是虚拟批次，不当买单挂
+          l.stockName === rec.stockName &&
+          !realSellRows.has(l.sourceRow), // 已经真实卖过的批次不算未完成
+      )
+      .map((l) => ({
+        lot: l,
+        // remainingQty 已经扣掉所有活跃挂钩；把自己那份加回来，才改得动
+        available: l.remainingQty + (own.get(l.sourceRow) ?? 0),
+      }))
+      .filter((c) => c.available > 0)
+      // 高位在前：先挂高买价的批次，亏得明白
+      .sort((a, b) => b.lot.buyPriceCents - a.lot.buyPriceCents || a.lot.sourceRow - b.lot.sourceRow)
+  }, [rec, ledger.lots, ledger.sells, link])
+
+  // 已存的分配回填到输入框；换行 / 挂钩结果变了就重置
+  const [draft, setDraft] = useState<Record<number, string>>({})
+  useEffect(() => {
+    const d: Record<number, string> = {}
+    for (const it of link?.items ?? []) d[it.row] = String(it.qty)
+    setDraft(d)
+  }, [sellRow, link])
+
+  /** 默认只列「高位买单」（买价高于卖价 → 挂上去才是亏损）；可放开展示全部 */
+  const [showAll, setShowAll] = useState(false)
+  /** 允许挂不满：差额继续按敞口算（V9.33） */
+  const [allowPartial, setAllowPartial] = useState(false)
+  const visible = candidates.filter(
+    (c) =>
+      showAll ||
+      sellPrice === null ||
+      c.lot.buyPriceCents > sellPrice ||
+      (link?.items ?? []).some((i) => i.row === c.lot.sourceRow),
+  )
+
+  const items = Object.entries(draft)
+    .map(([k, v]) => ({ row: Number(k), qty: Math.floor(Number(v)) }))
+    .filter((i) => Number.isFinite(i.qty) && i.qty > 0)
+  const assigned = items.reduce((a, i) => a + i.qty, 0)
+  const diff = required - assigned
+  /** 按当前分配会记成多少亏损（卖价 − 买价）× 股数 */
+  const lossCents = sellPrice === null
+    ? null
+    : items.reduce((a, i) => {
+        const lot = candidates.find((c) => c.lot.sourceRow === i.row)?.lot
+        return lot ? a + (sellPrice - lot.buyPriceCents) * i.qty : a
+      }, 0)
+
+  /** 自动挂满：按列表顺序（买价从高到低）贪心填到「还需要挂的股数」 */
+  function autoFill() {
+    const d: Record<number, string> = {}
+    let left = required
+    for (const c of visible) {
+      if (left <= 0) break
+      const q = Math.min(c.available, left)
+      d[c.lot.sourceRow] = String(q)
+      left -= q
+    }
+    setDraft(d)
+    if (left > 0) {
+      notificationOpen({ message: `候选加起来还差 ${left} 股`, description: '可以打开「显示全部」，或先挂这么多', type: 'warning' })
+      setAllowPartial(true)
+    }
+  }
+
+  async function save() {
+    if (assigned === 0) {
+      // 全部清空 = 解除（不要写一条空挂钩进去）
+      if (link) await clear()
+      else notificationOpen({ message: '还没分配股数', description: '至少给一个买填股数', type: 'warning' })
+      return
+    }
+    if (sellPrice === null) {
+      notificationOpen({ message: '这笔卖缺成交价', description: '先把 E 列（成交价）补上，否则挂上去也暂记不了亏损', type: 'warning' })
+      return
+    }
+    if (assigned > required) {
+      notificationOpen({ message: '挂多了', description: `最多挂没买回的 ${required} 股`, type: 'warning' })
+      return
+    }
+    if (assigned < required && !allowPartial) {
+      notificationOpen({
+        message: '合计不等于还没买回的股数',
+        description: `已分配 ${assigned} 股，还差 ${required - assigned} 股；只挂一部分请勾「允许挂不满」`,
+        type: 'warning',
+      })
+      return
+    }
+    for (const it of items) {
+      const c = candidates.find((x) => x.lot.sourceRow === it.row)
+      if (!c || it.qty > c.available) {
+        notificationOpen({ message: `第 ${it.row} 行最多挂 ${c?.available ?? 0} 股`, type: 'warning' })
+        return
+      }
+    }
+    try {
+      await setHedgeLink(sellRow, items)
+      notificationOpen({
+        message: assigned > 0 ? '已挂钩' : '已解除挂钩',
+        description:
+          assigned > 0
+            ? `这 ${assigned} 股记为亏损；买回后自动按未买回股数收缩`
+            : '没有分配任何股数，等于解除',
+        type: 'success',
+      })
+      onSaved?.()
+    } catch (e) {
+      notificationOpen({ message: '挂钩失败', description: e instanceof Error ? e.message : String(e), type: 'error' })
+    }
+  }
+
+  async function clear() {
+    try {
+      await clearHedgeLink(sellRow)
+      notificationOpen({ message: '已解除挂钩', type: 'info' })
+      onSaved?.()
+    } catch (e) {
+      notificationOpen({ message: '解除失败', description: e instanceof Error ? e.message : String(e), type: 'error' })
+    }
+  }
+
+  if (!rec || rec.buyPriceCents !== null || soldQty <= 0) {
+    return (
+      <p className="tiny muted" style={{ margin: 0 }}>
+        这行不是裸卖（有买入批次），不需要挂钩。
+      </p>
+    )
+  }
+
+  if (!editable) {
+    return (
+      <p className="tiny muted" style={{ margin: 0 }}>
+        这笔卖已经全部买回来了（{qty(soldQty)} 股），挂钩自动解除、被挂的买单复原回原目标；
+        撤销成交 / 去掉买入价会自动恢复。
+      </p>
+    )
+  }
+
+  return (
+    <div className="hedge-binder">
+      {/* V9.33 异常红条：失效 / 超挂 / 挂不满就地提示，不用跑去管理·校验找 */}
+      {issues.length > 0 && (
+        <div className="hedge-issues" role="status">
+          {issues.map((a, i) => (
+            <div key={i}>⚠ {a.detail}</div>
+          ))}
+        </div>
+      )}
+
+      <p className="tiny muted" style={{ margin: '0 0 8px' }}>
+        选还没卖完的买单，把这笔卖的 <b>{qty(required)} 股</b>（{price(sellPrice)} 卖出
+        {execQty > 0 ? `，已买回 ${qty(execQty)} 股不参与` : ''}）算到它头上：
+        被挂份额退出待卖、按（卖价 − 买价）记为亏损。买回一部分就按没买回的股数自动收缩，
+        全买回即彻底解除，先卖 + 后买回归成一笔正常完成的订单。
+      </p>
+
+      {sellPrice === null && (
+        <p className="tiny up" style={{ margin: '0 0 8px' }}>
+          这笔卖缺成交价（E 列），补上之前挂上去也暂记不了亏损。
+        </p>
+      )}
+
+      <div className="data-block">
+        {visible.map(({ lot, available }) => (
+          <div key={lot.sourceRow} className="line">
+            <div className="left">
+              <div className="t1 num">
+                买 {price(lot.buyPriceCents)} × {qty(lot.qty)}
+              </div>
+              <div className="t2">
+                {sellPrice !== null && lot.buyPriceCents <= sellPrice && <span className="up">低位（挂上去记盈利）· </span>}
+                行 {lot.sourceRow} · 买入 {lot.buyDate ?? '—'} · 目标 {price(lot.targetPriceCents)} · 可挂 {qty(available)}
+              </div>
+            </div>
+            <Input
+              className="hedge-qty"
+              value={draft[lot.sourceRow] ?? ''}
+              placeholder="0"
+              onChange={(e) => setDraft({ ...draft, [lot.sourceRow]: e.target.value })}
+              data-field={`hedge-${lot.sourceRow}`}
+              aria-label={`挂到第${lot.sourceRow}行的股数`}
+            />
+          </div>
+        ))}
+        {visible.length === 0 && (
+          <p className="tiny muted" style={{ margin: 0 }}>
+            {candidates.length === 0
+              ? '没有可挂的未完成买单（同股票、还没卖完、有剩余份额）'
+              : '没有高于卖价的未完成买单；点下面「显示全部」可以挂低位的'}
+          </p>
+        )}
+      </div>
+
+      <div className="row" style={{ gap: 8, marginTop: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+        <Tag size="small" variant="soft" color={showAll ? 'app-teal' : 'default'} onClick={() => setShowAll(!showAll)}>
+          {showAll ? '只显示高位买单' : `显示全部 ${candidates.length} 条`}
+        </Tag>
+        <Tag
+          size="small"
+          variant="soft"
+          color={allowPartial ? 'app-orange' : 'default'}
+          onClick={() => setAllowPartial(!allowPartial)}
+        >
+          {allowPartial ? '允许挂不满（差额算敞口）' : '必须挂满'}
+        </Tag>
+        <Button size="small" type="text" onClick={autoFill}>自动挂满</Button>
+      </div>
+
+      <div className="row" style={{ gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <span
+          className="tiny num"
+          style={{ color: diff === 0 ? 'var(--animal-text-color-secondary, #9f927d)' : 'var(--up)' }}
+        >
+          已分配 {qty(assigned)} / {qty(required)} 股
+        </span>
+        {lossCents !== null && assigned > 0 && (
+          <span className={`tiny num ${tone(lossCents)}`} title="按（卖价 − 买价）× 股数，记在被挂的买单行上">
+            记亏 {signedMoney(lossCents)}
+          </span>
+        )}
+        <div className="spacer" />
+        <Button size="small" type="primary" data-action="save-hedge" onClick={() => void save()}>
+          保存挂钩
+        </Button>
+        {link && (
+          <Button size="small" danger onClick={() => void clear()}>
+            解除挂钩
+          </Button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** 从明细行/挂单行的「裸卖待挂钩」标签点开的弹层：内容就是上面这个面板 */
+export function HedgeSheet({ sellRow, onClose }: { sellRow: number | null; onClose: () => void }) {
+  return (
+    <Modal
+      open={sellRow !== null}
+      title="裸卖待挂钩"
+      typewriter={false}
+      className="hedge-modal"
+      onClose={onClose}
+      footer={<Button onClick={onClose}>关闭</Button>}
+    >
+      {sellRow !== null && <HedgeBinder sellRow={sellRow} onSaved={onClose} />}
+    </Modal>
+  )
+}

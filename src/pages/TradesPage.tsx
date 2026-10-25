@@ -4,6 +4,7 @@ import { useApp } from '../store/useApp'
 import { serialToIso } from '../domain/defaults'
 import { EDITABLE, fieldText, type EditableKey } from '../domain/edit'
 import { activeStocks } from '../domain/stocks'
+import { isHedgeable } from '../domain/hedge'
 import type { ManualInput } from '../domain/manual'
 import { isoDate, money, price, qty, signedMoney, tone } from '../ui/format'
 import { replaceRoute, type TradesQuery } from '../ui/nav'
@@ -11,6 +12,7 @@ import { buildNanoIdIndex } from '../ui/nanoid'
 import { toCents } from '../domain/money'
 import { downloadText, toCsv } from '../ui/csv'
 import { TradeItem, buyDateOf, isDone, sellDateOf, type TradeRow } from '../components/TradeItem'
+import { HedgeBinder, HedgeSheet } from '../components/HedgeBinder'
 
 /** 状态筛选可多选（V9 可叠加）：命中的行要满足每一个勾选的状态 */
 const STATUS_KEYS = ['holding', 'soldout', 'pending', 'exposure', 'buyDateMissing', 'sellDateMissing', 'needsPrice'] as const
@@ -121,7 +123,6 @@ const BLANK_FORM: ManualInput = {
 export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   const {
     ledger,
-    scopedRecords,
     records,
     stocks,
     editRecord,
@@ -132,8 +133,6 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     addExtraTarget,
     removeExtraTarget,
     hedges,
-    setHedgeLink,
-    clearHedgeLink,
   } = useApp()
   const [stockFilter, setStockFilter] = useState(urlQuery.stock ?? 'all')
   const [statuses, setStatuses] = useState<StatusKey[]>(() => (urlQuery.status ?? []).filter(isStatusKey))
@@ -202,7 +201,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     }, [stockFilter, statuses, keyword, priceFilter, priceLo, priceHi, fromDate, toDate, idFilter, sortBy, showDeleted, hideDone])
 
   // nanoId 索引：展示 / 筛选 / 跳转的唯一行级 id（V9.4）
-  const nano = useMemo(() => buildNanoIdIndex(scopedRecords), [scopedRecords])
+  const nano = useMemo(() => buildNanoIdIndex(records), [records])
 
   // 股票顺序 / 启停都来自「管理 · 股票」
   const stockList = useMemo(() => activeStocks(stocks), [stocks])
@@ -216,12 +215,12 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   const rows = useMemo<Row[]>(() => {
     const lotMap = new Map(ledger.lots.map((l) => [l.sourceRow, l]))
     const sellMap = new Map(ledger.sells.map((s) => [s.sourceRow, s]))
-    return scopedRecords.map((rec) => ({
+    return records.map((rec) => ({
       rec,
       lot: lotMap.get(rec.sourceRow) ?? null,
       sell: sellMap.get(rec.sourceRow) ?? null,
     }))
-  }, [scopedRecords, ledger])
+  }, [records, ledger])
 
   // 过滤 + 顺带统计「没有日期、被日期区间条件排除」的行数（空态时提示用）
   const { filtered, noDateHidden } = useMemo(() => {
@@ -342,82 +341,23 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
 
   const current = visible.find((r) => r.rec.sourceRow === openRow) ?? null
 
-  // ---------- V9.26 先卖后买挂钩 ----------
+  // ---------- V9.26 先卖后买挂钩（V9.30 起入口独立：行上「裸卖待挂钩」标签 → 弹层） ----------
   const hedgeOf = useMemo(() => new Map(hedges.map((h) => [h.sellRow, h])), [hedges])
-  const sellByRow = useMemo(() => new Map(ledger.sells.map((s) => [s.sourceRow, s])), [ledger.sells])
-  /** 还没回补过的裸卖单（可挂/可改挂）——判定不依赖敞口标记：全额挂住的单敞口已置否 */
-  const openNakedRows = useMemo(() => {
-    const m = new Map<number, boolean>()
-    const recByRow = new Map(scopedRecords.map((r) => [r.sourceRow, r]))
-    for (const o of ledger.orders) {
-      const rec = recByRow.get(o.sourceRow)
-      if (rec && rec.buyPriceCents === null && o.execQty === 0) m.set(o.sourceRow, true)
-    }
-    return m
-  }, [ledger.orders, scopedRecords])
-  const [hedgeDraft, setHedgeDraft] = useState<Record<number, string>>({})
-  useEffect(() => {
-    if (openRow === null) return
-    const h = hedges.find((x) => x.sellRow === openRow)
-    const d: Record<number, string> = {}
-    if (h) for (const it of h.items) d[it.row] = String(it.qty)
-    setHedgeDraft(d)
-  }, [openRow, hedges])
-  /** 候选高位批次：同股票、未卖出、有剩余；可挂量扣除其它裸卖已占的份额 */
-  function hedgeCandidates(row: Row) {
-    const ownByRow = new Map((hedgeOf.get(row.rec.sourceRow)?.items ?? []).map((i) => [i.row, i.qty]))
-    const othersUsed = new Map<number, number>()
-    for (const h of hedges) {
-      if (h.sellRow === row.rec.sourceRow) continue
-      const s = sellByRow.get(h.sellRow)
-      if (!s || s.hedgedHold !== true) continue // 只扣活跃挂钩
-      for (const it of h.items) othersUsed.set(it.row, (othersUsed.get(it.row) ?? 0) + it.qty)
-    }
-    const hasRealSell = new Set(
-      ledger.sells.filter((s) => s.hedgedFromSellRow === undefined).map((s) => s.sourceRow),
-    )
-    return ledger.lots
-      .filter(
-        (l) =>
-          !l.id.startsWith('lot:exec:') &&
-          l.stockName === row.rec.stockName &&
-          l.remainingQty > 0 &&
-          !hasRealSell.has(l.sourceRow),
-      )
-      .map((l) => ({
-        lot: l,
-        available: l.remainingQty + (ownByRow.get(l.sourceRow) ?? 0) - (othersUsed.get(l.sourceRow) ?? 0),
-      }))
-      .filter((c) => c.available > 0)
-      .sort((a, b) => a.lot.sourceRow - b.lot.sourceRow)
-  }
-  async function saveHedge(row: Row) {
-    const soldQty = row.rec.soldQty ?? 0
-    const items: { row: number; qty: number }[] = []
-    for (const [k, v] of Object.entries(hedgeDraft)) {
-      const n = Math.floor(Number(v))
-      if (v.trim() !== '' && Number.isFinite(n) && n > 0) items.push({ row: Number(k), qty: n })
-    }
-    const sum = items.reduce((a, i) => a + i.qty, 0)
-    const cands = hedgeCandidates(row)
-    for (const it of items) {
-      const avail = cands.find((c) => c.lot.sourceRow === it.row)?.available
-      if (avail === undefined || it.qty > avail) {
-        notificationOpen({ message: `第 ${it.row} 行最多挂 ${avail ?? 0} 股`, type: 'warning' })
-        return
-      }
-    }
-    if (sum !== soldQty) {
-      notificationOpen({ message: `挂钩合计 ${sum} 股，要等于卖出 ${soldQty} 股`, type: 'warning' })
-      return
-    }
-    try {
-      await setHedgeLink(row.rec.sourceRow, items)
-      notificationOpen({ message: '已挂钩', description: '高位批次暂记亏损，低位买回后自动复原', type: 'success' })
-    } catch (e) {
-      notificationOpen({ message: '挂钩失败', description: e instanceof Error ? e.message : String(e), type: 'error' })
-    }
-  }
+  /** 有挂钩异常（失效 / 超挂 / 挂不满）的卖出行（V9.33）：行上标红，点开面板能看到原因 */
+  const hedgeIssues = useMemo(
+    () => new Set(ledger.anomalies.filter((a) => a.kind.startsWith('hedge')).map((a) => a.sourceRow)),
+    [ledger.anomalies],
+  )
+  /** 还没回补过的裸卖单（可挂/可改挂）：按行本身判定，不看有没有待买订单（V9.32） */
+  const hedgeableRows = useMemo(() => {
+    const execByRow = new Map<number, number>()
+    for (const o of ledger.orders) execByRow.set(o.sourceRow, o.execQty)
+    const set = new Set<number>()
+    for (const r of records) if (isHedgeable(r, execByRow.get(r.sourceRow) ?? 0)) set.add(r.sourceRow)
+    return set
+  }, [ledger.orders, records])
+  /** 点标签打开的「裸卖待挂钩」弹层（null = 关着） */
+  const [hedgeRow, setHedgeRow] = useState<number | null>(null)
 
   function open(r: Row) {
     const next = { ...BLANK_DRAFT }
@@ -637,18 +577,35 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
         </Card>
       ) : (
         visible.map((r) => {
-          // V9.26 挂钩状态标签：未回补的裸卖 → 已挂钩/未挂钩；被挂的高位批次 → 挂钩暂记
+          // V9.30 挂钩状态标签（可点）：未回补的裸卖 → 「裸卖待挂钩」/「已挂钩 · 改挂」，
+          // 点一下直接弹绑定面板（不用先开抽屉）；被挂的高位批次 → 「挂钩暂记 · 原目标 x」
+          // V9.33：这条挂钩有异常（失效 / 超挂 / 挂不满）→ 标签变红，点进去看红条
           let hedgeTag: ReactNode = null
           if (r.rec.buyPriceCents === null && (r.rec.soldQty ?? 0) > 0) {
-            if (openNakedRows.has(r.rec.sourceRow)) {
-              hedgeTag = hedgeOf.has(r.rec.sourceRow) ? (
-                <Tag size="small" variant="soft" color="app-teal">已挂钩</Tag>
-              ) : (
-                <Tag size="small" variant="soft" color="app-yellow">裸卖未挂钩</Tag>
+            if (hedgeableRows.has(r.rec.sourceRow)) {
+              const linked = hedgeOf.has(r.rec.sourceRow)
+              const broken = hedgeIssues.has(r.rec.sourceRow)
+              hedgeTag = (
+                <span
+                  data-hedge={r.rec.sourceRow}
+                  style={{ display: 'inline-flex', cursor: 'pointer' }}
+                  onClick={(e) => {
+                    e.stopPropagation() // 别顺手把抽屉也打开
+                    setHedgeRow(r.rec.sourceRow)
+                  }}
+                >
+                  <Tag size="small" variant="soft" color={broken ? 'app-red' : linked ? 'app-teal' : 'app-yellow'}>
+                    {broken ? '挂钩异常 · 改挂' : linked ? '已挂钩 · 改挂' : '裸卖待挂钩'}
+                  </Tag>
+                </span>
               )
             }
           } else if (r.sell && r.sell.hedgedFromSellRow !== undefined) {
-            hedgeTag = <Tag size="small" variant="soft" color="app-orange">挂钩暂记</Tag>
+            hedgeTag = (
+              <Tag size="small" variant="soft" color="app-orange">
+                挂钩暂记{r.lot ? ` · 原目标 ${price(r.lot.targetPriceCents)}` : ''}
+              </Tag>
+            )
           }
           return (
             <TradeItem
@@ -870,64 +827,15 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                   </div>
                 )}
 
-                {/* V9.26 先卖后买挂钩：裸卖未回补时人工指定高位批次 */}
+                {/* V9.26 先卖后买挂钩：裸卖未回补时人工指定未完成买单（V9.30 面板抽成 HedgeBinder） */}
                 {current.rec.buyPriceCents === null && (current.rec.soldQty ?? 0) > 0 && (
                   <div className="divider-top" data-testid="hedge-section">
                     <div className="sec-head sm">
-                      <strong>挂钩高位买入</strong>
+                      <strong>裸卖待挂钩</strong>
                       <div className="spacer" />
                       <span className="sec-sub">卖出 {qty(current.rec.soldQty ?? 0)} 股</span>
                     </div>
-                    {openNakedRows.has(current.rec.sourceRow) ? (
-                      <>
-                        <p className="tiny muted" style={{ margin: '0 0 6px' }}>
-                          挂着的份额按（卖价−买价）暂记亏损、退出待卖；低位买回后自动复原，
-                          高位批次继续按原目标等卖出；一直不买回才是真实亏损。合计须等于卖出量。
-                        </p>
-                        <div className="data-block">
-                          {hedgeCandidates(current).map(({ lot, available }) => (
-                            <div key={lot.sourceRow} className="line">
-                              <div className="left">
-                                <div className="t1 num">
-                                  买 {price(lot.buyPriceCents)} × {qty(lot.qty)}
-                                </div>
-                                <div className="t2">
-                                  行 {lot.sourceRow} · 买入 {buyDateOf({ rec: current.rec, lot, sell: null }) ?? '—'} ·
-                                  可挂 {qty(available)}
-                                </div>
-                              </div>
-                              <Input
-                                className="hedge-qty"
-                                value={hedgeDraft[lot.sourceRow] ?? ''}
-                                placeholder="0"
-                                onChange={(e) => setHedgeDraft({ ...hedgeDraft, [lot.sourceRow]: e.target.value })}
-                                data-field={`hedge-${lot.sourceRow}`}
-                                aria-label={`挂到第${lot.sourceRow}行的股数`}
-                              />
-                            </div>
-                          ))}
-                          {hedgeCandidates(current).length === 0 && (
-                            <p className="tiny muted" style={{ margin: 0 }}>
-                              没有可挂的未卖批次（同股票、未卖出、有剩余份额）
-                            </p>
-                          )}
-                        </div>
-                        <div className="row nowrap" style={{ gap: 8, marginTop: 8 }}>
-                          <Button size="small" type="primary" data-action="save-hedge" onClick={() => void saveHedge(current)}>
-                            保存挂钩
-                          </Button>
-                          {hedgeOf.has(current.rec.sourceRow) && (
-                            <Button size="small" danger onClick={() => void clearHedgeLink(current.rec.sourceRow)}>
-                              解除挂钩
-                            </Button>
-                          )}
-                        </div>
-                      </>
-                    ) : (
-                      <p className="tiny muted" style={{ margin: 0 }}>
-                        已有回补成交，挂钩已失效（高位批次已复原）；撤销成交会自动恢复挂钩。
-                      </p>
-                    )}
+                    <HedgeBinder sellRow={current.rec.sourceRow} />
                   </div>
                 )}
 
@@ -964,6 +872,9 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
           </div>
         )}
       </Drawer>
+
+      {/* V9.30 裸卖待挂钩弹层：行上标签点开，直接选未完成买单 → 绑定 */}
+      <HedgeSheet sellRow={hedgeRow} onClose={() => setHedgeRow(null)} />
 
       <Modal
         open={adding}

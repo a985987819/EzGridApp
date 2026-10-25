@@ -9,6 +9,8 @@ import { compareBaseline } from '../domain/baseline'
 const buf = readFileSync(resolve(process.cwd(), 'tests/fixtures/26年网格记录.xlsx'))
 const parsed = await parseWorkbook(new Uint8Array(buf))
 const ledger = buildLedger(parsed.records, DEFAULT_STOCKS)
+/** V9.29 柳工待卖里的最高目标价（分）= ¥11.48，即概览「理想可卖到」显示的股价 */
+const TARGET_MAX_PIN = 1148
 
 describe('真实文件 dry-run：8 个基准数（文档 §03 / S2 验收）', () => {
   it('只读第 1 个工作表「交易记录」', () => {
@@ -87,14 +89,14 @@ describe('规则落地细节', () => {
     expect(r63?.rewardQty).toBe(100)
     const r46Reward = ledger.orders.filter((o) => o.sourceRow === 46)
     expect(r46Reward).toHaveLength(0)
-    const pool = ledger.groups.find((g) => g.groupKey === 'acc:default|stock:柳工|781')
+    const pool = ledger.groups.find((g) => g.groupKey === 'stock:柳工|781')
     expect(pool?.grossProfitCents).toBe(99500)
     expect(pool?.capacityHands).toBe(1)
   })
 
   it('其余 3 组 0 手', () => {
     for (const o of ledger.orders) {
-      if (o.groupKey === 'acc:default|stock:柳工|781') continue
+      if (o.groupKey === 'stock:柳工|781') continue
       expect(o.rewardQty).toBe(0)
     }
   })
@@ -123,5 +125,16 @@ describe('规则落地细节', () => {
     expect(s?.targetQty).toBe(0)
     expect(s?.sellCount).toBe(5)
     expect(s?.profitCents).toBe(-2000)
+    // V9.29：没有待卖就没有「理想可卖到」的股价
+    expect(s?.targetMaxPriceCents).toBeNull()
+  })
+
+  it('V9.29 理想可卖到（股价口径）= 该股待卖最高目标价', () => {
+    for (const s of ledger.byStock) {
+      const ts = ledger.targets.filter((t) => t.stockName === s.stockName)
+      const max = ts.length ? Math.max(...ts.map((t) => t.priceCents)) : null
+      expect(s.targetMaxPriceCents, s.stockName).toBe(max)
+    }
+    expect(ledger.byStock.find((x) => x.stockName === '柳工')?.targetMaxPriceCents).toBe(TARGET_MAX_PIN)
   })
 })

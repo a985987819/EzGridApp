@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { Button, Card, Input, Modal, Select, Tag, notificationOpen } from 'animal-island-ui'
 import { useApp } from '../store/useApp'
 import { activeStocks } from '../domain/stocks'
+import { isHedgeable } from '../domain/hedge'
 import { limitRange } from '../domain/limit'
 import { toCents } from '../domain/money'
 import { buildNanoIdIndex } from '../ui/nanoid'
@@ -9,6 +10,7 @@ import { downloadText, toCsv } from '../ui/csv'
 import { money, price, qty, signedMoney } from '../ui/format'
 import type { TradesQuery } from '../ui/nav'
 import type { RebuyOrder } from '../domain/types'
+import { HedgeSheet } from '../components/HedgeBinder'
 
 /** 行内按钮不让冒泡到整行的「跳明细」点击上 */
 function stopWith(fn: () => void) {
@@ -31,13 +33,15 @@ function lotLabel(lotId: string): string {
 }
 
 export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
-  const { ledger, stocks, executions, scopedRecords, ordersSession, patchOrdersSession, recordRebuy, removeRebuy, setPlan, clearPlan } = useApp()
+  const { ledger, stocks, executions, records, ordersSession, patchOrdersSession, recordRebuy, removeRebuy, setPlan, clearPlan, hedges } = useApp()
+  /** 点「裸卖待挂钩」标签打开的绑定弹层（V9.30；null = 关着） */
+  const [hedgeRow, setHedgeRow] = useState<number | null>(null)
   // 顺序与启停都跟随「管理 · 股票」
   const stockNames = useMemo(() => activeStocks(stocks).map((s) => s.name), [stocks])
   const { stockName } = ordersSession
 
   // 跳明细以 nanoId 定位（V9.4）：行级唯一 id，与明细页筛选同源
-  const nano = useMemo(() => buildNanoIdIndex(scopedRecords), [scopedRecords])
+  const nano = useMemo(() => buildNanoIdIndex(records), [records])
   const idFor = (row: number | null | undefined): string | undefined =>
     row === null || row === undefined ? undefined : nano.rowToId.get(row)
 
@@ -68,6 +72,14 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
   const targets = ledger.targets.filter((t) => t.stockName === effectiveStock)
   const orders = ledger.orders.filter((o) => o.stockName === effectiveStock)
   const summary = ledger.byStock.find((s) => s.stockName === effectiveStock)
+  /** 可挂钩 / 可改挂的裸卖：没买入批次、有卖出量、一次都没回补（与有没有待买订单无关，V9.32） */
+  const nakedOpenRows = useMemo(() => {
+    const execByRow = new Map<number, number>()
+    for (const o of orders) execByRow.set(o.sourceRow, o.execQty)
+    const set = new Set<number>()
+    for (const r of records) if (isHedgeable(r, execByRow.get(r.sourceRow) ?? 0)) set.add(r.sourceRow)
+    return set
+  }, [orders, records])
 
   const within = (p: number) => (range ? p >= range.downCents && p <= range.upCents : false)
   const zone = (p: number): '区间内' | '无区间' | '越界' => (range ? (within(p) ? '区间内' : '越界') : '无区间')
@@ -450,7 +462,8 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
                       {buyToday.map((o) => (
                         <div
                           key={`t-${o.id}`}
-                          className="line wrap-row clickable"
+                          // V9.29.1：左侧状态边框（蓝=买 / 红=卖），与明细页 trade-item 同一套语义
+                          className="line wrap-row clickable pending-buy"
                           onClick={() => goTrades({ id: idFor(o.sourceRow), stock: o.stockName })}
                         >
                           <div className="left">
@@ -493,7 +506,7 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
                       {sellToday.map((t) => (
                         <div
                           key={`s-${t.id}`}
-                          className="line wrap-row clickable"
+                          className="line wrap-row clickable pending-sell"
                           onClick={() =>
                             goTrades({
                               id: idFor(ledger.lots.find((l) => l.id === t.lotId)?.sourceRow ?? Number(t.lotId.replace('lot:', ''))),
@@ -566,6 +579,8 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
                       行{o.sourceRow} · 计划 {o.baseQty}
                       {o.rewardQty > 0 && ` + 奖励 ${o.rewardQty}`}
                       {o.execQty > 0 && ` · 已回补 ${o.execQty}`}
+                      {/* V9.33：这笔卖已挂到高位买单上，那这张买入单其实可以撤（买了也会自动解挂） */}
+                      {hedges.some((h) => h.sellRow === o.sourceRow) && ' · 已挂高位，这张买单可撤'}
                       {` · 组池 ${money(o.grossProfitCents)} / ${o.hands} 手`}
                     </div>
                     <div className="tag-row" style={{ marginTop: 4 }}>
@@ -581,6 +596,18 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
                       </Tag>
                       {o.execQty > 0 && (
                         <Button size="small" type="text" onClick={stopWith(() => void undoExec(o.id))}>撤销最后一笔</Button>
+                      )}
+                      {/* V9.30 裸卖待挂钩：还没回补的裸卖，点一下就能挂到未完成买单上 */}
+                      {nakedOpenRows.has(o.sourceRow) && (
+                        <Tag
+                          size="small"
+                          variant="soft"
+                          color={hedges.some((h) => h.sellRow === o.sourceRow) ? 'app-teal' : 'app-yellow'}
+                          onClick={stopWith(() => setHedgeRow(o.sourceRow))}
+                          className="hedge-entry"
+                        >
+                          {hedges.some((h) => h.sellRow === o.sourceRow) ? '已挂钩 · 改挂' : '裸卖待挂钩'}
+                        </Tag>
                       )}
                     </div>
                   </div>
@@ -743,11 +770,15 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
               </label>
             </div>
             <p className="tiny muted" style={{ margin: 0 }}>
-              回补成交只平掉空头敞口，不会新增可卖批次；要重新挂卖，请到明细里另建一笔买入。
+              回补成交会平掉空头敞口，并按「成交价 + 该股间隔」自动生成一笔可卖批次（回到待卖）。
+              这笔卖如果挂着高位买单，成交后绑定自动解除，先卖 + 后买就是一笔正常完成的订单。
             </p>
           </div>
         )}
       </Modal>
+
+      {/* V9.30 裸卖待挂钩弹层（与明细页同一个面板） */}
+      <HedgeSheet sellRow={hedgeRow} onClose={() => setHedgeRow(null)} />
     </div>
   )
 }

@@ -187,8 +187,8 @@ function price2(cents: number | null): string {
 
 /** 成交日历：按月看每天卖出了什么、赚了多少（红盈绿亏） */
 function CalendarCard({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
-  const { ledger, scopedRecords } = useApp()
-  const nano = useMemo(() => buildNanoIdIndex(scopedRecords), [scopedRecords])
+  const { ledger, records } = useApp()
+  const nano = useMemo(() => buildNanoIdIndex(records), [records])
   const today = new Date()
   // 本地时区的今天：toISOString 是 UTC，东八区早上 8 点前会落到昨天
   const localIso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`

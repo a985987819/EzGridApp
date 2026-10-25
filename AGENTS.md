@@ -30,7 +30,7 @@ Pages 站点已手动创建过（`build_type: workflow`），工作流的 GITHUB
 Excel/CSV ──io/parseWorkbook──▶ RawRecord（落 IndexedDB records 表）
                                      │
 store/useApp（唯一写库入口，全部动作写 auditLogs）
-  buildLedger(scopedRecords, stocks, {executions, plans, extraTargets})
+  buildLedger(records, stocks, {executions, plans, extraTargets})
                                      │ 纯派生、每次重算、绝不落库
                                      ▼
    Ledger { lots, sells, targets, orders, groups, byStock, daily, monthly,
@@ -53,22 +53,23 @@ store/useApp（唯一写库入口，全部动作写 auditLogs）
 | 待卖 R1 | 批次剩余 × E；手动拆分目标（extraTargets）先占额度，超剩余截断并标 anomaly |
 | 待买 R2 | 只认 P 列 `earlyBuyPriceCents`；`rebuyStatus`: pending/repaid；`exposure` = 卖出无买入批次（真空头） |
 | 回补价 R3 | 手填 > 关联买入价 > 卖出价−该股间隔（`manual.ts` deriveRebuyPrice） |
-| 奖励 R4/R5 | 组池 key = `账户\|股票\|成本分`（v9.20 起带账户，'all' 视图不混池）；gross=全部真实卖出盈利；容量=floor((gross−used)/每手成本)；FIFO 授给最早还能买的单；`doneRewardQty` 已成交不可撤；used 按成交时价组永久归属（P4）。已全部回补的单子不再领新奖励。老库存的成交键没有账户前缀——buildLedger 里按所属行归一化（只改派生副本），别当 bug 修 |
+| 奖励 R4/R5 | 组池 key = `股票\|成本分`（**V9.32 起单一账户**，原来的 `账户\|` 前缀已删）；gross=全部真实卖出盈利；容量=floor((gross−used)/每手成本)；FIFO 授给最早还能买的单；`doneRewardQty` 已成交不可撤；used 按成交时价组永久归属（P4）。另有检查「Σ已买回的奖励手数 ≤ Σ组容量」（V9.33）：容量被挂钩/改数缩水到装不下已买回奖励时亮黄灯。已全部回补的单子不再领新奖励。老库/老备份的成交键带 `acc:xxx\|` 前缀——`ledger.ts` 的 `stripAccountPrefix` 统一剥掉（只改派生副本） |
 | 回补成交 R6 | 记成交 → **自动生成回补批次**（v9.20 用户决策 B，取代旧 D5「不新增批次」）：虚拟批次不落库、撤销成交即消失；目标价 = 成交价 + 该股间隔，自动出现在待卖清单/价格树；缺间隔配置 → 待补价格异常。id 形如 `lot:exec:*`，sourceRow 用 200000+ 段位避开 Excel/手动行号；明细页看不到该行（它不是 record），挂单/树/概览都可见 |
-| 先卖后买挂钩 H | V9.26（2026-10-25 决策 E）：裸卖（无批次卖出）**人工指定**挂到一只或多只**未卖的高位批次**，合计股数 = 卖出量（`hedges` 表 `hedge:<sellRow>`，Dexie v6）。**纯派生**（ledger.ts）：活跃 = 裸卖未回补——被挂份额退出待卖、按（卖价−买价）暂记负盈利挂到批次行（synthetic sell `sell:hedged:*`，`hedgedFromSellRow` 标记，不重复计卖出量/金额/笔数、不进组池）；裸卖自身盈利暂缓（`hedgedHold`，profitCents null）；敞口按差额计（挂住的股已交割）。**记回补成交 → 挂钩自动失效**：批次复原、裸卖恢复按 P 列结算、回补批次照常进待卖；撤销成交又自动恢复挂钩——不写任何解除记录。一直不买回 = 暂记负盈利即真实亏损（计入合计盈利）。候选批次限定：同股票、真实未卖出、有剩余、扣除其它活跃挂钩占用；超挂截断（hedgeOverflow）、挂不满（hedgeMismatch）、挂错行（hedgeInvalid）都标异常。编辑入口在明细抽屉「挂钩高位买入」 |
+| 先卖后买挂钩 H | V9.26（2026-10-25 决策 E）：裸卖（无批次卖出）**人工指定**挂到一只或多只**未卖的高位批次**，合计股数 = 卖出量（`hedges` 表 `hedge:<sellRow>`，Dexie v6）。**纯派生**（ledger.ts）：活跃 = 裸卖未回补——被挂份额退出待卖、按（卖价−买价）暂记负盈利挂到批次行（synthetic sell `sell:hedged:*`，`hedgedFromSellRow` 标记，不重复计卖出量/金额/笔数、不进组池）；裸卖自身盈利暂缓（`hedgedHold`，profitCents null）；敞口按差额计（挂住的股已交割）。**记回补成交 → 挂钩自动失效**：批次复原、裸卖恢复按 P 列结算、回补批次照常进待卖；撤销成交又自动恢复挂钩——不写任何解除记录。一直不买回 = 暂记负盈利即真实亏损（计入合计盈利）。候选批次限定：同股票、真实未卖出、有剩余、扣除其它活跃挂钩占用；超挂截断（hedgeOverflow）、挂不满（hedgeMismatch）、挂错行（hedgeInvalid）都标异常。**UI（V9.30）**：绑定面板抽成 `components/HedgeBinder.tsx`（逻辑 + 校验 + 保存/解除），两处部署——明细抽屉内联、行上标签点开的 `HedgeSheet` 弹层；入口标签 「裸卖待挂钩」/「已挂钩 · 改挂」（明细行 `[data-hedge=<row>]`、挂单页待买行 `.hedge-entry`）；能不能挂统一走 `domain/hedge.ts` 的 `isHedgeable(rec, execQty)`（V9.32：**不看有没有待买订单**，没填 P 列的裸卖也有入口）。挂单页判断可挂**不能看 `o.exposure`**（全额挂住后它已置否），要看「记录没买入价 + soldQty>0 + execQty=0」。面板默认只列**高位买单**（买价 > 卖价，挂上去才是亏损），可切「显示全部」；行上按买价降序、列表自己滚（max-height 42vh），底部固定「已分配 x/y 股 · 记亏 ¥z」+ 保存/解除。**V9.32 修 bug**：`cap` 原来写的是 `remainingQty − used`，而 `remainingQty` 在前面每挂一条时已经扣过 → 同一批次被两张裸卖挂时第二张可用量被重复扣减（500 股挂 200+300 只挂上 300）。现在 `cap` 直接用当前 `remainingQty`，`hedge.spec.ts` 有对应用例。**V9.33（用户拍板）部分买回不再整条作废**：可挂量按「还没买回 = 卖出量 − 已回补」算，已买回那截按 P 列正常结算（R6 给它生成回补批次），全额买回才彻底解除；被挂那部分不再按 P 列算盈利（整笔挂住才是 `hedgedHold` + profit null，行上显示「暂缓」）。挂钩按 `at` 先后应用（先挂先占）。`exposureExecBaseQty` 改成按「记录是不是裸卖」判定（部分买回 + 剩余全挂住时 exposure 已置否，但买回那截仍是空头回补基础股）。新增检查「Σ已买回的奖励手数 ≤ Σ组容量」（`doneRewardQty` 折手，容量按组池，池没了按 0 → 缩水会亮黄灯）。面板：异常红条（`hedgeInvalid/Overflow/Mismatch` 就地显示）、缺成交价拦保存、可切「允许挂不满」、一键「自动挂满」、清空=解除 |
 | 守恒式 R7 | `Σ待卖 − 待补敞口 − 空头回补基础股 = 净持仓`；`净持仓 = Σ买入(含回补批次) − Σ卖出`。空头回补基础股 = 空头单成交里 (qty−rewardQty) 部分——既抵了敞口又以批次进了待卖，扣回防双算 |
 | 导入幂等 | v9.20 决策 C：`domain/importPlan.ts` 按行身份（股票+买入日期+买入价+有效份额，D 列派生值折算）匹配——同 key 跳过、身份命中则**更新卖出侧字段**（importKey/nanoId 不变）、身份对不上才新增。审计走 import-update 来源。改这个逻辑先跑 `importPlan.spec.ts` |
-| 账户 | 筛选只 scope records；executions 全局表，由 buildLedger 按 `sellExecId ∈ 范围内 sells` 过滤（v9.19） |
+| 账户 | **V9.32 已删除**（只按一个账户做）：没有 accounts 表/账户筛选/顶部选择器，`records` 就是全部数据；`accounts` 表在 Dexie v7 里整表丢弃，老备份带 `accounts` 段直接忽略（schemaVersion 7） |
 | 计划价 P8 | plans 只影响展示/导出，永不参与计算 |
 | 软删除 | `deletedAt` 非空的行不参与一切派生；导入幂等按 importKey，同 key 不覆盖 |
 | 基准 | `defaults.ts` BASELINE 只对「26年网格记录」fixture 成立，金额 ±1 元容差（E 列三位小数取整）；改任何派生逻辑跑 `io/baseline.spec.ts` 是红线 |
-| 价格树 | **逻辑层** `TreeTrunk.tsx`（数据聚合 aggregate → groupLevels、视野/交互/命中/hover 预览/e2e 桥/风格注册切换）+ **样式层** `treeStyleAtlas.ts`（图鉴素雅风：细锥双线干+淡水彩、统一弧线枝、干上泡牌价签、单行衬线注记）、`treeStyleSketch.ts`（手绘抖动风，V9.18~21 存档：木色粗干+树皮排线+树轮+装饰叶+云+沸腾）与 `treeStyleAxis.ts`（数轴风，**V9.25 起默认**：弃树意象，Apple 简约；V9.25.3 丰满化——冷白微渐变底+整步淡网格骨架、发丝轴两端渐隐、渐变枝+光环软投影端点、轴对侧价位 chip、hover 整行色带（TreeFrame.hover 由逻辑层传入）。V9.23：滚轮/捏合缩放**锚定指针**（`zoomToSpan`；桥 `zoomBy` 保持正中缩放旧语义）；图例按钮循环切三风格（数轴→图鉴→手绘），偏好存 localStorage `ezgrid.treeStyle`（不落台账库）。V9.25：**点击传价格区间**（TreePick lo~hi 分）——单档跳 `price=`、聚合组跳 `priceLo/priceHi`（明细页四个价格字段 OR 落区间即命中，与精确 price 同口径）；hover 预览 V9.26.2 已按用户要求移除（点击跳转保留，热区=拾取圆+注记文字）。聚合档数展示：数轴风=**枝上垂直刻线**（一道=一档，封顶 8 道，V9.26.2 取代「·N档」文字）、图鉴风=枝上小点、手绘风=叶。合并粒度由风格 `cardRowPx`（图鉴/数轴 27、手绘 34）按缩放推算——放大时聚合枝自动分散回原档位数；注记 买/卖 价×份额、已成交「已盈利±¥xx」=该价位 soldProfitCents 合计；e2e 桥 `canvas.__tree`：levels/span/center/panX/panXBy/setView/pickAt/zoomBy/projectPrice/**style**（projectPrice 返回所在合并组的 repCents——点击跳的是组内代表档）。命中检测 = 拾取圆（圆心距离最近者胜）+ 枝梢注记文字热区（`bin.note`，数轴风），等距才按 待卖→待买→已成交 |
+| 价格树 | **逻辑层** `TreeTrunk.tsx`（数据聚合 aggregate → groupLevels、视野/交互/命中/hover 预览/e2e 桥/风格注册切换）+ **样式层** `treeStyleAtlas.ts`（图鉴素雅风：细锥双线干+淡水彩、统一弧线枝、干上泡牌价签、单行衬线注记）、`treeStyleSketch.ts`（手绘抖动风，V9.18~21 存档：木色粗干+树皮排线+树轮+装饰叶+云+沸腾）与 `treeStyleAxis.ts`（数轴风，**V9.25 起默认**：弃树意象，Apple 简约；V9.25.3 丰满化——冷白微渐变底+整步淡网格骨架、发丝轴两端渐隐、渐变枝+光环软投影端点、轴对侧价位 chip、hover 整行色带（TreeFrame.hover 由逻辑层传入）。V9.23：滚轮/捏合缩放**锚定指针**（`zoomToSpan`；桥 `zoomBy` 保持正中缩放旧语义）；图例按钮循环切三风格（数轴→图鉴→手绘），偏好存 localStorage `ezgrid.treeStyle`（不落台账库）。V9.25：**点击传价格区间**（TreePick lo~hi 分）——单档跳 `price=`、聚合组跳 `priceLo/priceHi`（明细页四个价格字段 OR 落区间即命中，与精确 price 同口径）；hover 预览 V9.26.2 已按用户要求移除（点击跳转保留，热区=拾取圆+注记文字）。聚合档数展示：数轴风=**枝上垂直刻线**（一道=一档，封顶 8 道，V9.26.2 取代「·N档」文字）、图鉴风=枝上小点、手绘风=叶。合并粒度由风格 `cardRowPx`（图鉴/数轴 27、手绘 34）按缩放推算——放大时聚合枝自动分散回原档位数；注记 买/卖 价×份额、已成交「已盈利±¥xx」=该价位 soldProfitCents 合计；e2e 桥 `canvas.__tree`：levels/span/center/panX/panXBy/setView/pickAt/zoomBy/projectPrice/**style**（projectPrice 返回所在合并组的 repCents——点击跳的是组内代表档）。命中检测 = 拾取圆（圆心距离最近者胜）+ 枝梢注记文字热区（`bin.note`，数轴风），等距才按 待卖→待买→已成交。**V9.31 数轴改「格子进度条」**（用户拍板）：待买/待卖不再画枝线，改成**一格 = 一档**的小方格进度条（`CELL`5px / `CELL_GAP`1.5 / `CELL_MAX`8），聚合几档就长几格、由内向外逐格变淡；注记（买/卖 价×份额）一律排在格子**外侧**，且**先量注记宽度再定格子数**（`room`），塞不下的档数紧跟格子标「+N」（`BranchBin.over`）——绝不允许文字压格子；轴对侧价位 chip 已删，刻度数字改成**骑在轴上**（10px 淡灰 + 纸色挖穿），两侧留 `AXIS_HALF`16px 通道。已成交保持灰短枝+圆点不变，注记追加「卖出 N 次」（`BranchBin.times` = 组内 soldCount 之和）。概览树加**年份限制**：年份来自 `ledger.sells` 的卖出日期，Select 放图例条，**只筛已成交**（待买/待卖是当前挂单，不随年份消失），空值默认「全部」。e2e 桥新增 `bins()`（count/over/times）与 `year()` |
+| 理想可卖到 | **V9.29 用户拍板：由金额改股价** = 该股待卖里的**最高目标价**（`StockSummary.targetMaxPriceCents`，派生自 `targets`，无待卖为 null；口径只在 `ledger.ts` summarizeByStock，`baseline.spec.ts` 钉了柳工 ¥11.48）。含义 = 股价涨到这里待卖全部出清。数轴风画**琥珀点线**横贯 + 左下 chip（`TreeFrame.idealCents`，与昨收紫虚线并列的两条参考线），图鉴/手绘风没有价格刻度 → 退回画布左上角只读角标。只做展示，不参与任何计算 |
 
 ## ID 前缀约定
 
 `stock:` `lot:<row>` `sell:<row>` `target:<lot|extraId>` `rb:sell:<row>` `exec:<orderId>:<ts>`
-`et:<lotId>:<ts>` `plan:<refId>` `batch:<ts>` `acc:*` `hedge:<sellRow>`（V9.26）。备份
-schemaVersion 6（含 hedges）。Dexie schema 改动必须递增 `db.ts` 里的 version()（老库
+`et:<lotId>:<ts>` `plan:<refId>` `batch:<ts>` `hedge:<sellRow>`（V9.26）。备份
+schemaVersion 7（V9.32 去掉 accounts；含 hedges）。`validateBackup` 现在逐表校验 records / stocks / 回补成交 / 计划 / 拆分目标 / **挂钩**（V9.32 起；之前只查前两张，`hedges: [{}]` 能过校验、恢复后 `for..of h.items` 直接白屏）。Dexie schema 改动必须递增 `db.ts` 里的 version()（老库
 自动升级，不写迁移）。
 
 ## 已知取舍 / 已知坑（设计如此，别当 bug 修）
@@ -83,7 +84,7 @@ schemaVersion 6（含 hedges）。Dexie schema 改动必须递增 `db.ts` 里的
 
 ## 设计决定记录（2026-10-24 用户拍板，接手 agent 不要擅自推翻）
 
-- **A 组池账户维度**：加。键 = `账户|股票|成本分`，'all' 视图下不同账户不共享奖励额度。
+- **A 组池账户维度**：~~加~~ → **V9.32 撤销**：账户功能整体删除，键回到 `股票|成本分`，老键前缀自动剥掉。
 - **B 回补建批次**：自动建。回补成交派生虚拟批次（目标价=成交价+间隔）回到待卖清单，
   取代旧 D5「不新增批次」。守恒式相应改为「Σ待卖 − 待补 − 空头回补基础股 = 净持仓」。
 - **C 导入幂等**：提交时按行身份匹配更新卖出侧字段（importPlan.ts），不改 importKey 本身

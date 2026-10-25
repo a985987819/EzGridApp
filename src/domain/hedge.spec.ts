@@ -10,6 +10,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import { buildLedger } from './ledger'
+import { isHedgeable } from './hedge'
 import type { HedgeLink, RawRecord, RebuyExecution, StockConfig } from './types'
 
 const STOCK: StockConfig = {
@@ -56,6 +57,20 @@ function records(): RawRecord[] {
 }
 
 const LINK: HedgeLink = { id: 'hedge:3', sellRow: 3, items: [{ row: 2, qty: 500 }], at: 0 }
+
+describe('可挂判定（V9.32：与有没有待买订单解耦；V9.33：部分买回仍可挂）', () => {
+  it('裸卖 + 还有没买回的股数 → 可挂（P 列空也算，因为不看订单）', () => {
+    expect(isHedgeable({ buyPriceCents: null, soldQty: 500 }, 0)).toBe(true)
+    // 有买入批次 → 不是裸卖
+    expect(isHedgeable({ buyPriceCents: 1000, soldQty: 500 }, 0)).toBe(false)
+    // 没有卖出量
+    expect(isHedgeable({ buyPriceCents: null, soldQty: 0 }, 0)).toBe(false)
+    // 买回了一部分：剩下的还能挂
+    expect(isHedgeable({ buyPriceCents: null, soldQty: 500 }, 100)).toBe(true)
+    // 全部买回 → 挂钩自动解除，不再给入口
+    expect(isHedgeable({ buyPriceCents: null, soldQty: 500 }, 500)).toBe(false)
+  })
+})
 
 describe('先卖后买挂钩（V9.26）', () => {
   it('不挂钩时维持原口径：裸卖计敞口、自身按 P 列成本记账', () => {
@@ -127,6 +142,107 @@ describe('先卖后买挂钩（V9.26）', () => {
     expect(led.targets.find((t) => t.lotId === vl?.id)?.priceCents).toBe(700)
     // 盈利回到 +250，守恒式全绿
     expect(led.totals.profitCents).toBe(25000)
+    expect(led.checks.every((c) => c.ok)).toBe(true)
+  })
+
+  it('编辑补上买入价（行不再是裸卖）→ 绑定自动失效，先卖 + 后买回归一笔正常订单', () => {
+    // 用户口径：这笔先卖后买「编辑完成买入」后，取消与高位的绑定
+    const edited = records().map((r) =>
+      r.sourceRow === 3 ? { ...r, buyPriceCents: 650, buyQtyRaw: 500, buyDateSerial: 46005 } : r,
+    )
+    const led = buildLedger(edited, [STOCK], { hedges: [LINK] })
+    // 高位批次没被挂走：仍 500 股待卖、目标还是 11
+    const lot2 = led.lots.find((l) => l.sourceRow === 2)
+    expect(lot2?.remainingQty).toBe(500)
+    expect(lot2?.soldQty).toBe(0)
+    expect(led.sells.filter((s) => s.hedgedFromSellRow !== undefined)).toHaveLength(0)
+    expect(led.targets.find((t) => t.lotId === 'lot:2')?.priceCents).toBe(1100)
+    // 第 3 行自己成了批次：买 6.5 × 500，已卖 500 → 盈利 (7 − 6.5) × 500 = +250 元
+    const lot3 = led.lots.find((l) => l.sourceRow === 3)
+    expect(lot3).toMatchObject({ buyPriceCents: 650, qty: 500, remainingQty: 0 })
+    const s3 = led.sells.find((s) => s.sourceRow === 3)
+    expect(s3?.hedgedHold).toBeUndefined()
+    expect(s3?.profitCents).toBe(25000)
+    expect(led.totals.profitCents).toBe(25000)
+    expect(led.checks.every((c) => c.ok)).toBe(true)
+  })
+
+  it('V9.33 部分买回：挂钩只保留在还没买回的股数上，已买回那截按 P 列结算', () => {
+    // 挂 500 到 10.00 的批次；只买回 100 @6.50 → 剩下 400 继续挂，暂记亏损 −1,200
+    const exec: RebuyExecution = {
+      id: 'exec:rb:sell:3:1',
+      orderId: 'rb:sell:3',
+      sellExecId: 'sell:3',
+      stockId: STOCK.id,
+      stockName: STOCK.name,
+      qty: 100,
+      priceCents: 650,
+      rewardQty: 0,
+      groupKeyAtExecution: `${STOCK.id}|650`,
+      at: 46020,
+    }
+    const led = buildLedger(records(), [STOCK], { hedges: [LINK], executions: [exec] })
+    // 批次只剩 100 股（被挂走 400），暂记也没算满 500
+    const lot = led.lots.find((l) => l.sourceRow === 2)
+    expect(lot?.remainingQty).toBe(100)
+    const hedged = led.sells.find((s) => s.id === 'sell:hedged:3:2')
+    expect(hedged).toMatchObject({ qty: 400, profitCents: -120000 })
+    // 裸卖：没挂的 100 股（= 已买回那截）按 P 列 +50，剩下 400 挂在批次上
+    const naked = led.sells.find((s) => s.sourceRow === 3)
+    expect(naked?.profitCents).toBe(5000)
+    expect(naked?.hedgedHold).toBeUndefined()
+    // 没买回的 400 已全部挂住 → 不再有敞口，守恒式全绿
+    expect(led.totals.exposureQty).toBe(0)
+    expect(led.totals.profitCents).toBe(-120000 + 5000)
+    expect(led.anomalies.filter((a) => a.kind === 'hedgeMismatch' || a.kind === 'hedgeOverflow')).toHaveLength(0)
+    expect(led.checks.every((c) => c.ok)).toBe(true)
+  })
+
+  it('V9.33 只挂一部分（没买回）：差额仍算敞口并标 hedgeMismatch，守恒式仍平', () => {
+    const partial: HedgeLink = { id: 'hedge:3', sellRow: 3, items: [{ row: 2, qty: 300 }], at: 0 }
+    const led = buildLedger(records(), [STOCK], { hedges: [partial] })
+    expect(led.lots.find((l) => l.sourceRow === 2)?.remainingQty).toBe(200)
+    // 没挂的 200 股照旧按 P 列：(7−6.5)×200 = +100
+    expect(led.sells.find((s) => s.sourceRow === 3)?.profitCents).toBe(10000)
+    expect(led.sells.find((s) => s.sourceRow === 3)?.hedgedHold).toBeUndefined()
+    expect(led.anomalies.some((a) => a.kind === 'hedgeMismatch')).toBe(true)
+    expect(led.totals.exposureQty).toBe(200)
+    expect(led.checks.every((c) => c.ok)).toBe(true)
+  })
+
+  it('两张裸卖挂同一批次：可挂量不被重复扣减（V9.32 修）', () => {
+    // 批次 500 股；裸卖 A 挂 200、裸卖 B 挂 300，合计正好 500 → 两张都该全额生效
+    const recs = records()
+    recs.push({
+      sourceRow: 4,
+      stockName: '柳工',
+      buyDateSerial: null,
+      buyPriceCents: null,
+      buyQtyRaw: null,
+      qtyNeedsDerive: false,
+      targetPriceCents: 700,
+      targetNeedsDerive: false,
+      soldQty: 300,
+      sellDateSerial: 46011,
+      earlyBuyPriceCents: 650,
+      rawProfitCents: null,
+      importKey: 'k4',
+    })
+    // 原来的裸卖 500 股改成 200 股，两张挂 200 + 300 = 500
+    const base = records().map((r) => (r.sourceRow === 3 ? { ...r, soldQty: 200 } : r))
+    const hedges: HedgeLink[] = [
+      { id: 'hedge:3', sellRow: 3, items: [{ row: 2, qty: 200 }], at: 1 },
+      { id: 'hedge:4', sellRow: 4, items: [{ row: 2, qty: 300 }], at: 2 },
+    ]
+    const led = buildLedger([...base, recs[recs.length - 1]], [STOCK], { hedges })
+    const lot = led.lots.find((l) => l.sourceRow === 2)
+    expect(lot?.remainingQty).toBe(0)
+    expect(lot?.soldQty).toBe(500)
+    expect(led.anomalies.filter((a) => a.kind === 'hedgeOverflow' || a.kind === 'hedgeMismatch')).toHaveLength(0)
+    // 两笔暂记：（7−10）×（200 + 300）= −1,500 元
+    expect(led.sells.filter((s) => s.hedgedFromSellRow !== undefined).map((s) => s.qty).sort()).toEqual([200, 300])
+    expect(led.totals.profitCents).toBe(-150000)
+    expect(led.totals.exposureQty).toBe(0)
     expect(led.checks.every((c) => c.ok)).toBe(true)
   })
 

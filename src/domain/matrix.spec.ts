@@ -143,8 +143,8 @@ describe('§09 测试矩阵', () => {
   it('#09 不同股票不混用', () => {
     const l = buildLedger(fixture.records, DEFAULT_STOCKS)
     const keys = l.groups.map((g) => g.groupKey)
-    // 键 = 账户|股票|成本：取前两段（账户+股票）判重
-    expect(new Set(keys.map((k) => k.split('|').slice(0, 2).join('|'))).size).toBeGreaterThan(1)
+    // 键 = 股票|成本：取股票段判重（V9.32 单一账户）
+    expect(new Set(keys.map((k) => k.split('|')[0])).size).toBeGreaterThan(1)
   })
 
   it('#10 不足一手不加奖励（¥435 < ¥771 → 0 股）', () => {
@@ -182,8 +182,8 @@ describe('§09 测试矩阵', () => {
     const order63 = moved.orders.find((o) => o.sourceRow === 63)!
     expect(order63.rebuyPriceCents).toBe(786)
     // 7.81 组只剩 R46（¥560 < 每手 ¥781）→ 0 手；R63 并入 7.86 组（R35 ¥432 + 自己 ¥410 = ¥842）→ 1 手
-    expect(moved.groups.find((g) => g.groupKey === 'acc:default|stock:柳工|781')?.capacityHands).toBe(0)
-    expect(moved.groups.find((g) => g.groupKey === 'acc:default|stock:柳工|786')?.capacityHands).toBe(1)
+    expect(moved.groups.find((g) => g.groupKey === 'stock:柳工|781')?.capacityHands).toBe(0)
+    expect(moved.groups.find((g) => g.groupKey === 'stock:柳工|786')?.capacityHands).toBe(1)
     expect(order63.rewardQty).toBe(100)
     expect(base.totals.rewardQty).toBe(moved.totals.rewardQty)
   })
@@ -352,7 +352,7 @@ describe('§09 测试矩阵', () => {
       rec({ stockName: '柳工', sourceRow: 1, buyPriceCents: 781, buyQtyRaw: 1000, targetPriceCents: 837, soldQty: 1000 }),
       rec({ stockName: '柳工', sourceRow: 2, soldQty: 500, targetPriceCents: 868, earlyBuyPriceCents: 781 }),
     ]
-    // 一笔挂在不存在行上的成交（比如别的账户的），groupKey 相同——不能泄漏进来
+    // 一笔挂在不存在行上的成交（行被删了），groupKey 相同——不能泄漏进来
     const stray: RebuyExecution = { ...exec('rb:sell:999', 500, 781, 100), sellExecId: 'sell:999' }
     const l = buildLedger(records, DEFAULT_STOCKS, { executions: [stray] })
     expect(l.totals.rebuyExecQty).toBe(0)
@@ -395,24 +395,26 @@ describe('§09 测试矩阵', () => {
     expect(s.exposureQty).toBe(after.totals.exposureQty)
   })
 
-  it('v9.20 A：组池带账户维度——同股同价两个账户各自成组，额度不串', () => {
+  it('V9.32：单一账户后同股同价合成一个组，额度不再按账户拆', () => {
     const records = [
-      rec({ stockName: '柳工', sourceRow: 1, buyPriceCents: 700, buyQtyRaw: 1000, targetPriceCents: 771, soldQty: 1000, earlyBuyPriceCents: 700, accountId: 'acc:a' }),
-      rec({ stockName: '柳工', sourceRow: 2, buyPriceCents: 700, buyQtyRaw: 1000, targetPriceCents: 771, soldQty: 1000, earlyBuyPriceCents: 700, accountId: 'acc:b' }),
+      rec({ stockName: '柳工', sourceRow: 1, buyPriceCents: 700, buyQtyRaw: 1000, targetPriceCents: 771, soldQty: 1000, earlyBuyPriceCents: 700 }),
+      rec({ stockName: '柳工', sourceRow: 2, buyPriceCents: 700, buyQtyRaw: 1000, targetPriceCents: 771, soldQty: 1000, earlyBuyPriceCents: 700 }),
     ]
     const l = buildLedger(records, DEFAULT_STOCKS)
-    expect(l.groups).toHaveLength(2)
-    expect(l.groups.map((g) => g.capacityHands).sort()).toEqual([1, 1])
+    expect(l.groups).toHaveLength(1)
+    expect(l.groups[0].groupKey).toBe('stock:柳工|700')
+    // gross = 两笔各 (7.71−7.00)×1000 = 710 元 → 合计 1,420；每手成本 700 → 2 手
+    expect(l.groups[0].capacityHands).toBe(2)
   })
 
-  it('v9.20 A：老库存的成交键没有账户前缀，按所属行归一化后额度照扣', () => {
+  it('V9.32：老库带账户前缀的成交键照样扣额度（前缀会被剥掉）', () => {
     const records = [
       rec({ stockName: '柳工', sourceRow: 46, buyPriceCents: 781, buyQtyRaw: 1000, targetPriceCents: 837, soldQty: 1000 }),
       rec({ stockName: '柳工', sourceRow: 63, soldQty: 500, targetPriceCents: 868, earlyBuyPriceCents: 781 }),
     ]
     const before = buildLedger(records, DEFAULT_STOCKS)
     const legacy: RebuyExecution = { ...exec(before.orders[0].id, 600, 781, 100) }
-    // 模拟老库：键是 v9.19 之前的「股票|价」格式
+    // 模拟 V9.20~V9.31 的老库：键里带账户前缀
     legacy.groupKeyAtExecution = 'stock:柳工|781'
     const after = buildLedger(records, DEFAULT_STOCKS, { executions: [legacy] })
     expect(after.groups[0].usedProfitCents).toBe(78100)

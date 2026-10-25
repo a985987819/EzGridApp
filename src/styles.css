@@ -17,8 +17,8 @@
 
 * { box-sizing: border-box; }
 
-/* 全屏宽度下的横向滚动条修复：顶栏账户下拉（min-width 140px）比容器宽，
-   在视口右缘探出几 px。clip 不产生滚动容器，position: sticky 不受影响。 */
+/* 全屏宽度下的横向滚动条修复：内容比视口宽时只裁切、不产生滚动容器，
+   position: sticky 不受影响。 */
 html, body { overflow-x: clip; }
 
 html, body, #root { height: 100%; }
@@ -69,7 +69,6 @@ button { font-family: inherit; }
   text-overflow: ellipsis;
 }
 .app-header .spacer { flex: 1; }
-.account-select { width: 118px; flex: 0 0 118px; }
 
 .app-main {
   flex: 1;
@@ -211,6 +210,41 @@ button { font-family: inherit; }
 /* 状态边框（V9.26.1，取代 V9.5/V9.11 的文字配色）：待卖红 / 待买蓝，文字一律默认色 */
 .trade-item.pending-sell { border-left: 3px solid var(--up, #d0453f); }
 .trade-item.pending-buy { border-left: 3px solid var(--buy, #2f6fd6); }
+
+/* 挂单页「可挂买 / 可挂卖」行沿用同一套左边框（V9.29.1）：蓝=买、红=卖；
+   行内自带 9px 内边距，加边框后补 8px 左内距，视觉上文字不贴边 */
+.line.pending-buy,
+.line.pending-sell {
+  padding-left: 8px;
+  border-radius: 0 6px 6px 0;
+}
+.line.pending-buy { border-left: 3px solid var(--buy, #2f6fd6); }
+.line.pending-sell { border-left: 3px solid var(--up, #d0453f); }
+
+/* 裸卖待挂钩入口标签（V9.30）：点一下弹绑定面板，给个手型光标提示可点 */
+.hedge-entry { cursor: pointer; }
+
+/* 裸卖待挂钩弹层（V9.30）：别用 Modal 的 width 属性（会撑破 100vw 上限），这里自己控宽度 */
+.hedge-modal { width: min(560px, calc(100vw - 32px)); }
+.hedge-modal .line .t1 { font-size: 13px; }
+.hedge-modal .line .t2 { font-size: 11px; line-height: 1.45; }
+.hedge-binder { width: 100%; }
+/* V9.33 挂钩异常红条：失效 / 超挂 / 挂不满就地提示 */
+.hedge-issues {
+  border: 1px solid rgba(208, 69, 63, 0.45);
+  background: rgba(208, 69, 63, 0.07);
+  color: var(--up, #d0453f);
+  border-radius: 8px;
+  padding: 6px 8px;
+  margin: 0 0 8px;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+/* 候选可能十几条：列表自己滚，别把「已分配 / 保存挂钩」顶出视野 */
+.hedge-binder .data-block { width: 100%; max-height: 42vh; overflow-y: auto; }
+.hedge-binder .row { width: 100%; flex-wrap: wrap; }
+/* 弹层里给底部的「已分配 / 保存挂钩」留位置：候选列表矮一点（V9.33 实测列表 42vh 会把按钮顶出可视区） */
+.hedge-modal .data-block { max-height: 30vh; }
 
 /* 右侧「剩余 / 已卖」仍加大加粗（扫读重点），但颜色回归默认 */
 .trade-item .right-qty {
@@ -587,6 +621,63 @@ button { font-family: inherit; }
   height: clamp(500px, 64vh, 680px);
   position: relative;
 }
+/* V9.27 概览翻转 + V9.28.1 选股卡置顶：首屏 = 选股卡 + 树（flex 填满剩余空间，
+   自适应选股卡高度变化），全局指标块沉底 */
+.overview-top {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: calc(100dvh - var(--header-h, 63px) - 74px);
+}
+/* 选股卡紧凑些：给树多留空间 */
+.overview-top .stock-panel .stack.tight { gap: 6px; }
+.overview-top .stock-panel .grid-4 .k { font-size: 10px; }
+.overview-top .stock-panel .grid-4 .v { font-size: 14px; }
+.overview-top .stock-panel .grid-4 .v.long { font-size: 12px; }
+.overview-top .tree-full {
+  flex: 1;
+  min-height: 400px;
+  display: flex;
+  flex-direction: column;
+}
+.overview-top .tree-full .tree-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.overview-top .tree-full .tree-host {
+  flex: 1;
+  height: auto;
+  min-height: 360px;
+}
+/* 盈利数字右侧的「共计x次」（V9.27）：整体加粗，x 比其它字大 5px */
+.profit-count {
+  font-weight: 700;
+  margin-left: 3px;
+  white-space: nowrap;
+}
+.profit-count b {
+  font-size: calc(1em + 5px);
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+/* 价格树左上角只读角标（V9.29：数轴风改用轴上琥珀点线，图鉴/手绘风退回这个角标显示「理想可卖到 x.xx」） */
+.tree-stat {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 4;
+  border: 1px solid #d8d8dd;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #1d1d1f;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
 .tree-host canvas {
   display: block;
   width: 100%;
@@ -629,6 +720,16 @@ button { font-family: inherit; }
 .tree-wrap[data-style="axis"] .tree-legend .dot.fallen::before { background: #8e8e93; }
 .tree-wrap[data-style="axis"] .tree-legend .style-toggle { background: #fff; border-color: #d8d8dd; }
 .tree-wrap[data-style="axis"] .tree-legend .style-toggle:hover { background: #f2f2f7; }
+/* V9.31 数轴风：聚合 = 方格进度条，图例的小圆点也改成小方格，跟画布一致 */
+.tree-wrap[data-style="axis"] .tree-legend .dot.buy::before,
+.tree-wrap[data-style="axis"] .tree-legend .dot.sell::before,
+.tree-wrap[data-style="axis"] .tree-legend .dot.agg::before { border-radius: 2px; }
+.tree-wrap[data-style="axis"] .tree-legend .dot.agg::before { background: #c7c7cc; }
+/* 年份切换（V9.31）：借 Select，但压成图例条里的迷你尺寸 */
+.tree-year { display: inline-flex; align-items: center; gap: 6px; }
+.tree-year [class*='animal-wrapper-'] { min-width: 78px; }
+.tree-year [class*='animal-trigger-'] { padding: 2px 8px; border-width: 1px; border-radius: 8px; }
+.tree-year [class*='animal-value-'] { font-size: 11.5px; }
 /* 风格切换：低调的文字按钮，藏在图例条里 */
 .tree-legend .style-toggle {
   border: 1px solid rgba(120, 104, 78, 0.35);

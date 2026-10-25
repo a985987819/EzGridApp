@@ -14,7 +14,7 @@ export function Overview({
   goTrades: (q: TradesQuery) => void
   goManage: () => void
 }) {
-  const { ledger, baseline, records, basename, stocks, lastBackupAt } = useApp()
+  const { ledger, baseline, records, basename, stocks, lastBackupAt, ordersSession } = useApp()
   const [active, setActive] = useState('')
   const [openMetric, setOpenMetric] = useState<'target' | 'exposure' | 'net' | null>(null)
   const t = ledger.totals
@@ -51,14 +51,122 @@ export function Overview({
 
   const hiddenCount = ledger.byStock.filter((s) => s.rows > 0 && !enabledNames.includes(s.stockName)).length
   const current = withRows.find((s) => s.stockName === active) ?? withRows[0]
+  // V9.28 当前股票概述：今年共卖 x 次（真实卖出，不含挂钩暂记）。
+  // 早退（无数据）之后才到这里，不能用 useMemo——过滤量小，直接算
+  const yearSellCount = current
+    ? ledger.sells.filter(
+        (s) =>
+          s.stockName === current.stockName &&
+          s.hedgedFromSellRow === undefined &&
+          (s.soldAt ?? '').startsWith(String(new Date().getFullYear())),
+      ).length
+    : 0
+  // 数轴标记：已确认昨收（挂单页）与理想可卖到的股价（= 最高待卖目标价，V9.29）
+  const closeCents = current ? ordersSession.confirmedCents[current.stockName] ?? null : null
+  /** 被高位挂住（盈利暂缓）的卖出笔数（V9.33） */
+  const holdCount = current
+    ? ledger.sells.filter((s) => s.stockName === current.stockName && s.hedgedHold === true).length
+    : 0
 
   return (
     <div className="stack">
-      <div className="page-sticky" data-sticky="overview">
-        <div className="page-title">
-          <h2>概览</h2>
-          <p>{basename}</p>
+      {/* V9.28.1 概览：选股卡置顶 + 树填满首屏剩余空间；全局指标块沉底 */}
+      {current && (
+        <div className="overview-top">
+        <Card className="stock-panel">
+          <div className="sec-head" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
+            <div className="row">
+              <strong>选股 · 当前股票汇总</strong>
+              <div className="spacer" />
+              <span className="sec-sub">点枝跳明细 · 树在下方</span>
+            </div>
+            <div className="stock-tabs">
+              {withRows.map((s) => (
+                <Tag
+                  key={s.stockName}
+                  size="medium"
+                  variant={current?.stockName === s.stockName ? 'solid' : 'soft'}
+                  color={current?.stockName === s.stockName ? 'app-teal' : 'default'}
+                  onClick={() => setActive(s.stockName)}
+                >
+                  {s.stockName}
+                </Tag>
+              ))}
+            </div>
+          </div>
+          <div className="stack tight">
+            {/* V9.28 当前股票概述四项：已实现盈利 / 理想可卖到 / 理想剩余可赚 / 今年共卖 */}
+            <div className="grid-4 metric-strip">
+              <div>
+                <div className="k">已实现盈利</div>
+                {/* V9.33：被高位挂住的裸卖盈利暂缓，合计里就没算它们——给一句提示免得以为数据丢了 */}
+                <div className={`v long ${tone(current.profitCents)}`}>
+                  {signedMoney(current.profitCents)}
+                  {holdCount > 0 && <span className="tiny muted"> 含 {holdCount} 笔暂缓</span>}
+                </div>
+              </div>
+              <div>
+                <div className="k">理想可卖到</div>
+                {/* V9.29 用户拍板：由金额改股价（最高待卖目标价）——同一条数轴上能看到它的位置 */}
+                <div className="v long">
+                  {price(current.targetMaxPriceCents)}
+                  {current.targetMaxPriceCents != null && <span className="tiny muted"> 元</span>}
+                </div>
+              </div>
+              <div>
+                <div className="k">理想剩余可赚</div>
+                <div className={`v long ${tone(current.expectProfitCents)}`}>{signedMoney(current.expectProfitCents)}</div>
+              </div>
+              <div>
+                <div className="k">今年共卖</div>
+                <div className="v">
+                  {yearSellCount} <span className="tiny muted">次</span>
+                </div>
+              </div>
+            </div>
+            <div className="grid-4 metric-strip">
+              <div>
+                <div className="k">可卖</div>
+                <div className="v">{qty(current.targetQty)}</div>
+              </div>
+              <div>
+                <div className="k">待补</div>
+                <div className="v" style={{ color: current.exposureQty ? 'var(--up)' : undefined }}>{qty(current.exposureQty)}</div>
+              </div>
+              <div>
+                <div className="k">净持仓</div>
+                <div className="v">{qty(current.netQty)}</div>
+              </div>
+              <div>
+                <div className="k">已实现</div>
+                <div className={`v long ${tone(current.profitCents)}`}>{signedMoney(current.profitCents)}</div>
+              </div>
+            </div>
+          </div>
+        </Card>
+
+        <Card className="tree-full">
+          <TreeTrunk
+            stockName={current.stockName}
+            closeCents={closeCents}
+            idealPriceCents={current.targetMaxPriceCents}
+            onPick={({ loCents, hiCents, done }) =>
+              goTrades(
+                loCents === hiCents
+                  ? { stock: current.stockName, price: loCents, showDone: done === true || undefined }
+                  : { stock: current.stockName, priceLo: loCents, priceHi: hiCents, showDone: done === true || undefined },
+              )
+            }
+          />
+        </Card>
         </div>
+      )}
+
+      <div className="overview-bottom">
+      <div className="page-title">
+        <h2>概览</h2>
+        <p>{basename}</p>
+      </div>
 
       <Card>
         <div className="metrics">
@@ -104,7 +212,13 @@ export function Overview({
               基准 {baseline.length - failed}/{baseline.length} · 去管理页看
             </Tag>
           )}
-          <Tag size="small" variant="soft" color="app-blue">已实现 {signedMoney(t.profitCents)}</Tag>
+          {/* V9.27：盈利数字右侧追加加粗「共计x次」，x 比其它字大 5px（CSS calc(1em+5px)） */}
+          <Tag size="small" variant="soft" color="app-blue">
+            已实现 {signedMoney(t.profitCents)}
+            <span className="profit-count">
+              共计<b>{t.sellCount}</b>次
+            </span>
+          </Tag>
           <Tag size="small" variant="soft" color="app-orange">待卖 {money(t.targetAmountCents)}</Tag>
           {t.exposureQty > 0 && (
             <Tag
@@ -133,7 +247,6 @@ export function Overview({
           )}
         </div>
       </Card>
-      </div>
 
       {/* §04：三格指标点开看构成（移动端没有悬停，用点击代替）；key 换目标时重放进场动画 */}
       {openMetric !== null && (
@@ -239,62 +352,7 @@ export function Overview({
         </Card>
       )}
 
-      <Card>
-        <div className="sec-head" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
-          <div className="row">
-            <strong>价格树干</strong>
-            <div className="spacer" />
-            <span className="sec-sub">纵轴 = 价格 · 每 0.1 元一圈</span>
-          </div>
-          <div className="stock-tabs">
-            {withRows.map((s) => (
-              <Tag
-                key={s.stockName}
-                size="medium"
-                variant={current?.stockName === s.stockName ? 'solid' : 'soft'}
-                color={current?.stockName === s.stockName ? 'app-teal' : 'default'}
-                onClick={() => setActive(s.stockName)}
-              >
-                {s.stockName}
-              </Tag>
-            ))}
-          </div>
-        </div>
-        {current && (
-          <div className="stack tight">
-            <div className="grid-4 metric-strip">
-              <div>
-                <div className="k">可卖</div>
-                <div className="v">{qty(current.targetQty)}</div>
-              </div>
-              <div>
-                <div className="k">待补</div>
-                <div className="v" style={{ color: current.exposureQty ? 'var(--up)' : undefined }}>{qty(current.exposureQty)}</div>
-              </div>
-              <div>
-                <div className="k">净持仓</div>
-                <div className="v">{qty(current.netQty)}</div>
-              </div>
-              <div>
-                <div className="k">已实现</div>
-                <div className={`v long ${tone(current.profitCents)}`}>{signedMoney(current.profitCents)}</div>
-              </div>
-            </div>
-            {/* 已成交枯枝跳明细要放开「隐藏已完成」，否则点过去看不到行；
-                聚合组传整段价格区间（V9.25），单档仍走 price= 精确跳转 */}
-            <TreeTrunk
-              stockName={current.stockName}
-              onPick={({ loCents, hiCents, done }) =>
-                goTrades(
-                  loCents === hiCents
-                    ? { stock: current.stockName, price: loCents, showDone: done === true || undefined }
-                    : { stock: current.stockName, priceLo: loCents, priceHi: hiCents, showDone: done === true || undefined },
-                )
-              }
-            />
-          </div>
-        )}
-      </Card>
+      </div>
 
       <p className="tiny muted" style={{ textAlign: 'center', margin: '0 0 4px' }}>
         {hiddenCount > 0 && `已隐藏 ${hiddenCount} 只停用股票（数据仍计入上方合计） · `}

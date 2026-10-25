@@ -13,13 +13,10 @@ import { compareBaseline } from '../domain/baseline'
 import { DEFAULT_STOCKS } from '../domain/defaults'
 import { applyEdits, type EditableKey } from '../domain/edit'
 import { applyOrder, normalizeStocks } from '../domain/stocks'
-import { filterByAccount } from '../domain/accounts'
 import { buildManualRecord, MANUAL_ROW_BASE, type ManualInput } from '../domain/manual'
 import { importDiffFields, IMPORT_FIELD_LABEL, importFieldValue, planImport } from '../domain/importPlan'
 import { validateBackup } from '../domain/backup'
-import { DEFAULT_ACCOUNT_ID } from '../domain/types'
 import type {
-  Account,
   AuditLog,
   CheckResult,
   ExtraTarget,
@@ -42,10 +39,10 @@ export interface ImportOutcome {
 }
 
 /**
- * 挂单页的临时状态（V9.10）：全部按股票记——昨收输入、已确认昨收、手工涨跌停、
- * 当前选中的股票。切股、切页、刷新（同标签页）都保留；关掉标签页才清。
- * 存 sessionStorage（会话级 Web Storage），不落 IndexedDB：昨收是行情信息，
- * 隔天失效，不该进备份。
+ * 挂单页的昨收状态（V9.10 起；V9.28 改持久）：全部按股票记——昨收输入、已确认
+ * 昨收、手工涨跌停、当前选中的股票。V9.28 用户拍板：昨收不再随会话消失，改存
+ * localStorage 跨会话保留（输入框自带 onClear 可一键清掉重填）；仍不落台账库/备份
+ * ——昨收是行情信息，不该进数据备份。
  */
 export interface OrdersSession {
   stockName: string
@@ -60,10 +57,10 @@ export interface OrdersSession {
 const ORDERS_SESSION_KEY = 'grid-trading:orders-session'
 const EMPTY_ORDERS_SESSION: OrdersSession = { stockName: '', closes: {}, confirmedCents: {}, overrides: {} }
 
-/** 从 sessionStorage 恢复（结构坏掉就当空会话） */
+/** 从 localStorage 恢复（V9.28 起跨会话保留；结构坏掉就当空会话） */
 function loadOrdersSession(): OrdersSession {
   try {
-    const raw = sessionStorage.getItem(ORDERS_SESSION_KEY)
+    const raw = localStorage.getItem(ORDERS_SESSION_KEY)
     if (!raw) return EMPTY_ORDERS_SESSION
     const p = JSON.parse(raw) as Partial<OrdersSession>
     return {
@@ -120,12 +117,6 @@ interface AppContextValue {
   restoreBackup: (json: string) => Promise<void>
   basename: string
   lastBackupAt: number | null
-  /** 当前账户筛选：'all' 或 accountId */
-  activeAccountId: string
-  accounts: Account[]
-  scopedRecords: RawRecord[]
-  setActiveAccount: (id: string) => Promise<void>
-  addAccount: (name: string) => Promise<void>
   systemFont: boolean
   setSystemFont: (v: boolean) => Promise<void>
   ordersSession: OrdersSession
@@ -162,18 +153,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [preview, setPreview] = useState<ParseResult | null>(null)
   const [basename, setBasename] = useState('—')
   const [lastBackupAt, setLastBackupAt] = useState<number | null>(null)
-  const [accounts, setAccounts] = useState<Account[]>([])
-  const [activeAccountId, setActiveAccountId] = useState('all')
   const [systemFont, setSystemFontState] = useState(false)
   const [ordersSession, setOrdersSession] = useState<OrdersSession>(loadOrdersSession)
   const patchOrdersSession = useCallback(
     (p: Partial<OrdersSession>) => setOrdersSession((s) => ({ ...s, ...p })),
     [],
   )
-  // 会话级持久化：刷新/来回切页不清，关标签页由浏览器清
+  // 持久化到 localStorage（V9.28）：昨收跨会话保留，重开浏览器还在
   useEffect(() => {
     try {
-      sessionStorage.setItem(ORDERS_SESSION_KEY, JSON.stringify(ordersSession))
+      localStorage.setItem(ORDERS_SESSION_KEY, JSON.stringify(ordersSession))
     } catch {
       // 隐私模式 / 存满：静默降级为内存态
     }
@@ -203,11 +192,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if ((await db.stocks.count()) === 0) {
         await db.stocks.bulkPut(DEFAULT_STOCKS)
       }
-      // 默认账户兜底
-      if ((await db.accounts.count()) === 0) {
-        await db.accounts.put({ id: DEFAULT_ACCOUNT_ID, name: '默认账户', createdAt: Date.now() })
-      }
-      const [sRaw, r, a, b, x, backupMeta, pl, et, accs, accMeta, fontMeta, hd] = await Promise.all([
+      // 单一账户（V9.32：账户功能已删除）
+      const [sRaw, r, a, b, x, backupMeta, pl, et, fontMeta, hd] = await Promise.all([
         db.stocks.toArray(),
         db.records.toArray(),
         db.auditLogs.toArray(),
@@ -216,8 +202,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
         db.meta.get('lastBackupAt'),
         db.plans.toArray(),
         db.extraTargets.toArray(),
-        db.accounts.toArray(),
-        db.meta.get('activeAccountId'),
         db.meta.get('useSystemFont'),
         db.hedges.toArray(),
       ])
@@ -236,8 +220,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setBatches(b)
       setBasename(b[0]?.fileName ?? '—')
       setLastBackupAt(backupMeta ? Number(backupMeta.value) : null)
-      setAccounts(accs)
-      setActiveAccountId(accMeta?.value ?? 'all')
       const fontOn = fontMeta?.value === '1'
       setSystemFontState(fontOn)
       if (fontOn) applySystemFont(true)
@@ -248,12 +230,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  // 账户筛选只影响展示与清单；不影响原始数据
-  const scopedRecords = useMemo(() => filterByAccount(records, activeAccountId), [records, activeAccountId])
-
   const ledger = useMemo(
-    () => buildLedger(scopedRecords, stocks, { deriveSellPrice, executions, plans, extraTargets, hedges }),
-    [scopedRecords, stocks, deriveSellPrice, executions, plans, extraTargets, hedges],
+    () => buildLedger(records, stocks, { deriveSellPrice, executions, plans, extraTargets, hedges }),
+    [records, stocks, deriveSellPrice, executions, plans, extraTargets, hedges],
   )
 
   const baseline = useMemo(() => compareBaseline(ledger), [ledger])
@@ -269,7 +248,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
         ...r,
         origin: 'excel' as const,
         batchId,
-        accountId: activeAccountId === 'all' ? DEFAULT_ACCOUNT_ID : activeAccountId,
       }))
       const batch: ImportBatch = {
         id: batchId,
@@ -309,7 +287,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setBasename(fileName)
       return { added: fresh.length, duplicated: plan.unchanged, updated: plan.updates.length, batch }
     },
-    [reloadRecords, activeAccountId],
+    [reloadRecords],
   )
 
   const rollbackBatch = useCallback(
@@ -531,15 +509,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       const link: HedgeLink = { id: `hedge:${sellRow}`, sellRow, items, at: Date.now() }
       await db.transaction('rw', db.hedges, db.auditLogs, async () => {
+        // V9.33：旧值写上一次的分配（改挂也能回溯），新值写这次的分配
+        const prev = await db.hedges.get(`hedge:${sellRow}`)
+        const fmt = (list: { row: number; qty: number }[]) =>
+          list.length ? list.map((i) => `第${i.row}行×${i.qty}`).join(' + ') : '不挂'
         await db.hedges.put(link)
         await db.auditLogs.add(
-          audit(
-            `record:${sellRow}`,
-            '挂钩高位买入',
-            items.map((i) => `第${i.row}行×${i.qty}`).join(' + '),
-            '暂记亏损，买回后自动复原',
-            'hedge',
-          ),
+          audit(`record:${sellRow}`, '挂钩分配', fmt(prev?.items ?? []), fmt(items), 'hedge'),
         )
       })
       setHedges(await db.hedges.toArray())
@@ -568,18 +544,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     },
     [],
   )
-
-  const setActiveAccount = useCallback(async (id: string) => {
-    await db.meta.put({ key: 'activeAccountId', value: id })
-    setActiveAccountId(id)
-  }, [])
-
-  const addAccount = useCallback(async (name: string) => {
-    const trimmed = name.trim()
-    if (!trimmed) throw new Error('账户名不能为空')
-    await db.accounts.put({ id: `acc:${Date.now()}`, name: trimmed, createdAt: Date.now() })
-    setAccounts(await db.accounts.toArray())
-  }, [])
 
   const setSystemFont = useCallback(async (v: boolean) => {
     await db.meta.put({ key: 'useSystemFont', value: v ? '1' : '0' })
@@ -625,7 +589,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const exportBackup = useCallback(async () => {
-    const [s, r, b, a, x, pl, et, accs, hd] = await Promise.all([
+    const [s, r, b, a, x, pl, et, hd] = await Promise.all([
       db.stocks.toArray(),
       db.records.toArray(),
       db.batches.toArray(),
@@ -633,7 +597,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       db.rebuyExecutions.toArray(),
       db.plans.toArray(),
       db.extraTargets.toArray(),
-      db.accounts.toArray(),
       db.hedges.toArray(),
     ])
     const stamp = String(Date.now())
@@ -641,7 +604,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setLastBackupAt(Number(stamp))
     return JSON.stringify(
       {
-        schemaVersion: 6,
+        // V9.32：删账户功能 → 版本 7（老备份仍可导入，accounts 段直接忽略）
+        schemaVersion: 7,
         exportedAt: new Date().toISOString(),
         stocks: s,
         records: r,
@@ -650,7 +614,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
         rebuyExecutions: x,
         plans: pl,
         extraTargets: et,
-        accounts: accs,
         hedges: hd,
       },
       null,
@@ -669,17 +632,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
         rebuyExecutions?: RebuyExecution[]
         plans?: TradePlan[]
         extraTargets?: ExtraTarget[]
-        accounts?: Account[]
         hedges?: HedgeLink[]
       }
       const version = data.schemaVersion ?? 1
-      if (version > 6) throw new Error('备份版本高于当前程序，拒绝导入（P11）')
+      if (version > 7) throw new Error('备份版本高于当前程序，拒绝导入（P11）')
       // P11 之外的第二道闸：结构坏掉的备份整包拒绝，不让半截 JSON 污染本地库
       const problem = validateBackup(data)
       if (problem) throw new Error(`备份内容校验失败：${problem}`)
       await db.transaction(
         'rw',
-        [db.stocks, db.records, db.batches, db.auditLogs, db.rebuyExecutions, db.plans, db.extraTargets, db.accounts, db.hedges],
+        [db.stocks, db.records, db.batches, db.auditLogs, db.rebuyExecutions, db.plans, db.extraTargets, db.hedges],
         async () => {
         if (data.stocks) {
           await db.stocks.clear()
@@ -692,10 +654,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (data.batches) {
           await db.batches.clear()
           await db.batches.bulkPut(data.batches)
-        }
-        if (data.accounts) {
-          await db.accounts.clear()
-          await db.accounts.bulkPut(data.accounts)
         }
         await db.plans.clear()
         if (data.plans) await db.plans.bulkPut(data.plans)
@@ -726,7 +684,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
         },
       )
       setStocks(await db.stocks.toArray())
-      setAccounts(await db.accounts.toArray())
       setBatches(await db.batches.toArray())
       await reloadRecords()
     },
@@ -774,11 +731,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     restoreBackup,
     basename,
     lastBackupAt,
-    activeAccountId,
-    accounts,
-    scopedRecords,
-    setActiveAccount,
-    addAccount,
     systemFont,
     ordersSession,
     patchOrdersSession,
