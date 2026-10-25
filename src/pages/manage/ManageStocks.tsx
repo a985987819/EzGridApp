@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from 'react'
-import { Button, Card, Input, Modal, Select, Switch, Tag, notificationOpen } from 'animal-island-ui'
+import { Button, Card, Input, Modal, Switch, Tag, notificationOpen } from 'animal-island-ui'
+import { Select } from '../../ui/Select'
 import { useApp } from '../../store/useApp'
 import { stockIdOf } from '../../domain/defaults'
 import { centsToYuan, toCents } from '../../domain/money'

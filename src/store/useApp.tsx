@@ -14,6 +14,17 @@ import { DEFAULT_STOCKS } from '../domain/defaults'
 import { applyEdits, type EditableKey } from '../domain/edit'
 import { applyOrder, normalizeStocks } from '../domain/stocks'
 import { buildManualRecord, MANUAL_ROW_BASE, type ManualInput } from '../domain/manual'
+import {
+  EMPTY_SANDBOX,
+  makeSandboxItem,
+  nextSandboxSeq,
+  sandboxBuyInput,
+  sandboxRowOf,
+  sandboxSellInput,
+  sandboxRecords as buildSandboxRecords,
+  type SandboxDraft,
+  type SandboxState,
+} from '../domain/sandbox'
 import { importDiffFields, IMPORT_FIELD_LABEL, importFieldValue, planImport } from '../domain/importPlan'
 import { validateBackup } from '../domain/backup'
 import type {
@@ -121,6 +132,20 @@ interface AppContextValue {
   setSystemFont: (v: boolean) => Promise<void>
   ordersSession: OrdersSession
   patchOrdersSession: (p: Partial<OrdersSession>) => void
+  /** 沙盒模式（V9.39）：模拟待买/待卖 + 模拟挂钩，纯预览不落库 */
+  sandbox: SandboxState
+  /** 真实 + 模拟的预览账本；没有模拟条目时就是 ledger */
+  sandboxLedger: Ledger
+  /** 真实 + 模拟的 RawRecord（含 300000 段模拟行），沙盒挂钩面板要用 */
+  sandboxPreviewRecords: RawRecord[]
+  setSandboxActive: (active: boolean) => void
+  addSandboxItem: (draft: SandboxDraft) => void
+  removeSandboxItem: (id: string) => void
+  setSandboxHedge: (sellRow: number, items: { row: number; qty: number }[]) => void
+  clearSandboxHedge: (sellRow: number) => void
+  /** 记为成交：模拟条目（连同它挂钩的模拟买入批次）写成真实 records */
+  commitSandboxItem: (id: string) => Promise<{ row: number; committed: number } | null>
+  clearSandbox: () => void
 }
 
 const AppContext = createContext<AppContextValue | null>(null)
@@ -155,6 +180,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [lastBackupAt, setLastBackupAt] = useState<number | null>(null)
   const [systemFont, setSystemFontState] = useState(false)
   const [ordersSession, setOrdersSession] = useState<OrdersSession>(loadOrdersSession)
+  /** 沙盒只活在本次会话：切页保留、刷新清空，不写库也不进备份 */
+  const [sandbox, setSandbox] = useState<SandboxState>(EMPTY_SANDBOX)
   const patchOrdersSession = useCallback(
     (p: Partial<OrdersSession>) => setOrdersSession((s) => ({ ...s, ...p })),
     [],
@@ -236,6 +263,35 @@ export function AppProvider({ children }: { children: ReactNode }) {
   )
 
   const baseline = useMemo(() => compareBaseline(ledger), [ledger])
+
+  const sandboxPreviewRecords = useMemo(
+    () => (sandbox.items.length ? [...records, ...buildSandboxRecords(sandbox.items)] : records),
+    [records, sandbox.items],
+  )
+
+  // 沙盒预览：真实 records + 模拟行、真实挂钩 + 模拟挂钩，走同一套 buildLedger。
+  // 没有模拟内容时直接复用 ledger，避免白算一遍。
+  const sandboxLedger = useMemo(() => {
+    if (sandbox.items.length === 0 && sandbox.hedges.length === 0) return ledger
+    return buildLedger(sandboxPreviewRecords, stocks, {
+      deriveSellPrice,
+      executions,
+      plans,
+      extraTargets,
+      hedges: sandbox.hedges.length ? [...hedges, ...sandbox.hedges] : hedges,
+    })
+  }, [
+    ledger,
+    sandboxPreviewRecords,
+    sandbox.items.length,
+    sandbox.hedges,
+    stocks,
+    deriveSellPrice,
+    executions,
+    plans,
+    extraTargets,
+    hedges,
+  ])
 
   const commitImport = useCallback(
     async (p: ParseResult, fileName: string): Promise<ImportOutcome> => {
@@ -357,7 +413,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [reloadRecords],
   )
 
-  const addManualRecord = useCallback(
+  /** 真正写一条手动记录（不刷新内存态）：沙盒「记为成交」要连写多条再用一次 reload */
+  const createManualRecord = useCallback(
     async (input: ManualInput) => {
       const all = await db.records.toArray()
       const maxRow = all.reduce((a, r) => Math.max(a, r.sourceRow), MANUAL_ROW_BASE - 1)
@@ -379,10 +436,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
           ),
         )
       })
+      return sourceRow
+    },
+    [stocks],
+  )
+
+  const addManualRecord = useCallback(
+    async (input: ManualInput) => {
+      const sourceRow = await createManualRecord(input)
       await reloadRecords()
       return sourceRow
     },
-    [reloadRecords, stocks],
+    [createManualRecord, reloadRecords],
   )
 
   const reorderStocks = useCallback(async (orderedIds: string[]) => {
@@ -545,6 +610,134 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [],
   )
 
+  const setSandboxActive = useCallback((active: boolean) => {
+    setSandbox((s) => ({ ...s, active }))
+  }, [])
+
+  const addSandboxItem = useCallback((draft: SandboxDraft) => {
+    setSandbox((s) => {
+      const seq = nextSandboxSeq(s.items)
+      return { ...s, active: true, items: [...s.items, makeSandboxItem(draft, seq)] }
+    })
+  }, [])
+
+  const removeSandboxItem = useCallback((id: string) => {
+    setSandbox((s) => {
+      const item = s.items.find((i) => i.id === id)
+      if (!item) return s
+      const row = sandboxRowOf(item)
+      return {
+        ...s,
+        items: s.items.filter((i) => i.id !== id),
+        hedges: s.hedges
+          .filter((h) => h.sellRow !== row)
+          .map((h) => ({ ...h, items: h.items.filter((i) => i.row !== row) }))
+          .filter((h) => h.items.length > 0),
+      }
+    })
+  }, [])
+
+  const setSandboxHedge = useCallback(
+    (sellRow: number, items: { row: number; qty: number }[]) => {
+      for (const it of items) {
+        if (!Number.isInteger(it.row) || !Number.isFinite(it.qty) || it.qty <= 0) {
+          throw new Error('模拟挂钩分配不合法（行号 / 股数）')
+        }
+      }
+      setSandbox((s) => {
+        const rest = s.hedges.filter((h) => h.sellRow !== sellRow)
+        if (items.length === 0) return { ...s, hedges: rest }
+        return {
+          ...s,
+          hedges: [...rest, { id: `sandbox-hedge:${sellRow}`, sellRow, items, at: Date.now() }],
+        }
+      })
+    },
+    [],
+  )
+
+  const clearSandboxHedge = useCallback((sellRow: number) => {
+    setSandbox((s) => ({ ...s, hedges: s.hedges.filter((h) => h.sellRow !== sellRow) }))
+  }, [])
+
+  const clearSandbox = useCallback(() => {
+    setSandbox((s) => ({ ...s, items: [], hedges: [] }))
+  }, [])
+
+  const commitSandboxItem = useCallback(
+    async (id: string): Promise<{ row: number; committed: number } | null> => {
+      const item = sandbox.items.find((i) => i.id === id)
+      if (!item) return null
+      const itemRow = sandboxRowOf(item)
+      const link = item.kind === 'sell' ? sandbox.hedges.find((h) => h.sellRow === itemRow) ?? null : null
+      const committedIds = new Set<string>([item.id])
+      const remap = new Map<number, number>()
+
+      // 模拟挂钩指向的模拟买入批次先转正，否则挂钩没有真实批次可落
+      for (const it of link?.items ?? []) {
+        const dep = sandbox.items.find((x) => x.kind === 'buy' && sandboxRowOf(x) === it.row)
+        if (dep && !committedIds.has(dep.id)) {
+          const row = await createManualRecord(sandboxBuyInput(dep))
+          remap.set(sandboxRowOf(dep), row)
+          committedIds.add(dep.id)
+        }
+      }
+
+      const newRow = await createManualRecord(
+        item.kind === 'sell' ? sandboxSellInput(item) : sandboxBuyInput(item),
+      )
+      remap.set(itemRow, newRow)
+
+      // 这笔模拟卖挂过的位置跟着转正；指向模拟批次的项已 remap 到新行
+      if (link) {
+        const items = link.items
+          .filter(
+            (i) =>
+              remap.has(i.row) ||
+              records.some((r) => r.sourceRow === i.row && !r.deletedAt),
+          )
+          .map((i) => ({ row: remap.get(i.row) ?? i.row, qty: i.qty }))
+        if (items.length > 0) {
+          const realLink: HedgeLink = {
+            id: `hedge:${newRow}`,
+            sellRow: newRow,
+            items,
+            at: Date.now(),
+          }
+          await db.transaction('rw', db.hedges, db.auditLogs, async () => {
+            await db.hedges.put(realLink)
+            await db.auditLogs.add(
+              audit(
+                `record:${newRow}`,
+                '沙盒挂钩转正',
+                '模拟挂钩',
+                items.map((i) => `第${i.row}行×${i.qty}`).join(' + '),
+                'hedge',
+              ),
+            )
+          })
+          // 直接写库也要把挂钩状态拉回内存，否则转正后这一笔要到刷新才生效
+          setHedges(await db.hedges.toArray())
+        }
+      }
+
+      await reloadRecords()
+      setSandbox((s) => ({
+        ...s,
+        items: s.items.filter((x) => !committedIds.has(x.id)),
+        hedges: s.hedges
+          .filter((h) => h.sellRow !== itemRow)
+          .map((h) => ({
+            ...h,
+            items: h.items.map((i) => ({ ...i, row: remap.get(i.row) ?? i.row })),
+          }))
+          .filter((h) => h.items.length > 0),
+      }))
+      return { row: newRow, committed: committedIds.size }
+    },
+    [sandbox, createManualRecord, records, reloadRecords],
+  )
+
   const setSystemFont = useCallback(async (v: boolean) => {
     await db.meta.put({ key: 'useSystemFont', value: v ? '1' : '0' })
     setSystemFontState(v)
@@ -584,6 +777,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setPlans([])
     setExtraTargets([])
     setHedges([])
+    setSandbox(EMPTY_SANDBOX)
     setBasename('—')
     setPreview(null)
   }, [])
@@ -686,6 +880,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setStocks(await db.stocks.toArray())
       setBatches(await db.batches.toArray())
       await reloadRecords()
+      setSandbox(EMPTY_SANDBOX)
     },
     [reloadRecords],
   )
@@ -735,6 +930,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     ordersSession,
     patchOrdersSession,
     setSystemFont,
+    sandbox,
+    sandboxLedger,
+    sandboxPreviewRecords,
+    setSandboxActive,
+    addSandboxItem,
+    removeSandboxItem,
+    setSandboxHedge,
+    clearSandboxHedge,
+    commitSandboxItem,
+    clearSandbox,
   }
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>

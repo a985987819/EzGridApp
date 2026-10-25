@@ -272,7 +272,7 @@ function CalendarCard({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
         <div className="row" style={{ marginBottom: 6 }}>
           <span className="tiny muted">{selected}</span>
           <div className="spacer" />
-          <span className="tiny muted">{daySells.length} 笔</span>
+          <span className="tiny muted">{daySells.length} 笔卖出</span>
           <Button size="small" type="text" onClick={() => goTrades({ from: selected, to: selected, showDone: true })}>
             看这天明细
           </Button>
@@ -280,7 +280,7 @@ function CalendarCard({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
         {daySells.length === 0 ? (
           <p className="tiny muted" style={{ margin: 0 }}>这天没有成交</p>
         ) : (
-          <div className="data-block">
+          <div className="data-block" data-testid="cal-day-sells">
             {daySells.map((s) => (
               <div
                 key={s.id}
@@ -289,9 +289,11 @@ function CalendarCard({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
               >
                 <div className="left">
                   <div className="t1" style={{ fontSize: 13 }}>
+                    {/* V9.41 日历只按卖出日归集；行首标明方向，免得只看到价格和盈利分不清买还是卖 */}
+                    <span className="side-chip sell">卖出</span>
                     {s.stockName} · {price2(s.priceCents)} × {s.qty}
                   </div>
-                  <div className="t2">行 {s.sourceRow} · 成本 {price2(s.costCents)}</div>
+                  <div className="t2">行 {s.sourceRow} · 买入成本 {price2(s.costCents)}</div>
                 </div>
                 <div className={`right num ${tone(s.profitCents)}`} style={{ fontWeight: 700 }}>
                   {signedMoney(s.profitCents)}

@@ -84,21 +84,6 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
     }
   }
 
-  async function loadDemo() {
-    setBusy(true)
-    try {
-      // BASE_URL：本地是 /，GitHub Pages 是 /EzGridApp/ —— 根路径写死在子路径部署下会 404
-      const res = await fetch(encodeURI(`${import.meta.env.BASE_URL}demo/26年网格记录.xlsx`))
-      if (!res.ok) throw new Error(`示例文件读取失败（HTTP ${res.status}）`)
-      const blob = await res.blob()
-      await handleFile(new File([blob], '26年网格记录.xlsx'))
-    } catch (e) {
-      notificationOpen({ message: '示例加载失败', description: e instanceof Error ? e.message : String(e), type: 'error' })
-    } finally {
-      setBusy(false)
-    }
-  }
-
   async function onCommit() {
     if (!preview) return
     setBusy(true)
@@ -147,10 +132,6 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
           </div>
         </Upload>
         <div className="row" style={{ marginTop: 10 }}>
-          <Button size="small" onClick={() => void loadDemo()} loading={busy}>
-            载入内置示例
-          </Button>
-          <div className="spacer" />
           <span className="tiny muted">
             本地已有 {records.filter((r) => !r.deletedAt).length} 行
           </span>

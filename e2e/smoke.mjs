@@ -132,6 +132,15 @@ try {
     }
   }
   const bodyText = () => evaluate(`document.body.innerText`)
+  // 本地 fixture 直接塞进 file input（示例文件不再随站点发布）
+  const uploadFile = async (selector, filePath) => {
+    await send('DOM.enable')
+    const { root } = await send('DOM.getDocument', { depth: 0 })
+    const { nodeId } = await send('DOM.querySelector', { nodeId: root.nodeId, selector })
+    if (!nodeId) return false
+    await send('DOM.setFileInputFiles', { nodeId, files: [filePath] })
+    return true
+  }
   const clickByText = (sel, text) =>
     evaluate(`(() => {
       const el = [...document.querySelectorAll(${JSON.stringify(sel)})].find(x => x.textContent.trim().includes(${JSON.stringify(text)}))
@@ -151,6 +160,12 @@ try {
     await evaluate(`document.querySelector('[aria-label="关闭"]')?.click()`)
     await sleep(500)
   }
+  const stickyOf = (key) =>
+    evaluate(`(() => {
+      const el = document.querySelector('[data-sticky="${key}"]')
+      if (!el) return 'missing'
+      return getComputedStyle(el).position
+    })()`)
   const setInput = (selector, value) =>
     evaluate(`(() => {
       const el = document.querySelector(${JSON.stringify(selector)})
@@ -171,10 +186,10 @@ try {
     await send('Page.navigate', { url: `${BASE}/` })
     await settle()
     text = await bodyText()
-    if (text.includes('网格交易')) break
+    if (text.includes('概览')) break
     await sleep(1200)
   }
-  check('渲染出头部', text.includes('网格交易'))
+  check('全局「网格交易」header 已移除', (await evaluate(`Boolean(document.querySelector('.app-header'))`)) === false)
   check('底部导航 5 项', (await evaluate(`document.querySelectorAll('button[data-nav]').length`)) === 5)
   check('空态引导', text.includes('还没有导入数据') || text.includes('去导入'))
   check('没有横向溢出', (await evaluate(`document.documentElement.scrollWidth <= window.innerWidth + 2`)) === true)
@@ -223,10 +238,13 @@ try {
   console.log('  拖动后顺序:', orderAfter)
   check('拖动后三一重工排第一', orderAfter[0] === '三一重工')
 
-  console.log('\n[3] 管理 · 导入 → 载入示例 → 写入本地')
+  console.log('\n[3] 管理 · 导入 → 本地 fixture → 写入本地')
   check('切到导入 tab', await clickByText('[role="tab"]', '导入'))
   await sleep(400)
-  check('点到「载入内置示例」', await clickByText('button', '载入内置示例'))
+  check(
+    '选本地 fixture 文件',
+    await uploadFile('input[type="file"]', join(process.cwd(), 'tests', 'fixtures', '26年网格记录.xlsx')),
+  )
   await sleep(2500)
   await settle()
   text = await bodyText()
@@ -249,28 +267,67 @@ try {
   console.log('  概览药丸:', pills)
   check('药丸顺序跟随股票排序（三一重工在前）', JSON.parse(pills)[0] === '三一重工')
 
-  // V9.27 概览翻转：价格树全屏置顶（DOM 先于选股卡、画布接近一屏高），盈利右侧带加粗「共计x次」
-  const stickyOf = (key) =>
-    evaluate(`(() => {
-      const el = document.querySelector('[data-sticky="${key}"]')
-      if (!el) return 'missing'
-      return getComputedStyle(el).position
-    })()`)
-  const flipInfo = await evaluate(`(() => {
+  // V9.41 概览重排：股票 tab 置顶 → 已实现盈利行 → 树占满首屏；可卖/净持仓行滚到树下
+  const layoutInfo = await evaluate(`(() => {
     const canvas = document.querySelector('canvas[data-tree="price"]')
     const tabs = document.querySelector('.stock-tabs')
-    if (!canvas || !tabs) return null
+    const strips = [...document.querySelectorAll('.metric-strip')]
+    const card = document.querySelector('.tree-full')
+    const nav = document.querySelector('.app-nav')
+    if (!canvas || !tabs || strips.length < 2 || !card || !nav) return null
+    const after = (a, b) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
     return JSON.stringify({
       h: Math.round(canvas.getBoundingClientRect().height),
-      tabsBeforeTree: Boolean(tabs.compareDocumentPosition(canvas) & Node.DOCUMENT_POSITION_FOLLOWING),
+      tabsBeforeTree: after(tabs, canvas),
+      topBeforeTree: after(strips[0], canvas),
+      bottomAfterTree: after(canvas, strips[1]),
+      topText: strips[0].textContent || '',
+      bottomText: strips[1].textContent || '',
+      gapToNav: Math.round(nav.getBoundingClientRect().top - card.getBoundingClientRect().bottom),
       count: Boolean(document.querySelector('.profit-count b')),
+      hasHeading: (document.body.innerText || '').includes('选股 · 当前股票汇总'),
     })
   })()`)
-  const flip = flipInfo ? JSON.parse(flipInfo) : null
-  check('选股卡置顶（DOM 先于树）', Boolean(flip?.tabsBeforeTree), flipInfo ?? '')
-  check('树填满首屏剩余（画布 ≥ 360px 高）', Boolean(flip && flip.h >= 360), flipInfo ?? '')
-  check('盈利右侧有「共计x次」', Boolean(flip?.count), flipInfo ?? '')
+  const layout = layoutInfo ? JSON.parse(layoutInfo) : null
+  console.log('  首屏布局:', layoutInfo)
+  check('股票 tab 置顶（DOM 先于树）', Boolean(layout?.tabsBeforeTree), layoutInfo ?? '')
+  check(
+    '高频四项在树上方、可卖行在树下方',
+    Boolean(layout?.topBeforeTree && layout?.bottomAfterTree),
+    layoutInfo ?? '',
+  )
+  check(
+    '顶部指标 = 已实现盈利 / 理想可卖到 / 理想剩余可赚 / 今年共卖',
+    Boolean(
+      layout &&
+        ['已实现盈利', '理想可卖到', '理想剩余可赚', '今年共卖'].every((t) => layout.topText.includes(t)),
+    ),
+    layout?.topText ?? '',
+  )
+  check(
+    '树下指标 = 可卖 / 待补 / 净持仓 / 已实现',
+    Boolean(
+      layout &&
+        ['可卖', '待补', '净持仓', '已实现'].every((t) => layout.bottomText.includes(t)),
+    ),
+    layout?.bottomText ?? '',
+  )
+  check('树填满首屏（画布 ≥ 450px 高）', Boolean(layout && layout.h >= 450), layoutInfo ?? '')
+  check(
+    '树卡铺到导航上沿（间距 0~24px）',
+    Boolean(layout && layout.gapToNav >= 0 && layout.gapToNav <= 24),
+    layoutInfo ?? '',
+  )
+  check('「选股 · 当前股票汇总」标题行已移除', layout?.hasHeading === false, layoutInfo ?? '')
+  check('盈利右侧有「共计x次」', Boolean(layout?.count), layoutInfo ?? '')
   check('共计次数文案在页面上', /共计\s*\d+\s*次/.test(text), '')
+  // 视觉凭证：树下的低频区（可卖/待补/净持仓/已实现 + 合计三格）确实要滚动才看到
+  await evaluate(`window.scrollTo(0, document.body.scrollHeight)`)
+  await sleep(400)
+  const bottomShot = await send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync(join(OUT, 'mobile-overview-bottom.png'), Buffer.from(bottomShot.data, 'base64'))
+  await evaluate(`window.scrollTo(0, 0)`)
+  await sleep(300)
 
   // V9.28 当前股票概述四项 + V9.29「理想可卖到」改股价并画到数轴上
   check(
@@ -664,6 +721,14 @@ try {
   check('抽屉出现变更历史', (await bodyText()).includes('变更历史'))
   check('点编辑', await clickByText('button', '编辑'))
   await sleep(400)
+  const drawerDate = await evaluate(`JSON.stringify({
+    fields: document.querySelectorAll('.trades-edit-drawer .date-field').length,
+    buttons: document.querySelectorAll('.trades-edit-drawer .date-field-btn').length,
+  })`)
+  const ddate = JSON.parse(drawerDate)
+  check('抽屉编辑的日期字段带日期选择器', ddate.fields === 2 && ddate.buttons === 2, drawerDate)
+  const drawerEditShot = await send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync(join(OUT, 'mobile-drawer-edit.png'), Buffer.from(drawerEditShot.data, 'base64'))
   await setInput('input[data-field="targetPrice"]', '9.00')
   await sleep(300)
   check('点保存', await clickByText('button', '保存'))
@@ -733,6 +798,79 @@ try {
   await nav('overview')
   text = await bodyText()
   check('改回后盈利 ¥9,830 且概览无基准异常', text.includes('9,830') && !text.includes('去管理页看'))
+
+  console.log('\n[7.2] 编辑抽屉：滚动位置保持 + 输入法避让（V9.40）')
+  await nav('trades')
+  await evaluate(`window.scrollTo(0, 1600)`)
+  await sleep(500)
+  const scrollBefore = await evaluate(`Math.round(window.scrollY)`)
+  check('明细滚到中段', scrollBefore > 1000, String(scrollBefore))
+  await evaluate(`document.querySelector('[data-row="32"]')?.click()`)
+  await sleep(700)
+  check('抽屉打开', (await bodyText()).includes('变更历史'))
+  check('点编辑', await clickByText('button', '编辑'))
+  await sleep(400)
+  const tpBefore = await evaluate(`document.querySelector('input[data-field="targetPrice"]')?.value ?? ''`)
+  check('目标售价有值可编辑', tpBefore !== '', tpBefore)
+
+  // 模拟手机输入法：visualViewport 缩到 400 高
+  const kbInfo = await evaluate(`(() => {
+    const vv = window.visualViewport
+    Object.defineProperty(vv, 'height', { configurable: true, get: () => 400 })
+    Object.defineProperty(vv, 'offsetTop', { configurable: true, get: () => 0 })
+    vv.dispatchEvent(new Event('resize'))
+    return new Promise((res) => requestAnimationFrame(() => {
+      const panel = document.querySelector('.trades-edit-drawer')
+      const r = panel.getBoundingClientRect()
+      const body = panel.querySelector('[class*="animal-body"]')
+      const last = panel.querySelector('input[data-field="earlyBuyPrice"]')
+      last?.focus()
+      const lr = last?.getBoundingClientRect()
+      res(JSON.stringify({
+        top: Math.round(r.top), bottom: Math.round(r.bottom), h: Math.round(r.height),
+        scrollable: Boolean(body && body.scrollHeight > body.clientHeight),
+        inputTop: lr ? Math.round(lr.top) : null,
+        inputBottom: lr ? Math.round(lr.bottom) : null,
+      }))
+    }))
+  })()`)
+  const kb = JSON.parse(kbInfo)
+  console.log('  键盘避让:', kbInfo)
+  check('面板抬到键盘上方（底边 = 可见区底部）', kb.bottom <= 401 && kb.top >= 0, kbInfo)
+  check('面板高度收进可见区', kb.h <= 400, kbInfo)
+  check('表单区可滚动', kb.scrollable === true, kbInfo)
+  check('最下面一行输入框在面板可见区内', kb.inputTop !== null && kb.inputTop >= kb.top && kb.inputBottom <= kb.bottom, kbInfo)
+
+  await evaluate(`(() => {
+    const vv = window.visualViewport
+    delete vv.height
+    delete vv.offsetTop
+    vv.dispatchEvent(new Event('resize'))
+  })()`)
+  await sleep(400)
+  const restoredInfo = await evaluate(`(() => {
+    const r = document.querySelector('.trades-edit-drawer').getBoundingClientRect()
+    return JSON.stringify({ top: Math.round(r.top), bottom: Math.round(r.bottom), h: Math.round(r.height) })
+  })()`)
+  const restored = JSON.parse(restoredInfo)
+  check('键盘收起后面板恢复 84vh', restored.bottom === 844 && Math.abs(restored.h - 709) <= 2, restoredInfo)
+
+  const tpNext = (Number(tpBefore) + 0.01).toFixed(2)
+  await setInput('input[data-field="targetPrice"]', tpNext)
+  await sleep(300)
+  check('改价并保存', await clickByText('button', '保存'))
+  await sleep(900)
+  check('保存后抽屉仍开着', (await bodyText()).includes('变更历史'))
+  check('再点编辑改回原值', await clickByText('button', '编辑'))
+  await sleep(400)
+  await setInput('input[data-field="targetPrice"]', tpBefore)
+  await sleep(300)
+  check('改回原值并保存', await clickByText('button', '保存'))
+  await sleep(900)
+  await closeDrawer()
+  await sleep(400)
+  const scrollAfter = await evaluate(`Math.round(window.scrollY)`)
+  check('关掉抽屉后回到原来的滚动位置', Math.abs(scrollAfter - scrollBefore) <= 2, `${scrollAfter}/${scrollBefore}`)
 
   console.log('\n[7.5] 跨数据跳转 + URL 筛选（V9）')
   // 深链直达：URL 直接打开明细并带筛选（S7）
@@ -886,6 +1024,28 @@ try {
     text.includes('17.99 × 200') && text.includes('行 56'),
     '',
   )
+  // V9.41：日历只按卖出日归集，当日明细行首必须标明「卖出」，成本写明是买入成本
+  const daySideRaw = await evaluate(`(() => {
+    const root = document.querySelector('[data-testid="cal-day-sells"]')
+    if (!root) return null
+    const rows = [...root.querySelectorAll('.line')]
+    return JSON.stringify({
+      rows: rows.length,
+      chips: rows.map((r) => r.querySelector('.side-chip.sell')?.textContent.trim() ?? ''),
+      cost: root.textContent.includes('买入成本'),
+    })
+  })()`)
+  const daySide = daySideRaw ? JSON.parse(daySideRaw) : null
+  check(
+    '当日明细每笔标「卖出」',
+    Boolean(daySide && daySide.rows > 0 && daySide.chips.length === daySide.rows && daySide.chips.every((c) => c === '卖出')),
+    daySideRaw ?? '',
+  )
+  check('当日明细成本写「买入成本」', Boolean(daySide?.cost), daySideRaw ?? '')
+  await evaluate(`document.querySelector('[data-testid="cal-day-sells"]')?.scrollIntoView({ block: 'center' })`)
+  await sleep(400)
+  const calShot = await send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync(join(OUT, 'mobile-calendar-day.png'), Buffer.from(calShot.data, 'base64'))
 
   // 统计 · 成交日历 → 那一天
   await nav('stats')
@@ -1154,6 +1314,22 @@ try {
   // V9.35：日期默认今天，不用每格都填
   const preDate = await evaluate(`document.querySelector('input[data-field="date"]')?.value ?? ''`)
   check('新增表单日期默认填今天', /^\d{4}-\d{2}-\d{2}$/.test(preDate), preDate)
+  // V9.38 日期选择器：手输框旁有日历按钮，原生 date input 选完回填
+  const pickerInfo = await evaluate(`(() => {
+    const text = document.querySelector('input[data-field="date"]')
+    const field = text?.closest('.date-field')
+    const native = field?.querySelector('input[type="date"]')
+    if (!text || !native) return null
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+    setter.call(native, '2026-10-21')
+    native.dispatchEvent(new Event('input', { bubbles: true }))
+    return JSON.stringify({
+      button: Boolean(field.querySelector('.date-field-btn')),
+      value: document.querySelector('input[data-field="date"]')?.value ?? '',
+    })
+  })()`)
+  const pk = pickerInfo ? JSON.parse(pickerInfo) : null
+  check('日期字段有日期选择器且选完回填', Boolean(pk?.button && pk.value === '2026-10-21'), pickerInfo ?? '')
   check('切到卖出', await clickByText('.type-toggle button', '卖出'))
   await sleep(300)
   text = await bodyText()
@@ -1417,7 +1593,29 @@ try {
   check('管理页没有账户 tab', !text.includes('账户'))
   check('顶部没有账户选择器', (await evaluate(`Boolean(document.querySelector('[aria-label="切换账户"]'))`)) === false)
 
-  console.log('\n[11.5] 下拉浮层不被卡片裁掉')
+  console.log('\n[11.5] 下拉浮层不出屏 / 不被卡片裁掉')
+  /** 量当前打开的面板：四边都在视口内、命中测试落回面板 */
+  const measurePanel = (selector) =>
+    evaluate(`(() => {
+      const d = document.querySelector(${JSON.stringify(selector)})
+      if (!d) return null
+      const r = d.getBoundingClientRect()
+      const y = Math.min(Math.max(r.top + 24, 2), innerHeight - 2)
+      const hit = document.elementFromPoint(r.left + r.width / 2, y)
+      return JSON.stringify({
+        inViewport:
+          r.left >= -1 && r.top >= -1 && r.right <= innerWidth + 1 && r.bottom <= innerHeight + 1,
+        hitIsOption: Boolean(hit && hit.closest(${JSON.stringify(selector)})),
+        options: d.querySelectorAll('[role="option"]').length,
+        left: Math.round(r.left),
+        top: Math.round(r.top),
+        right: Math.round(r.right),
+        bottom: Math.round(r.bottom),
+        width: Math.round(r.width),
+        height: Math.round(r.height),
+      })
+    })()`)
+
   await nav('manage')
   await clickByText('[role="tab"]', '股票')
   await sleep(500)
@@ -1427,26 +1625,34 @@ try {
     box.scrollIntoView({ block: 'center' })
     box.click(); return true
   })()`))
-  await sleep(500)
-  const dd = await evaluate(`(() => {
-    const d = document.querySelector('[class*="animal-dropdown"]')
-    if (!d) return null
-    const r = d.getBoundingClientRect()
-    const y = Math.min(Math.max(r.top + 24, 2), innerHeight - 2)
-    const hit = document.elementFromPoint(r.left + r.width / 2, y)
-    return JSON.stringify({
-      inViewport: r.right <= innerWidth + 1 && r.left >= -1,
-      hitIsOption: Boolean(hit && hit.closest('[class*="animal-dropdown"]')),
-      height: Math.round(r.height),
-      top: Math.round(r.top),
-      hitClass: hit ? String(hit.className).slice(0, 40) : 'null',
-    })
-  })()`)
-  console.log('  下拉检测:', dd)
-  check('下拉存在且在视口内', dd !== null && JSON.parse(dd).inViewport === true)
-  check('下拉没有被卡片裁掉（命中测试）', dd !== null && JSON.parse(dd).hitIsOption === true)
+  await sleep(400)
+  const ddRaw = await measurePanel('.app-select-panel')
+  console.log('  涨跌幅下拉:', ddRaw)
+  const dd = ddRaw ? JSON.parse(ddRaw) : null
+  check('下拉存在且四边都在视口内', Boolean(dd?.inViewport), ddRaw ?? '')
+  check('下拉没有被卡片裁掉（命中测试）', dd?.hitIsOption === true, ddRaw ?? '')
   const ddShot = await send('Page.captureScreenshot', { format: 'png' })
   writeFileSync(join(OUT, 'mobile-dropdown.png'), Buffer.from(ddShot.data, 'base64'))
+  await evaluate(`document.body.click()`)
+  await sleep(300)
+
+  // 用户反馈的场景：挂单页「选择股票」整行宽触发框
+  await nav('orders')
+  await sleep(600)
+  check('打开挂单页股票下拉', await evaluate(`(() => {
+    const box = document.querySelector('.app-main [role="combobox"]')
+    if (!box) return false
+    box.scrollIntoView({ block: 'center' })
+    box.click(); return true
+  })()`))
+  await sleep(400)
+  const stockDdRaw = await measurePanel('.app-select-panel')
+  console.log('  股票下拉:', stockDdRaw)
+  const stockDd = stockDdRaw ? JSON.parse(stockDdRaw) : null
+  check('股票下拉完整落在视口内', Boolean(stockDd?.inViewport), stockDdRaw ?? '')
+  check('股票下拉列出全部股票（≥4 项）', (stockDd?.options ?? 0) >= 4, stockDdRaw ?? '')
+  const stockShot = await send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync(join(OUT, 'mobile-stock-dropdown.png'), Buffer.from(stockShot.data, 'base64'))
   await evaluate(`document.body.click()`)
   await sleep(300)
 
@@ -1523,6 +1729,378 @@ try {
   writeFileSync(join(OUT, 'mobile-drawer.png'), Buffer.from(drawerShot.data, 'base64'))
   await closeDrawer()
   console.log(`  截图已存 ${OUT}`)
+
+  console.log('\n[12.5] 沙盒模式：模拟待买 → 挂钩预演 → 记为成交')
+  await nav('orders')
+  await sleep(800)
+  check('挂单页有「沙盒」入口', Boolean(await evaluate(`Boolean(document.querySelector('[data-sandbox-toggle]'))`)))
+  check(
+    '打开沙盒',
+    await evaluate(`(() => {
+      const b = document.querySelector('[data-sandbox-toggle]')
+      if (!b) return false
+      b.click(); return true
+    })()`),
+  )
+  await sleep(600)
+  const sbBaseRaw = await evaluate(`(() => {
+    const q = (s) => document.querySelector(s)?.textContent.trim() ?? ''
+    return JSON.stringify({
+      panel: Boolean(document.querySelector('[data-testid="sandbox-panel"]')),
+      profit: q('[data-sandbox-metric="profit"]'),
+      max: q('[data-sandbox-metric="max"]'),
+      expect: q('[data-sandbox-metric="expect"]'),
+      count: q('[data-sandbox-metric="count"]'),
+    })
+  })()`)
+  const sb0 = JSON.parse(sbBaseRaw)
+  console.log('  沙盒基线:', sbBaseRaw)
+  check('沙盒面板出现（与真实台账并排）', sb0.panel, sbBaseRaw)
+  check('沙盒基线 · 已实现 +¥5,425.00', sb0.profit.includes('5,425.00'), sbBaseRaw)
+  check('沙盒基线 · 理想可卖到 11.48 元', sb0.max.includes('11.48'), sbBaseRaw)
+  check('沙盒基线 · 理想剩余可赚 +¥8,052.00', sb0.expect.includes('8,052.00'), sbBaseRaw)
+  check('沙盒初始没有模拟条目', sb0.count === '0', sbBaseRaw)
+
+  check(
+    '待买区有「＋ 模拟待买」',
+    Boolean(await evaluate(`Boolean(document.querySelector('[data-action="sandbox-add-sell"]'))`)),
+  )
+  await evaluate(`document.querySelector('[data-action="sandbox-add-sell"]')?.click()`)
+  await sleep(500)
+  const sbFormRaw = await evaluate(`(() => {
+    const v = (f) => document.querySelector('input[data-field="' + f + '"]')?.value ?? null
+    return JSON.stringify({
+      title: document.body.innerText.includes('模拟一笔待买（先卖后买）'),
+      date: v('sandboxDate'), price: v('sandboxPrice'), qty: v('sandboxQty'), extra: v('sandboxExtra'),
+    })
+  })()`)
+  const sbf = JSON.parse(sbFormRaw)
+  check('模拟待买弹窗打开', sbf.title, sbFormRaw)
+  check('默认卖出价 = 昨收 8.10', sbf.price === '8.10', sbFormRaw)
+  check('默认回补价 = 昨收 − 间隔 7.53', sbf.extra === '7.53', sbFormRaw)
+  check('默认股数 100', sbf.qty === '100', sbFormRaw)
+  check('默认日期为今天', /^\d{4}-\d{2}-\d{2}$/.test(sbf.date ?? ''), sbFormRaw)
+  await setInput('input[data-field="sandboxPrice"]', '7.00')
+  await setInput('input[data-field="sandboxQty"]', '500')
+  await setInput('input[data-field="sandboxExtra"]', '6.50')
+  check(
+    '点「加到沙盒」',
+    await evaluate(`(() => {
+      const b = document.querySelector('[data-action="sandbox-save"]')
+      if (!b) return false
+      b.click(); return true
+    })()`),
+  )
+  await sleep(800)
+  const sbAddRaw = await evaluate(`(() => {
+    const row = document.querySelector('[data-sandbox-row="300001"]')
+    const q = (s) => document.querySelector(s)?.textContent.trim() ?? ''
+    return JSON.stringify({
+      count: q('[data-sandbox-metric="count"]'),
+      profit: q('[data-sandbox-metric="profit"]'),
+      max: q('[data-sandbox-metric="max"]'),
+      expect: q('[data-sandbox-metric="expect"]'),
+      row: Boolean(row),
+      rowText: row ? row.innerText : '',
+      // Tag 不透传 data-*，用它会透传的 className 找入口
+      hedgeTag: Boolean(row?.querySelector('.hedge-entry')),
+      exposure: document.body.innerText.includes('待补敞口 2,500 股'),
+    })
+  })()`)
+  const sb1 = JSON.parse(sbAddRaw)
+  check('模拟条目计数 1', sb1.count === '1', sbAddRaw)
+  check('模拟待买行出现（预览行 300001）', sb1.row, sbAddRaw)
+  check('模拟行标「模拟 ·」且注明只预览', sb1.rowText.includes('模拟 ·') && sb1.rowText.includes('只用于沙盒预览'), sbAddRaw)
+  check('模拟行有「模拟待挂钩」入口', sb1.hedgeTag, sbAddRaw)
+  check('未挂时已实现 +¥5,675.00（+250 按 P 列）', sb1.profit.includes('5,675.00'), sbAddRaw)
+  check('未挂时理想可卖到仍是 11.48', sb1.max.includes('11.48'), sbAddRaw)
+  check('未挂时理想剩余可赚不变 +¥8,052.00', sb1.expect.includes('8,052.00'), sbAddRaw)
+  check('未挂时敞口 2,500（模拟裸卖加空 500）', sb1.exposure, sbAddRaw)
+
+  check('去概览看树', await clickByText('button', '去概览看树'))
+  await sleep(1000)
+  await clickByText('.stock-tabs > *', '柳工')
+  await sleep(700)
+  const sbOvRaw = await evaluate(`(() => {
+    const d = (k) => {
+      const el = document.querySelector('[data-sandbox-delta="' + k + '"]')
+      return el ? { was: el.querySelector('.was')?.textContent.trim(), now: el.querySelector('b')?.textContent.trim() } : null
+    }
+    const c = document.querySelector('canvas[data-tree="price"]')
+    return JSON.stringify({
+      banner: Boolean(document.querySelector('[data-testid="sandbox-banner"]')),
+      profit: d('profit'), max: d('max'), expect: d('expect'),
+      ideal: c?.__tree?.ideal() ?? null,
+    })
+  })()`)
+  const ov1 = JSON.parse(sbOvRaw)
+  console.log('  未挂概览:', sbOvRaw)
+  check('概览出现沙盒横幅（未写库）', ov1.banner, sbOvRaw)
+  check('横幅差价 · 已实现 5,425 → 5,675', ov1.profit?.was.includes('5,425.00') && ov1.profit?.now.includes('5,675.00'), sbOvRaw)
+  check('横幅差价 · 理想可卖到 11.48 不变', ov1.max?.was.includes('11.48') && ov1.max?.now.includes('11.48'), sbOvRaw)
+  check('横幅差价 · 剩余可赚 8,052 不变', ov1.expect?.was.includes('8,052.00') && ov1.expect?.now.includes('8,052.00'), sbOvRaw)
+  check('树上的理想可卖到仍是 11.48', ov1.ideal === 1148, sbOvRaw)
+
+  check('回挂单页', await clickByText('button', '去挂单页调'))
+  await sleep(900)
+  check(
+    '点模拟行的「模拟待挂钩」',
+    await evaluate(`(() => {
+      const t = document.querySelector('[data-sandbox-row="300001"] .hedge-entry')
+      if (!t) return false
+      t.click(); return true
+    })()`),
+  )
+  await sleep(600)
+  const sbCandsRaw = await evaluate(`(() => {
+    const sheet = document.querySelector('.hedge-modal') || document
+    const inputs = [...sheet.querySelectorAll('input[data-field^="hedge-"]')]
+    return JSON.stringify({
+      title: (sheet.textContent || '').includes('沙盒挂钩预演'),
+      intro: (sheet.textContent || '').includes('沙盒预演：'),
+      first: inputs[0] ? inputs[0].getAttribute('data-field') : null,
+      firstLine: inputs[0]?.closest('.line')?.innerText ?? '',
+      all: inputs.map((i) => i.getAttribute('data-field')),
+    })
+  })()`)
+  const sbc = JSON.parse(sbCandsRaw)
+  check('打开沙盒挂钩预演弹层', sbc.title && sbc.intro, sbCandsRaw)
+  check(
+    '候选按买价从高到低（首项 = 第9行 10.89 可挂 500）',
+    sbc.first === 'hedge-9' && sbc.firstLine.includes('10.89') && sbc.firstLine.includes('可挂 500'),
+    sbCandsRaw,
+  )
+  await setInput('input[data-field="hedge-9"]', '500')
+  await sleep(300)
+  check('点「保存挂钩」', await clickByText('button', '保存挂钩'))
+  await sleep(1000)
+  const sbHedgedRaw = await evaluate(`(() => {
+    const row = document.querySelector('[data-sandbox-row="300001"]')
+    const q = (s) => document.querySelector(s)?.textContent.trim() ?? ''
+    return JSON.stringify({
+      tag: row?.querySelector('.hedge-entry')?.textContent.trim() ?? '',
+      profit: q('[data-sandbox-metric="profit"]'),
+      max: q('[data-sandbox-metric="max"]'),
+      expect: q('[data-sandbox-metric="expect"]'),
+      exposure: document.body.innerText.includes('待补敞口 2,000 股'),
+    })
+  })()`)
+  const sbh = JSON.parse(sbHedgedRaw)
+  console.log('  模拟挂钩后:', sbHedgedRaw)
+  check('模拟行变成「模拟已挂钩 · 改挂」', sbh.tag.includes('模拟已挂钩'), sbHedgedRaw)
+  check('挂钩后已实现 −¥1,945.00（5,425 − 1,945）', sbh.profit.includes('3,480.00'), sbHedgedRaw)
+  check('挂钩后理想可卖到 11.38（最高批次退出待卖）', sbh.max.includes('11.38'), sbHedgedRaw)
+  check('挂钩后剩余可赚 8,052 − 295 = 7,757', sbh.expect.includes('7,757.00'), sbHedgedRaw)
+  check('挂钩后敞口回到 2,000', sbh.exposure, sbHedgedRaw)
+  await sleep(2600) // 等轻提示消失再截图
+  const sbOrdersShot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true })
+  writeFileSync(join(OUT, 'sandbox-orders.png'), Buffer.from(sbOrdersShot.data, 'base64'))
+
+  check('去概览看挂钩效果', await clickByText('button', '去概览看树'))
+  await sleep(1000)
+  await clickByText('.stock-tabs > *', '柳工')
+  await sleep(700)
+  const sbOvHedgedRaw = await evaluate(`(() => {
+    const d = (k) => {
+      const el = document.querySelector('[data-sandbox-delta="' + k + '"]')
+      return el ? { was: el.querySelector('.was')?.textContent.trim(), now: el.querySelector('b')?.textContent.trim() } : null
+    }
+    const c = document.querySelector('canvas[data-tree="price"]')
+    return JSON.stringify({
+      banner: Boolean(document.querySelector('[data-testid="sandbox-banner"]')),
+      profit: d('profit'), max: d('max'), expect: d('expect'),
+      ideal: c?.__tree?.ideal() ?? null,
+    })
+  })()`)
+  const ov2 = JSON.parse(sbOvHedgedRaw)
+  console.log('  挂钩后概览:', sbOvHedgedRaw)
+  check('概览横幅 · 已实现 5,425 → 3,480', ov2.profit?.was.includes('5,425.00') && ov2.profit?.now.includes('3,480.00'), sbOvHedgedRaw)
+  check('概览横幅 · 理想可卖到 11.48 → 11.38', ov2.max?.was.includes('11.48') && ov2.max?.now.includes('11.38'), sbOvHedgedRaw)
+  check('概览横幅 · 剩余可赚 8,052 → 7,757', ov2.expect?.was.includes('8,052.00') && ov2.expect?.now.includes('7,757.00'), sbOvHedgedRaw)
+  check('树上的理想可卖到变成 11.38', ov2.ideal === 1138, sbOvHedgedRaw)
+  const sbOverviewShot = await send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync(join(OUT, 'sandbox-overview.png'), Buffer.from(sbOverviewShot.data, 'base64'))
+
+  check('回挂单页提交', await clickByText('button', '去挂单页调'))
+  await sleep(900)
+  check(
+    '点模拟行的「记为成交」',
+    await evaluate(`(() => {
+      const row = document.querySelector('[data-sandbox-row="300001"]')
+      const b = row?.querySelector('[data-action="sandbox-commit"]')
+      if (!b) return false
+      b.click(); return true
+    })()`),
+  )
+  await sleep(1600)
+  const sbCommitRaw = await evaluate(`(() => {
+    const q = (s) => document.querySelector(s)?.textContent.trim() ?? ''
+    return JSON.stringify({
+      simRowLeft: Boolean(document.querySelector('[data-sandbox-row="300001"]')),
+      count: q('[data-sandbox-metric="count"]'),
+      profit: q('[data-sandbox-metric="profit"]'),
+      max: q('[data-sandbox-metric="max"]'),
+      expect: q('[data-sandbox-metric="expect"]'),
+      realHedgeTag: document.body.innerText.includes('已挂钩 · 改挂'),
+      note: document.body.innerText.includes('已挂高位，这张买单可撤'),
+    })
+  })()`)
+  const sbc2 = JSON.parse(sbCommitRaw)
+  console.log('  记为成交后:', sbCommitRaw)
+  check('记为成交后模拟行消失', sbc2.simRowLeft === false, sbCommitRaw)
+  check('模拟条目清空', sbc2.count === '0', sbCommitRaw)
+  check('转正后真实待买行带「已挂钩 · 改挂」', sbc2.realHedgeTag, sbCommitRaw)
+  check('转正后标注「已挂高位，这张买单可撤」', sbc2.note, sbCommitRaw)
+  check('转正后已实现 = 3,480（不再是预览）', sbc2.profit.includes('3,480.00'), sbCommitRaw)
+  check('转正后理想可卖到 11.38', sbc2.max.includes('11.38'), sbCommitRaw)
+  check('转正后剩余可赚 7,757', sbc2.expect.includes('7,757.00'), sbCommitRaw)
+
+  await nav('trades')
+  await sleep(800)
+  const sbTradeRaw = await evaluate(`(() => {
+    const r = document.querySelector('[data-row="100001"]')
+    return JSON.stringify({ exists: Boolean(r), text: r?.innerText ?? '' })
+  })()`)
+  const sbt = JSON.parse(sbTradeRaw)
+  check('记为成交写进明细第 100001 行', sbt.exists, sbTradeRaw)
+  check('第 100001 行是那笔 7.00 卖出且已挂钩', sbt.text.includes('7.00') && sbt.text.includes('已挂钩'), sbTradeRaw)
+
+  // 清理：解除真实挂钩 → 删除这条手动行，回到基准
+  await evaluate(`document.querySelector('[data-row="100001"]')?.click()`)
+  await sleep(700)
+  check(
+    '抽屉里解除转正的挂钩',
+    await evaluate(`(() => {
+      const sec = document.querySelector('[data-testid="hedge-section"]')
+      const b = sec && [...sec.querySelectorAll('button')].find((x) => x.textContent.trim() === '解除挂钩')
+      if (!b) return false
+      b.click(); return true
+    })()`),
+  )
+  await sleep(900)
+  await evaluate(`window.confirm = () => true`)
+  check('删除第 100001 行', await clickByText('button', '删除'))
+  await sleep(1200)
+
+  check('重新打开挂单页', await nav('orders'))
+  await sleep(800)
+  const sbBackRaw = await evaluate(`(() => {
+    const q = (s) => document.querySelector(s)?.textContent.trim() ?? ''
+    return JSON.stringify({ profit: q('[data-sandbox-metric="profit"]'), max: q('[data-sandbox-metric="max"]') })
+  })()`)
+  const sbb = JSON.parse(sbBackRaw)
+  check('清理后已实现回到 +¥5,425.00', sbb.profit.includes('5,425.00'), sbBackRaw)
+  check('清理后理想可卖到回到 11.48', sbb.max.includes('11.48'), sbBackRaw)
+
+  console.log('\n[12.6] 沙盒：模拟待卖 → 记为成交 → 刷新清空')
+  check(
+    '待卖区有「＋ 模拟待卖」',
+    Boolean(await evaluate(`Boolean(document.querySelector('[data-action="sandbox-add-buy"]'))`)),
+  )
+  await evaluate(`document.querySelector('[data-action="sandbox-add-buy"]')?.click()`)
+  await sleep(500)
+  const sbBuyFormRaw = await evaluate(`(() => {
+    const v = (f) => document.querySelector('input[data-field="' + f + '"]')?.value ?? null
+    return JSON.stringify({
+      title: document.body.innerText.includes('模拟一笔待卖（假设买入）'),
+      price: v('sandboxPrice'), qty: v('sandboxQty'), extra: v('sandboxExtra'),
+    })
+  })()`)
+  const sbbf = JSON.parse(sbBuyFormRaw)
+  check('模拟待卖弹窗打开', sbbf.title, sbBuyFormRaw)
+  check('默认买入价 = 昨收 8.10', sbbf.price === '8.10', sbBuyFormRaw)
+  check('默认目标价 = 昨收 + 间隔 8.67', sbbf.extra === '8.67', sbBuyFormRaw)
+  await setInput('input[data-field="sandboxPrice"]', '8.00')
+  await setInput('input[data-field="sandboxQty"]', '100')
+  await setInput('input[data-field="sandboxExtra"]', '8.50')
+  check(
+    '加模拟待卖',
+    await evaluate(`(() => {
+      const b = document.querySelector('[data-action="sandbox-save"]')
+      if (!b) return false
+      b.click(); return true
+    })()`),
+  )
+  await sleep(800)
+  const sbBuyRaw = await evaluate(`(() => {
+    const q = (s) => document.querySelector(s)?.textContent.trim() ?? ''
+    return JSON.stringify({
+      count: q('[data-sandbox-metric="count"]'),
+      profit: q('[data-sandbox-metric="profit"]'),
+      max: q('[data-sandbox-metric="max"]'),
+      expect: q('[data-sandbox-metric="expect"]'),
+      rows: document.querySelectorAll('[data-sandbox-row="300001"]').length,
+    })
+  })()`)
+  const sbb2 = JSON.parse(sbBuyRaw)
+  check('模拟待卖计数 1', sbb2.count === '1', sbBuyRaw)
+  check('模拟待卖出现在待卖/今日挂单', sbb2.rows >= 1, sbBuyRaw)
+  check('模拟待卖不改已实现', sbb2.profit.includes('5,425.00'), sbBuyRaw)
+  check('模拟待卖挂高理想可卖到不变 11.48', sbb2.max.includes('11.48'), sbBuyRaw)
+  check('模拟待卖使剩余可赚 +50 → 8,102', sbb2.expect.includes('8,102.00'), sbBuyRaw)
+  check(
+    '模拟待卖「记为成交」',
+    await evaluate(`(() => {
+      const b = [...document.querySelectorAll('[data-sandbox-row="300001"] [data-action="sandbox-commit"]')].pop()
+      if (!b) return false
+      b.click(); return true
+    })()`),
+  )
+  await sleep(1500)
+  await nav('trades')
+  await sleep(800)
+  const sbBuyTradeRaw = await evaluate(`(() => {
+    const r = document.querySelector('[data-row="100002"]')
+    return JSON.stringify({ exists: Boolean(r), text: r?.innerText ?? '' })
+  })()`)
+  const sbbt = JSON.parse(sbBuyTradeRaw)
+  check('模拟待卖记为成交写进第 100002 行', sbbt.exists, sbBuyTradeRaw)
+  check('第 100002 行是 8.00 买入 / 8.50 目标', sbbt.text.includes('8.00') && sbbt.text.includes('8.50'), sbBuyTradeRaw)
+  await evaluate(`document.querySelector('[data-row="100002"]')?.click()`)
+  await sleep(700)
+  await evaluate(`window.confirm = () => true`)
+  check('删除第 100002 行', await clickByText('button', '删除'))
+  await sleep(1200)
+
+  console.log('\n[12.7] 沙盒只活在内存：刷新即清空')
+  await nav('orders')
+  await sleep(800)
+  check(
+    '退出沙盒',
+    await evaluate(`(() => {
+      const b = document.querySelector('[data-sandbox-toggle]')
+      if (!b) return false
+      b.click(); return true
+    })()`),
+  )
+  await sleep(500)
+  check(
+    '退出后沙盒面板消失',
+    !(await evaluate(`Boolean(document.querySelector('[data-testid="sandbox-panel"]'))`)),
+  )
+  check(
+    '重新打开沙盒并加一条模拟待买',
+    await evaluate(`(() => {
+      const t = document.querySelector('[data-sandbox-toggle]')
+      if (!t) return false
+      t.click()
+      return true
+    })()`),
+  )
+  await sleep(400)
+  await evaluate(`document.querySelector('[data-action="sandbox-add-sell"]')?.click()`)
+  await sleep(400)
+  await evaluate(`document.querySelector('[data-action="sandbox-save"]')?.click()`)
+  await sleep(600)
+  check('刷新前有模拟行', Boolean(await evaluate(`Boolean(document.querySelector('[data-sandbox-row]'))`)))
+  await send('Page.reload', { ignoreCache: true })
+  await settle(3000)
+  await sleep(500)
+  check('刷新后模拟行全部消失', !(await evaluate(`Boolean(document.querySelector('[data-sandbox-row]'))`)))
+  check('刷新后沙盒默认关闭', !(await evaluate(`Boolean(document.querySelector('[data-testid="sandbox-panel"]'))`)))
+  // V9.41 全局 header 已删：净持仓 13,200 现在只在概览的合计卡里
+  await nav('overview')
+  check('刷新后净持仓仍是 13,200（模拟没写库）', (await bodyText()).includes('13,200'))
 
   console.log('\n[13] 运行时错误')
   check('无未捕获异常 / console.error', problems.length === 0, problems.slice(0, 5).join(' | '))

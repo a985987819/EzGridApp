@@ -13,6 +13,13 @@ const base = (props: SVGProps<SVGSVGElement>) => ({
   ...props,
 })
 
+export const IconCalendar = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}>
+    <rect x="3.5" y="5" width="17" height="15.5" rx="3" />
+    <path d="M3.5 10h17M8 2.8v4M16 2.8v4" />
+  </svg>
+)
+
 export const IconGrid = (p: SVGProps<SVGSVGElement>) => (
   <svg {...base(p)}>
     <rect x="3.5" y="3.5" width="7" height="7" rx="2" />

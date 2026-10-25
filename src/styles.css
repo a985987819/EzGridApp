@@ -1,8 +1,10 @@
 /* 移动端优先；配色与圆角全部走 animal-island-ui 的设计 token */
 :root {
   --app-max: 560px;
-  /* 顶栏高度：概览/明细/挂单的吸顶块靠它对齐 */
-  --header-h: calc(63px + env(safe-area-inset-top));
+  /* V9.41 全局 header 已删：吸顶块只让出状态栏安全区 */
+  --header-h: env(safe-area-inset-top);
+  /* 底部导航高度：概览树按它算首屏，刚好铺到导航上沿 */
+  --nav-h: calc(64px + env(safe-area-inset-bottom));
   --up: #d0453f;
   --down: #2f8f5b;
   /* 明细行的方向色（V9.5）：蓝买红卖 */
@@ -52,36 +54,13 @@ button { font-family: inherit; }
     var(--animal-bg-color, #f8f8f0);
 }
 
-.app-header {
-  position: sticky;
-  top: 0;
-  z-index: 20;
-  padding: calc(10px + env(safe-area-inset-top)) 16px 10px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  background: rgba(250, 248, 240, 0.92);
-  backdrop-filter: blur(10px);
-  border-bottom: 1px solid var(--animal-border-color-light, #e8e2d6);
-}
-
-.app-header .brand-block { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.app-header .brand-block strong { font-size: 16px; letter-spacing: 0.01em; }
-.app-header .brand-block span {
-  font-size: 11px;
-  color: var(--animal-text-color-secondary, #9f927d);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.app-header .spacer { flex: 1; }
-
 .app-main {
   flex: 1;
   width: 100%;
   max-width: var(--app-max);
   margin: 0 auto;
-  padding: 12px 14px calc(92px + env(safe-area-inset-bottom));
+  /* V9.41 删掉全局 header 后，内容自己让出状态栏安全区 */
+  padding: calc(12px + env(safe-area-inset-top)) 14px calc(92px + env(safe-area-inset-bottom));
 }
 
 /* V9.35 日期字段旁的「今天」快捷键：省得手打日期 */
@@ -97,12 +76,53 @@ button { font-family: inherit; }
   cursor: pointer;
 }
 
+/* V9.38 日期字段：手输框 + 唤起系统日期选择器的日历按钮 */
+.date-field { position: relative; display: flex; align-items: center; gap: 8px; }
+.date-field-input { flex: 1; min-width: 0; }
+.date-field-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: #fffdf7;
+  color: #725d42;
+  box-shadow: 0 3px #d4c9b4;
+  cursor: pointer;
+  transition: transform var(--dur-1) var(--ease-soft), box-shadow var(--dur-1) var(--ease-soft);
+}
+.date-field-btn:hover { color: #19c8b9; }
+.date-field-btn:active { transform: translateY(1px); box-shadow: 0 1px #d4c9b4; }
+.date-field-native {
+  position: absolute;
+  right: 8px;
+  bottom: 0;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
 /* 明细的编辑抽屉（V9.34 用户要求）：和主内容列同宽并居中，不再铺满整屏。
    bottom 抽屉本身是 left:0/right:0 的固定定位，写死 width + auto 外边距即可居中等宽
    （只靠 max-width 不居中：宽度 auto 时超出部分会全部落到右外边距）。 */
 .trades-edit-drawer {
   width: min(100%, var(--app-max));
   margin-inline: auto;
+  /* V9.40 输入法避让：键盘弹出后布局视口不变，面板要自己抬到键盘上沿、并把高度缩进可见区 */
+  bottom: var(--kb-inset, 0px);
+  max-height: calc(var(--kb-vh, 100dvh) - 8px);
+}
+.trades-edit-drawer [class*='animal-body'] {
+  overscroll-behavior: contain;
+  /* 聚焦最下面几行的输入框时，自动滚动给页脚留出余量 */
+  scroll-padding-bottom: 96px;
 }
 
 /* ---------- 底部导航 ---------- */
@@ -225,6 +245,20 @@ button { font-family: inherit; }
 .line .t1 { font-size: 13.5px; font-weight: 600; }
 .line .t2 { font-size: 11.5px; color: var(--animal-text-color-secondary, #9f927d); }
 .line .right { text-align: right; white-space: nowrap; }
+
+/* V9.41 日历当日明细的方向标（蓝买红卖）：只有卖出也写出来，别让人猜 */
+.side-chip {
+  display: inline-block;
+  margin-right: 5px;
+  padding: 0 4px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 15px;
+  vertical-align: 1px;
+}
+.side-chip.sell { color: var(--up, #d0453f); background: rgba(208, 69, 63, 0.06); }
 
 .trade-item { display: flex; flex-direction: column; gap: 6px; }
 .trade-item .head { display: flex; align-items: center; gap: 8px; }
@@ -430,6 +464,109 @@ button { font-family: inherit; }
   max-width: calc(100vw - 20px);
   z-index: 60;
 }
+
+/* ---------- 页内下拉（V9.38） ----------
+   组件库的 Select 面板横向浮在触发框右侧，手机整行宽时两侧都出屏。
+   这里换成面板在触发框下方就地展开、左右夹进视口、自己滚。 */
+.app-select {
+  position: relative;
+  display: inline-block;
+  min-width: 140px;
+  max-width: 100%;
+  font-family: inherit;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.app-select.disabled { opacity: 0.55; }
+.app-select-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 13px;
+  border: 2px solid #e8dcc8;
+  border-radius: 12px;
+  background: #fff;
+  color: #725d42;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--dur-1) var(--ease-soft), background var(--dur-1) var(--ease-soft);
+}
+.app-select-trigger:hover:not(:disabled) { border-color: #d4c4a8; background: #fffdf7; }
+.app-select.open .app-select-trigger { border-color: #19c8b9; background: #fff; }
+.app-select-trigger:disabled { cursor: not-allowed; }
+.app-select-val,
+.app-select-ph {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.app-select-ph { color: #a09080; font-weight: 400; }
+.app-select-arrow { flex: none; color: #a09080; transition: transform var(--dur-1) var(--ease-soft); }
+.app-select.open .app-select-arrow { transform: rotate(180deg); color: #19c8b9; }
+.app-select-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  z-index: 80;
+  width: max-content;
+  min-width: 100%;
+  max-width: calc(100vw - 16px);
+  padding: 6px 0;
+  border-radius: 16px;
+  background: #ffeea0;
+  box-shadow: 0 12px 30px rgba(61, 52, 40, 0.18);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  animation: app-select-in var(--dur-1) var(--ease-soft);
+}
+.app-select-panel.up { top: auto; bottom: calc(100% + 6px); }
+@keyframes app-select-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+.app-select-panel.up { animation-name: app-select-in-up; }
+@keyframes app-select-in-up {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+.app-select-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 14px;
+  border: 0;
+  background: none;
+  color: #725d42;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.app-select-option.active { background: rgba(255, 255, 255, 0.55); }
+.app-select-option.selected { font-weight: 700; }
+.app-select-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: transparent; }
+.app-select-option.selected .app-select-dot { background: #f5a623; }
+.app-select-option:focus-visible { outline: 2px solid #19c8b9; outline-offset: -2px; }
+.app-select-empty { padding: 10px 14px; color: #a09080; font-size: 14px; text-align: center; }
+
+.app-select.mini { min-width: 78px; }
+.app-select.mini .app-select-trigger {
+  padding: 2px 8px;
+  border-width: 1px;
+  border-radius: 8px;
+  font-size: 11.5px;
+}
+.app-select.mini .app-select-panel { border-radius: 12px; }
+.app-select.mini .app-select-option { padding: 8px 12px; font-size: 12.5px; }
 
 /* ---------- 吸顶块（概览/明细/挂单顶部） ---------- */
 .page-sticky {
@@ -659,22 +796,28 @@ button { font-family: inherit; }
   height: clamp(500px, 64vh, 680px);
   position: relative;
 }
-/* V9.27 概览翻转 + V9.28.1 选股卡置顶：首屏 = 选股卡 + 树（flex 填满剩余空间，
-   自适应选股卡高度变化），全局指标块沉底 */
+/* V9.41 概览首屏：股票 tab + 高频四项占顶，树填满到导航上沿；
+   可卖/净持仓/全局指标等低频内容全部滚到树下 */
 .overview-top {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  height: calc(100dvh - var(--header-h, 63px) - 74px);
+  gap: 8px;
+  /* 视口 − 底部导航 − 主区上内边距/状态栏 − 8px 呼吸 */
+  height: calc(100dvh - var(--nav-h, 64px) - 20px - env(safe-area-inset-top));
 }
-/* 选股卡紧凑些：给树多留空间 */
-.overview-top .stock-panel .stack.tight { gap: 6px; }
-.overview-top .stock-panel .grid-4 .k { font-size: 10px; }
-.overview-top .stock-panel .grid-4 .v { font-size: 14px; }
-.overview-top .stock-panel .grid-4 .v.long { font-size: 12px; }
+.overview-head {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+.overview-head .stock-tabs { padding-bottom: 0; }
+.overview-top .grid-4 .k { font-size: 10px; }
+.overview-top .grid-4 .v { font-size: 14px; }
+.overview-top .grid-4 .v.long { font-size: 12px; }
 .overview-top .tree-full {
   flex: 1;
-  min-height: 400px;
+  min-height: 260px;
   display: flex;
   flex-direction: column;
 }
@@ -687,8 +830,10 @@ button { font-family: inherit; }
 .overview-top .tree-full .tree-host {
   flex: 1;
   height: auto;
-  min-height: 360px;
+  min-height: 220px;
 }
+/* 树下低频区：可卖/待补/净持仓/已实现 + 回本链 */
+.overview-stock-stats { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
 /* 盈利数字右侧的「共计x次」（V9.27）：整体加粗，x 比其它字大 5px */
 .profit-count {
   font-weight: 700;
@@ -764,10 +909,8 @@ button { font-family: inherit; }
 .tree-wrap[data-style="axis"] .tree-legend .dot.agg::before { border-radius: 2px; }
 .tree-wrap[data-style="axis"] .tree-legend .dot.agg::before { background: #c7c7cc; }
 /* 年份切换（V9.31）：借 Select，但压成图例条里的迷你尺寸 */
-.tree-year { display: inline-flex; align-items: center; gap: 6px; }
-.tree-year [class*='animal-wrapper-'] { min-width: 78px; }
-.tree-year [class*='animal-trigger-'] { padding: 2px 8px; border-width: 1px; border-radius: 8px; }
-.tree-year [class*='animal-value-'] { font-size: 11.5px; }
+.tree-year { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.tree-year .app-select { min-width: 78px; }
 /* 风格切换：低调的文字按钮，藏在图例条里 */
 .tree-legend .style-toggle {
   border: 1px solid rgba(120, 104, 78, 0.35);
@@ -1011,3 +1154,29 @@ button:not(:disabled):active {
     transform: none;
   }
 }
+
+/* ---------- 沙盒模式（V9.39）：模拟条目不写库，用紫色虚线把它和真实台账分开 ---------- */
+.sandbox-mark { color: #8a5bd6; font-weight: 600; }
+.line.sandbox-row {
+  cursor: default;
+  padding-left: 8px;
+  border-radius: 0 6px 6px 0;
+  border-left: 3px dashed rgba(138, 91, 214, 0.6);
+  background-image: linear-gradient(90deg, rgba(138, 91, 214, 0.06), transparent 46%);
+}
+.sandbox-panel { box-shadow: inset 0 0 0 1px rgba(138, 91, 214, 0.28); }
+.sandbox-banner { box-shadow: inset 0 0 0 1px rgba(138, 91, 214, 0.34); }
+.sandbox-deltas { display: flex; flex-wrap: wrap; gap: 8px; }
+.sandbox-delta {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: rgba(138, 91, 214, 0.08);
+  font-size: 12px;
+}
+.sandbox-delta .k { font-size: 11px; color: var(--animal-text-color-secondary, #9f927d); }
+.sandbox-delta .was { text-decoration: line-through; opacity: 0.55; font-variant-numeric: tabular-nums; }
+.sandbox-delta .arrow { opacity: 0.45; }
+.sandbox-delta b { font-variant-numeric: tabular-nums; }

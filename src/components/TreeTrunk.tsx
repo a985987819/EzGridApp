@@ -18,9 +18,9 @@
  *   点枝跳明细（命中面 = 拾取圆 + 枝梢注记文字热区；已成交枝自动放开「隐藏已完成」）。
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Select } from 'animal-island-ui'
+import { Select } from '../ui/Select'
 import { useApp } from '../store/useApp'
-import type { SellTarget } from '../domain/types'
+import type { Ledger, SellTarget } from '../domain/types'
 import { price } from '../ui/format'
 import { atlasStyle } from './treeStyleAtlas'
 import { sketchStyle } from './treeStyleSketch'
@@ -88,6 +88,7 @@ export function TreeTrunk({
   onPick,
   closeCents = null,
   idealPriceCents = null,
+  ledger: ledgerOverride,
 }: {
   stockName: string
   /** 点击枝条（合并组）：区间 + 是否已成交组 */
@@ -97,8 +98,11 @@ export function TreeTrunk({
   /** 理想可卖到的股价（分 = 最高待卖目标价）：数轴风画水平参考线 + 标签（V9.29，
    *  取代 V9.28 的「理想可卖金额」左上角数据牌——金额没有价格位置） */
   idealPriceCents?: number | null
+  /** 沙盒预览：用真实 + 模拟的账本画树（V9.39）；不传就读全局真实账本 */
+  ledger?: Ledger
 }) {
-  const { ledger } = useApp()
+  const { ledger: appLedger } = useApp()
+  const ledger = ledgerOverride ?? appLedger
   // V9.31 年份筛选：只筛「已成交」（按卖出日期年份）——待买/待卖是当前挂单，不随年份消失。
   // 数据里出现过哪些年份就列哪些，将来多年度数据直接可切。
   const years = useMemo(() => {
@@ -524,6 +528,7 @@ export function TreeTrunk({
               options={[{ key: 'all', label: '全部' }, ...years.map((y) => ({ key: y, label: y }))]}
               value={effYear}
               onChange={setYear}
+              mini
               aria-label="已成交年份"
             />
           </span>

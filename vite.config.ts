@@ -11,7 +11,8 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      registerType: 'autoUpdate',
+      // V9.40：改 prompt——新版本只提示、不自动 reload；用户手动刷新页面才生效
+      registerType: 'prompt',
       includeAssets: ['pwa-192.png', 'pwa-512.png'],
       manifest: {
         name: '网格交易管理',

@@ -19,7 +19,7 @@ node e2e/smoke.mjs http://127.0.0.1:5173   # 无头浏览器走一遍主链路
 
 打开后到「导入」页：
 
-- 选自己的 xlsx / csv，或点 **载入内置示例**（就是 `public/demo/26年网格记录.xlsx`）；
+- 选自己的 xlsx / csv（站点不带任何示例数据）；
   - xlsx / xls 只读第 1 个工作表「交易记录」（公式无缓存值的份额/目标价按规则重算）；
   - csv 整表读入（单表文件）：UTF-8 带 BOM 为主，UTF-16LE / GBK 自动回退，文本日期（`2026/1/28`）与 `#VALUE!` 错误串都已容错；
 - 先出 **dry-run 报告**（8 个基准数字 + 异常清单），确认后再点 **写入本地**（对应文档 S2 门槛）。
@@ -98,7 +98,7 @@ src/
   domain/manual.ts     手动新增买入 / 卖出 → RawRecord
   ui/                  icons / format / csv / nav（哈希路由 + 明细筛选参数，S7）
 e2e/smoke.mjs          本机 Chrome 走一遍主链路（移动端 390×844 视口）
-tests/fixtures/        26年网格记录.xlsx（测试与内置示例都用它）
+tests/fixtures/        26年网格记录.xlsx（仅本机测试用，不随站点发布）
 ```
 
 **两条设计取舍**：
@@ -295,4 +295,4 @@ npx serve dist         # 或扔进 Nginx / OSS / GitHub Pages
 
 ## 数据与隐私
 
-数据只存在浏览器 IndexedDB（Dexie），没有任何网络请求。长期不打开会被 Safari 清理，**建议每周到「备份」页导一次 JSON**。`tests/fixtures/` 和 `public/demo/` 里是这份 26 年记录的原文件副本，如果这个仓库要外发，记得先删掉。
+数据只存在浏览器 IndexedDB（Dexie），没有任何网络请求。长期不打开会被 Safari 清理，**建议每周到「备份」页导一次 JSON**。`tests/fixtures/` 里是真实台账的副本，只在本地跑测试用，构建产物和站点都不包含它。

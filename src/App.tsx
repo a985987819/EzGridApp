@@ -53,27 +53,15 @@ function Shell() {
 
   return (
     <div className="app">
-      <header className="app-header">
-        <div className="brand-block">
-          <strong>网格交易</strong>
-          <span>
-            {ledger.totals.rows
-              ? `${ledger.totals.rows} 行 · 净持仓 ${ledger.totals.netQty.toLocaleString('zh-CN')} 股`
-              : '还没有数据'}
-          </span>
-        </div>
-        <div className="spacer" />
-      </header>
-
       <main className="app-main" data-dir={dir}>
         {!ready ? (
           <div className="empty-box">初始化本地库…</div>
         ) : route.tab === 'overview' ? (
-          <Overview goTrades={goTrades} goManage={() => navigate('manage')} />
+          <Overview goTrades={goTrades} goManage={() => navigate('manage')} goOrders={() => navigate('orders')} />
         ) : route.tab === 'trades' ? (
           <TradesPage urlQuery={route.query} />
         ) : route.tab === 'orders' ? (
-          <OrdersPage goTrades={goTrades} />
+          <OrdersPage goTrades={goTrades} goOverview={() => navigate('overview')} />
         ) : route.tab === 'stats' ? (
           <StatsPage goTrades={goTrades} />
         ) : (

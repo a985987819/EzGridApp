@@ -17,10 +17,26 @@ import { useEffect, useMemo, useState } from 'react'
 import { Button, Input, Modal, Tag, notificationOpen } from 'animal-island-ui'
 import { useApp } from '../store/useApp'
 import { isHedgeable } from '../domain/hedge'
+import { isSandboxRow } from '../domain/sandbox'
 import { price, qty, signedMoney, tone } from '../ui/format'
 
-export function HedgeBinder({ sellRow, onSaved }: { sellRow: number; onSaved?: () => void }) {
-  const { ledger, records, hedges, setHedgeLink, clearHedgeLink } = useApp()
+export function HedgeBinder({
+  sellRow,
+  onSaved,
+  mode = 'real',
+}: {
+  sellRow: number
+  onSaved?: () => void
+  /** sandbox：用真实 + 模拟的预览账本，保存只改模拟挂钩，不写库 */
+  mode?: 'real' | 'sandbox'
+}) {
+  const app = useApp()
+  const sandboxMode = mode === 'sandbox'
+  const ledger = sandboxMode ? app.sandboxLedger : app.ledger
+  const records = sandboxMode ? app.sandboxPreviewRecords : app.records
+  const hedges = sandboxMode ? app.sandbox.hedges : app.hedges
+  const setHedgeLink = sandboxMode ? app.setSandboxHedge : app.setHedgeLink
+  const clearHedgeLink = sandboxMode ? app.clearSandboxHedge : app.clearHedgeLink
   const rec = records.find((r) => r.sourceRow === sellRow) ?? null
   const sell = ledger.sells.find((s) => s.sourceRow === sellRow) ?? null
   const order = ledger.orders.find((o) => o.sourceRow === sellRow) ?? null
@@ -142,10 +158,12 @@ export function HedgeBinder({ sellRow, onSaved }: { sellRow: number; onSaved?: (
     try {
       await setHedgeLink(sellRow, items)
       notificationOpen({
-        message: assigned > 0 ? '已挂钩' : '已解除挂钩',
+        message: assigned > 0 ? (sandboxMode ? '模拟挂钩已保存' : '已挂钩') : '已解除挂钩',
         description:
           assigned > 0
-            ? `这 ${assigned} 股记为亏损；买回后自动按未买回股数收缩`
+            ? sandboxMode
+              ? `这 ${assigned} 股只记在沙盒预览里；点「记为成交」才转成真实挂钩`
+              : `这 ${assigned} 股记为亏损；买回后自动按未买回股数收缩`
             : '没有分配任何股数，等于解除',
         type: 'success',
       })
@@ -195,10 +213,13 @@ export function HedgeBinder({ sellRow, onSaved }: { sellRow: number; onSaved?: (
       )}
 
       <p className="tiny muted" style={{ margin: '0 0 8px' }}>
-        选还没卖完的买单，把这笔卖的 <b>{qty(required)} 股</b>（{price(sellPrice)} 卖出
+        {sandboxMode ? '沙盒预演：' : ''}选还没卖完的买单，把这笔卖的 <b>{qty(required)} 股</b>（
+        {price(sellPrice)} 卖出
         {execQty > 0 ? `，已买回 ${qty(execQty)} 股不参与` : ''}）算到它头上：
-        被挂份额退出待卖、按（卖价 − 买价）记为亏损。买回一部分就按没买回的股数自动收缩，
-        全买回即彻底解除，先卖 + 后买回归成一笔正常完成的订单。
+        被挂份额退出待卖、按（卖价 − 买价）记为亏损。
+        {sandboxMode
+          ? '只影响概览预览，点「记为成交」才会写进明细。'
+          : '买回一部分就按没买回的股数自动收缩，全买回即彻底解除，先卖 + 后买回归成一笔正常完成的订单。'}
       </p>
 
       {sellPrice === null && (
@@ -215,6 +236,7 @@ export function HedgeBinder({ sellRow, onSaved }: { sellRow: number; onSaved?: (
                 买 {price(lot.buyPriceCents)} × {qty(lot.qty)}
               </div>
               <div className="t2">
+                {isSandboxRow(lot.sourceRow) && <span className="sandbox-mark">模拟批次 · </span>}
                 {sellPrice !== null && lot.buyPriceCents <= sellPrice && <span className="up">低位（挂上去记盈利）· </span>}
                 行 {lot.sourceRow} · 买入 {lot.buyDate ?? '—'} · 目标 {price(lot.targetPriceCents)} · 可挂 {qty(available)}
               </div>
@@ -280,17 +302,25 @@ export function HedgeBinder({ sellRow, onSaved }: { sellRow: number; onSaved?: (
 }
 
 /** 从明细行/挂单行的「裸卖待挂钩」标签点开的弹层：内容就是上面这个面板 */
-export function HedgeSheet({ sellRow, onClose }: { sellRow: number | null; onClose: () => void }) {
+export function HedgeSheet({
+  sellRow,
+  onClose,
+  mode = 'real',
+}: {
+  sellRow: number | null
+  onClose: () => void
+  mode?: 'real' | 'sandbox'
+}) {
   return (
     <Modal
       open={sellRow !== null}
-      title="裸卖待挂钩"
+      title={mode === 'sandbox' ? '沙盒挂钩预演' : '裸卖待挂钩'}
       typewriter={false}
       className="hedge-modal"
       onClose={onClose}
       footer={<Button onClick={onClose}>关闭</Button>}
     >
-      {sellRow !== null && <HedgeBinder sellRow={sellRow} onSaved={onClose} />}
+      {sellRow !== null && <HedgeBinder sellRow={sellRow} onSaved={onClose} mode={mode} />}
     </Modal>
   )
 }

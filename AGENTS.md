@@ -7,15 +7,16 @@
 
 ```bash
 npm run dev        # 127.0.0.1:5173
-npm test           # vitest，161 条（domain 纯函数 + 真实 xlsx fixture 回归）
+npm test           # vitest，175 条（domain 纯函数 + 真实 xlsx fixture 回归）
 npm run lint       # eslint
 npm run build      # tsc --noEmit && vite build；GITHUB_PAGES=true 时启用 /EzGridApp/ 子路径 base
-node e2e/smoke.mjs http://127.0.0.1:5173   # 无头 Chrome CDP，210 项断言，需先起 dev
+node e2e/smoke.mjs http://127.0.0.1:5173   # 无头 Chrome CDP，382 项断言，需先起 dev
+                   # 数据种子 = tests/fixtures 经 CDP DOM.setFileInputFiles 塞进上传框（站点不带示例数据）
 ```
 
 Windows 坑：后台起的 vite 在 TaskStop 后会留僵尸进程占 5173/5174，跑 e2e 前先
 `netstat -ano | grep 517` 并 `taskkill //PID <pid> //F`。e2e 里点画布前必须
-`scrollIntoView` + 藏吸顶层（`[data-sticky="overview"]` visibility:hidden），否则 CDP 坐标落空。
+`scrollIntoView` 再取坐标；概览 V9.41 起已无吸顶块（明细/挂单的 `[data-sticky]` 仍在）。
 Bash 工具提交输出偶尔乱码是控制台代码页显示问题，`git log` 里实际是好的。
 
 部署：push 到 main → GitHub Actions 自动构建发布到
@@ -67,12 +68,18 @@ store/useApp（唯一写库入口，全部动作写 auditLogs）
 | 手动新增 / 编辑（V9.35） | 日期解析**收 `-` `/` `.` 与全角斜杠、月日可一位数**（`edit.ts: isoToSerial`），输出永远补零成 YYYY-MM-DD；新增一笔打开时**日期默认今天**、股票默认当前筛选。
 先卖后买的行抽屉页脚多一个**「补买入」**：一键把买入价=回补价（P 列）、买入份额=卖出量、买入日期=今天填好再进编辑；**普通「编辑」绝不预填买入侧**——只想改卖出侧的人不该因为保存把买入写进台账（当初做成自动预填，e2e 里改一行目标价就把整行变成批次、连带盈利/敞口全变）。新增卖出的「回补价」placeholder 直接显示推导值（卖出价 − 该股间隔），「目标售价」显示买入价 + 间隔；日期字段旁有「今天」快捷键 |
 
+| UI 基础控件 V9.38 | **下拉**用 `ui/Select.tsx`（不用组件库的 Select：库面板横向浮在触发框右侧，390 宽下两侧都出屏）。面板在触发框正下方就地展开，下方不够向上翻转，左右按 `getBoundingClientRect` 夹进视口，`max-height` 取可用空间并自己滚；触发器保留 `role="combobox"`、选项 `role="option"`（e2e 靠这个选股票/年份）。**日期**用 `ui/DateField.tsx`：手输框（认 `- / .` 与全角斜杠）+ 日历按钮唤起原生 `input[type=date]`（`showPicker()`，失败退回 focus），选完按 ISO 回填；日历按钮 `preventDefault` 防止 `<label>` 激活抢焦点。明细抽屉编辑与新增一笔的日期格都用它 |
+| 沙盒模式 V9.39 | **只预览、不写库**：挂单页右上「沙盒」开关（`[data-sandbox-toggle]`）；打开后 `sandboxLedger = buildLedger(真实 records + 模拟 records, 真实 hedges + 模拟 hedges)`，自动派生的待买/待卖也一起进预览。模拟条目在 `domain/sandbox.ts` 的 `SandboxState.items`（**内存态**，刷新/恢复备份/清库即清空），预览行号从 `SANDBOX_ROW_BASE = 300000` 起；`kind:'sell'` = 模拟待买（先卖后买：成交价 + P），`kind:'buy'` = 模拟待卖（假设买入：买入价 + 目标价，目标价空按间隔推）。「＋ 模拟待买 / ＋ 模拟待卖」弹窗默认昨收价、昨收 ± 该股间隔、100 股、今天；模拟行紫色虚线（`.line.sandbox-row` / `.sandbox-mark`）、不可跳明细。**模拟挂钩**复用 `HedgeBinder mode="sandbox"`（标题「沙盒挂钩预演」），可挂真实未卖批次或模拟批次，结果立即反映到挂单页四项指标与概览横幅（`[data-testid="sandbox-banner"]`：已实现盈利 / 理想可卖到 / 理想剩余可赚的真实 → 预览差值）；价格树用 `<TreeTrunk ledger={viewLedger}>` 重画、`__tree.ideal()` 跟着变。**记为成交**：`commitSandboxItem` 把该条转成真实手动记录（100000 段）写明细；挂着模拟批次时先一起转正（通知里 `committed > 1`），再用真实行号写 `hedge:<newRow>` + 审计「沙盒挂钩转正」，写完必须 `setHedges` 同步内存。模拟条目不进备份、不写 audit；清空模拟/退出沙盒只动内存。e2e 覆盖「未挂 +250 → 挂钩 10.89 批次 −1,945 / 最高卖价 11.48→11.38 → 记为成交 100001 → 刷新清空」 |
+| 编辑抽屉滚动 / 输入法 V9.40 | **抽屉打开会丢滚动位置**：animal-island-ui `Drawer` 打开时给 body 写 `overflow:hidden`，而页面是普通文档流（`.app` 只有 `min-height:100%`）——文档高度塌成一屏，窗口 `scrollY` 被浏览器清零，关掉后也回不去。`TradesPage` 在 `open()` 里先记 `window.scrollY`，抽屉**真正关闭**（`current === null`，不是 `openRow`——行被筛掉时抽屉也会关）后一帧 `scrollTo` 补回来。**输入法避让**：`ui/viewport.ts` 的 `useKeyboardInset(open)` 监听 `visualViewport`，把键盘高度写进 `--kb-inset`、可见高写进 `--kb-vh`、面板高写进 `--ed-h`；Drawer 的 `height` prop 传 `var(--ed-h, 84vh)`（内联样式支持 CSS 变量），`styles.css` 的 `.trades-edit-drawer` 用 `bottom: var(--kb-inset)` + `max-height: calc(var(--kb-vh) - 8px)`，键盘弹出时面板整体抬到键盘上沿、高度收进可见区；`.animal-body` 的 `scroll-padding-bottom` 保证聚焦最下面几行时输入框不被页脚挡住。e2e `[7.2]` 用 `Object.defineProperty(visualViewport, 'height')` 模拟键盘并断言面板几何与滚动复原 |
+| PWA 更新 V9.40 | `vite.config.ts` 的 `registerType` 从 `autoUpdate` 改成 `prompt`：**新版本只提示、绝不自动 reload**（旧 autoUpdate 在部署后强制刷新页面，编辑到一半会丢弹窗和滚动位置）。`main.tsx` 的 `onNeedRefresh` 只弹「手动刷新页面后生效」，每小时 `reg.update()` 照旧检查。用户手动刷新后新 SW 才接管。**别改回 autoUpdate**——用户明确要求「数据更新后只有在手动刷新时才更新页面数据」 |
+| 布局 V9.41 | **删全局「网格交易」header**（`App.tsx` 不再渲染 `.app-header`，`--header-h` 只剩 `env(safe-area-inset-top)`；`.app-main` 自己让出状态栏安全区）。**概览首屏重排**：股票 tab 置顶（原「选股 · 当前股票汇总」标题行删除）；树上方只留高频四项（已实现盈利 / 理想可卖到 / 理想剩余可赚 / 今年共卖），树用 `height: calc(100dvh − --nav-h − 20px − safe-top)` 铺到导航上沿（390×844 画布实测 568px）；可卖/待补/净持仓/已实现 + 回本链下移到树下方，全局三格/标签等低频内容继续往下，必须滚动才看得到。**统计 · 成交日历**当日明细行首加红框「卖出」chip（`.side-chip.sell`），成本文案改「买入成本」（日历只按卖出日归集） |
 | 动效 V9.37 | 统一缓动 `--ease-soft / --ease-back` + 三档时长（`--dur-1/2/3`）；只动 transform / opacity / 色彩，不动 layout（唯一例外是删除那一行用 max-height 收高度）。**切页带方向**：`.app-main[data-dir=forward\|back]` → `page-in-forward / page-in-back`，方向由 App.tsx 比较 tab 序号得出。**明细行三态**用 `data-anim` 属性驱动（样式在 styles.css）：`new` = 新增落位 + 微光（承接「弹窗收成一条明细」）、`leaving` = 删除向右滑出并收高度（**先播 300ms 动画再真删**，别直接消失）、`done` = 刚完成洗一层青。通用 hook：`ui/motion.ts` 的 `useFlashOnAppear(keys)`（首帧不闪、依赖用 key 签名避免每帧重跑）。底部导航短横线常驻 + scaleX 过渡、图标弹跳；挂单页回补成交的那行同样会闪。`prefers-reduced-motion: reduce` 时全部退化为瞬切。 |
 
 ## ID 前缀约定
 
 `stock:` `lot:<row>` `sell:<row>` `target:<lot|extraId>` `rb:sell:<row>` `exec:<orderId>:<ts>`
-`et:<lotId>:<ts>` `plan:<refId>` `batch:<ts>` `hedge:<sellRow>`（V9.26）。备份
+`et:<lotId>:<ts>` `plan:<refId>` `batch:<ts>` `hedge:<sellRow>`（V9.26）
+`sandbox:<seq>:<ts>`（V9.39 仅预览；预览行号 = 300000 + seq，绝不落库）。备份
 schemaVersion 7（V9.32 去掉 accounts；含 hedges）。`validateBackup` 现在逐表校验 records / stocks / 回补成交 / 计划 / 拆分目标 / **挂钩**（V9.32 起；之前只查前两张，`hedges: [{}]` 能过校验、恢复后 `for..of h.items` 直接白屏）。Dexie schema 改动必须递增 `db.ts` 里的 version()（老库
 自动升级，不写迁移）。
 
@@ -85,6 +92,11 @@ schemaVersion 7（V9.32 去掉 accounts；含 hedges）。`validateBackup` 现�
 - 超卖（soldQty > 批次量）会标 `oversell` 异常（v9.20 起），守恒式也会红灯。
 - 日期列只接受 ≥20000 的序列号（1954 年后）与合法日期文本；价格误入日期列按缺失处理。
 - 概览底部「数据只存在本机浏览器」：长期不打开 IndexedDB 可能被浏览器清理，靠每周导出备份兜底。
+- **沙盒是纯内存态**（V9.39）：切 tab 不丢，但刷新页面 / 恢复备份 / 清空数据库都会清掉；模拟条目
+  不进备份、不写 auditLogs、不进明细，只有每行「记为成交」才真正写库。这是用户要的「不生效，仅供预览」。
+- **animal-island-ui 的 `Tag` 不透传 `data-*`**（只透传 className/style/onClick/size 等声明过的 prop）：
+  给 Tag 加 `data-xxx` 在 DOM 上找不到。e2e 对沙盒挂钩标签用 `.hedge-entry`；普通 div 行上的
+  `[data-sandbox-row]` 不受影响。
 
 ## 设计决定记录（2026-10-24 用户拍板，接手 agent 不要擅自推翻）
 
@@ -93,8 +105,9 @@ schemaVersion 7（V9.32 去掉 accounts；含 hedges）。`validateBackup` 现�
   取代旧 D5「不新增批次」。守恒式相应改为「Σ待卖 − 待补 − 空头回补基础股 = 净持仓」。
 - **C 导入幂等**：提交时按行身份匹配更新卖出侧字段（importPlan.ts），不改 importKey 本身
   （nanoId/深链保持稳定）。
-- **D 小缺陷批次**：已修——示例文件 fetch 用 `import.meta.env.BASE_URL`（Pages 子路径）、
-  日历「今天」用本地时区、记成交文案区分敞口/批次、超卖标异常、日期列序列号阈值 20000。
+- **D 小缺陷批次**：已修——日历「今天」用本地时区、记成交文案区分敞口/批次、超卖标异常、
+  日期列序列号阈值 20000。**V9.38 起删除「载入内置示例」**：`public/demo/26年网格记录.xlsx`
+  是真实台账，不再随站点发布；e2e 改用 `tests/fixtures` 本地塞文件。
 - **E 先卖后买挂钩**（2026-10-25 拍板，V9.26）：裸卖须**手动指定**挂到未卖的高位批次
   （可多笔、合计=卖出量）；挂着的批次按（卖价−买价）暂记负盈利并退出待卖，裸卖盈利暂缓；
   **记回补成交即自动复原**（批次回原目标继续等卖、这笔卖按回补价正常结算，等效无事发生）；

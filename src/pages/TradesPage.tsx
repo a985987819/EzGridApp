@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { Button, Card, Drawer, Input, Modal, Select, Switch, Tag, notificationOpen } from 'animal-island-ui'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Button, Card, Drawer, Input, Modal, Switch, Tag, notificationOpen } from 'animal-island-ui'
+import { Select } from '../ui/Select'
 import { useApp } from '../store/useApp'
 import { serialToIso } from '../domain/defaults'
 import { EDITABLE, fieldText, type EditableKey } from '../domain/edit'
@@ -13,6 +14,8 @@ import { buildNanoIdIndex } from '../ui/nanoid'
 import { centsToYuan, toCents } from '../domain/money'
 import { downloadText, toCsv } from '../ui/csv'
 import { useFlashOnAppear } from '../ui/motion'
+import { useKeyboardInset } from '../ui/viewport'
+import { DateField } from '../ui/DateField'
 import { TradeItem, buyDateOf, isDone, sellDateOf, type TradeRow } from '../components/TradeItem'
 import { HedgeBinder, HedgeSheet } from '../components/HedgeBinder'
 import { RepairChainCard } from '../components/RepairChainCard'
@@ -170,6 +173,10 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   // V9.5：默认隐藏「已完成」行（卖完且无待回补），URL 带 showDone=1 时放开
   const [hideDone, setHideDone] = useState(urlQuery.showDone !== true)
   const [openRow, setOpenRow] = useState<number | null>(null)
+  // V9.40：Drawer 打开时库会把 body 锁成 overflow:hidden，文档高度塌回一屏、scrollY 被清零；
+  // 打开前记下位置，关掉后补回去——否则编辑完一笔要从头往下划才能找回这一行。
+  const drawerScrollY = useRef(0)
+  const drawerWasOpen = useRef(false)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState<Record<EditableKey, string>>(BLANK_DRAFT)
   const [adding, setAdding] = useState(false)
@@ -365,6 +372,22 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   }, [filtered, sortBy])
 
   const current = visible.find((r) => r.rec.sourceRow === openRow) ?? null
+  const drawerOpen = current !== null
+
+  // V9.40 输入法避让：抽屉打开期间把键盘高度写进 CSS 变量（面板挂 body 上，不会自己缩）
+  useKeyboardInset(drawerOpen)
+  useEffect(() => {
+    if (drawerOpen) {
+      drawerWasOpen.current = true
+      return
+    }
+    if (!drawerWasOpen.current) return
+    drawerWasOpen.current = false
+    const y = drawerScrollY.current
+    // 等 Drawer 的 overflow 清理跑完、文档高度恢复后再滚，否则滚了也会被夹回 0
+    const raf = requestAnimationFrame(() => window.scrollTo(0, y))
+    return () => cancelAnimationFrame(raf)
+  }, [drawerOpen])
 
   // ---------- V9.37 动效状态：新增落位 / 删除滑出 / 刚完成洗色 ----------
   /** 刚新增的那一行：弹入 + 微光，1.8s 后自动摘掉（「弹窗收成一行」的观感由它承担） */
@@ -413,6 +436,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   }, [ledger.repairChains])
 
   function open(r: Row) {
+    drawerScrollY.current = window.scrollY
     const next = { ...BLANK_DRAFT }
     for (const f of EDITABLE) next[f.key] = fieldText(r.rec, f.key)
     setDraft(next)
@@ -726,7 +750,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       <Drawer
         open={current !== null}
         placement="bottom"
-        height="84vh"
+        height="var(--ed-h, 84vh)"
         // V9.34：抽屉和主内容列同宽（见 styles.css .trades-edit-drawer），不再占满整屏
         className="trades-edit-drawer"
         title={
@@ -780,12 +804,21 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                         </button>
                       )}
                     </span>
-                    <Input
-                      value={draft[f.key]}
-                      placeholder={f.kind === 'date' ? '2026-10-25 或 2026/10/25' : f.kind === 'qty' ? '股数' : '元'}
-                      onChange={(e) => setDraft({ ...draft, [f.key]: e.target.value })}
-                      data-field={f.key}
-                    />
+                    {f.kind === 'date' ? (
+                      <DateField
+                        value={draft[f.key]}
+                        placeholder="2026-10-25 或 2026/10/25"
+                        onChange={(v) => setDraft({ ...draft, [f.key]: v })}
+                        data-field={f.key}
+                      />
+                    ) : (
+                      <Input
+                        value={draft[f.key]}
+                        placeholder={f.kind === 'qty' ? '股数' : '元'}
+                        onChange={(e) => setDraft({ ...draft, [f.key]: e.target.value })}
+                        data-field={f.key}
+                      />
+                    )}
                   </label>
                 ))}
                 <p className="tiny muted" style={{ margin: 0 }}>
@@ -1055,10 +1088,10 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
             </label>
             <label>
               <span>{form.kind === 'buy' ? '买入日期' : '卖出日期'}</span>
-              <Input
+              <DateField
                 value={form.date}
                 placeholder="2026-10-23"
-                onChange={(e) => setForm({ ...form, date: e.target.value })}
+                onChange={(v) => setForm({ ...form, date: v })}
                 data-field="date"
               />
             </label>
@@ -1146,10 +1179,10 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                 </div>
                 <label>
                   <span>买入日期（选填）</span>
-                  <Input
+                  <DateField
                     value={form.buyDate ?? ''}
                     placeholder="2026-10-22"
-                    onChange={(e) => setForm({ ...form, buyDate: e.target.value })}
+                    onChange={(v) => setForm({ ...form, buyDate: v })}
                     data-field="buyDate"
                   />
                 </label>

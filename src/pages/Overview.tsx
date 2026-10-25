@@ -11,31 +11,37 @@ import type { TradesQuery } from '../ui/nav'
 export function Overview({
   goTrades,
   goManage,
+  goOrders,
 }: {
   goTrades: (q: TradesQuery) => void
   goManage: () => void
+  /** 沙盒横幅里回挂单页继续模拟 */
+  goOrders?: () => void
 }) {
-  const { ledger, baseline, records, basename, stocks, lastBackupAt, ordersSession } = useApp()
+  const { ledger, sandbox, sandboxLedger, baseline, records, basename, stocks, lastBackupAt, ordersSession } = useApp()
   const [active, setActive] = useState('')
   const [openMetric, setOpenMetric] = useState<'target' | 'exposure' | 'net' | null>(null)
-  const t = ledger.totals
+  /** 沙盒开着且有模拟条目：整页指标与树都改用预览账本（真实 + 模拟，纯派生） */
+  const previewOn = sandbox.active && sandbox.items.length > 0
+  const viewLedger = previewOn ? sandboxLedger : ledger
+  const t = viewLedger.totals
   const failed = baseline.filter((c) => !c.ok).length
   const backupDays = lastBackupAt ? Math.floor((Date.now() - lastBackupAt) / 86400000) : null
   const backupStale = backupDays === null || backupDays >= 7
   // 跨数据跳转：待补日期 N 笔 → 明细里只看缺卖出日期的行
-  const missingDateCount = ledger.anomalies.filter((a) => a.kind === 'dateMissing').length
+  const missingDateCount = viewLedger.anomalies.filter((a) => a.kind === 'dateMissing').length
 
   const enabledNames = useMemo(() => activeStockNames(stocks), [stocks])
   const withRows = useMemo<StockSummary[]>(() => {
-    const byName = new Map(ledger.byStock.map((s) => [s.stockName, s]))
+    const byName = new Map(viewLedger.byStock.map((s) => [s.stockName, s]))
     const out: StockSummary[] = []
     for (const name of enabledNames) {
       const s = byName.get(name)
       if (s && s.rows > 0) out.push(s)
     }
     return out
-  }, [ledger.byStock, enabledNames])
-  const hasData = records.some((r) => !r.deletedAt)
+  }, [viewLedger.byStock, enabledNames])
+  const hasData = records.some((r) => !r.deletedAt) || sandbox.items.length > 0
   if (!hasData) {
     return (
       <Card>
@@ -50,14 +56,14 @@ export function Overview({
     )
   }
 
-  const hiddenCount = ledger.byStock.filter((s) => s.rows > 0 && !enabledNames.includes(s.stockName)).length
+  const hiddenCount = viewLedger.byStock.filter((s) => s.rows > 0 && !enabledNames.includes(s.stockName)).length
   const current = withRows.find((s) => s.stockName === active) ?? withRows[0]
   /** V9.36 当前股票的回本链（高位批次了结后待回本的账） */
-  const chainsOfStock = current ? ledger.repairChains.filter((c) => c.stockName === current.stockName) : []
+  const chainsOfStock = current ? viewLedger.repairChains.filter((c) => c.stockName === current.stockName) : []
   // V9.28 当前股票概述：今年共卖 x 次（真实卖出，不含挂钩暂记）。
   // 早退（无数据）之后才到这里，不能用 useMemo——过滤量小，直接算
   const yearSellCount = current
-    ? ledger.sells.filter(
+    ? viewLedger.sells.filter(
         (s) =>
           s.stockName === current.stockName &&
           s.hedgedFromSellRow === undefined &&
@@ -68,21 +74,54 @@ export function Overview({
   const closeCents = current ? ordersSession.confirmedCents[current.stockName] ?? null : null
   /** 被高位挂住（盈利暂缓）的卖出笔数（V9.33） */
   const holdCount = current
-    ? ledger.sells.filter((s) => s.stockName === current.stockName && s.hedgedHold === true).length
+    ? viewLedger.sells.filter((s) => s.stockName === current.stockName && s.hedgedHold === true).length
     : 0
+  /** 真实账本里同一只股票：横幅里给「原本 → 预览」对照用 */
+  const realCurrent = current ? ledger.byStock.find((s) => s.stockName === current.stockName) : undefined
 
   return (
     <div className="stack">
-      {/* V9.28.1 概览：选股卡置顶 + 树填满首屏剩余空间；全局指标块沉底 */}
+      {previewOn && current && (
+        <Card className="sandbox-banner" data-testid="sandbox-banner">
+          <div className="sec-head">
+            <strong>沙盒预览</strong>
+            <Tag size="small" variant="soft" color="purple">未写库</Tag>
+            <div className="spacer" />
+            <span className="sec-sub">模拟 {sandbox.items.length} 条 · 模拟挂钩 {sandbox.hedges.length} 笔</span>
+            {goOrders && <Button size="small" onClick={goOrders}>去挂单页调</Button>}
+          </div>
+          <div className="sandbox-deltas">
+            <div className="sandbox-delta" data-sandbox-delta="profit">
+              <span className="k">已实现盈利</span>
+              <span className="was">{signedMoney(realCurrent?.profitCents ?? 0)}</span>
+              <span className="arrow">→</span>
+              <b className={tone(current.profitCents)}>{signedMoney(current.profitCents)}</b>
+            </div>
+            <div className="sandbox-delta" data-sandbox-delta="max">
+              <span className="k">理想可卖到</span>
+              <span className="was">
+                {realCurrent?.targetMaxPriceCents != null ? price(realCurrent.targetMaxPriceCents) : '—'}
+              </span>
+              <span className="arrow">→</span>
+              <b>{current.targetMaxPriceCents != null ? price(current.targetMaxPriceCents) : '—'}</b>
+            </div>
+            <div className="sandbox-delta" data-sandbox-delta="expect">
+              <span className="k">理想剩余可赚</span>
+              <span className="was">{signedMoney(realCurrent?.expectProfitCents ?? 0)}</span>
+              <span className="arrow">→</span>
+              <b className={tone(current.expectProfitCents)}>{signedMoney(current.expectProfitCents)}</b>
+            </div>
+          </div>
+          <p className="tiny muted" style={{ margin: '8px 0 0' }}>
+            整页指标和价格树都按预览账本重算：模拟挂钩会改已实现盈利、理想可卖到的最高价和剩余可赚。
+            点「记为成交」才写进明细，刷新即清空沙盒。
+          </p>
+        </Card>
+      )}
+      {/* V9.41 概览首屏：股票 tab 置顶 → 高频四项 → 价格树占满其余空间；低频内容全部滚到树下 */}
       {current && (
         <div className="overview-top">
-        <Card className="stock-panel">
-          <div className="sec-head" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
-            <div className="row">
-              <strong>选股 · 当前股票汇总</strong>
-              <div className="spacer" />
-              <span className="sec-sub">点枝跳明细 · 树在下方</span>
-            </div>
+          <div className="overview-head">
             <div className="stock-tabs">
               {withRows.map((s) => (
                 <Tag
@@ -96,9 +135,7 @@ export function Overview({
                 </Tag>
               ))}
             </div>
-          </div>
-          <div className="stack tight">
-            {/* V9.28 当前股票概述四项：已实现盈利 / 理想可卖到 / 理想剩余可赚 / 今年共卖 */}
+            {/* V9.28 高频四项留在树上方：已实现盈利 / 理想可卖到 / 理想剩余可赚 / 今年共卖 */}
             <div className="grid-4 metric-strip">
               <div>
                 <div className="k">已实现盈利</div>
@@ -126,55 +163,61 @@ export function Overview({
                 </div>
               </div>
             </div>
-            <div className="grid-4 metric-strip">
-              <div>
-                <div className="k">可卖</div>
-                <div className="v">{qty(current.targetQty)}</div>
-              </div>
-              <div>
-                <div className="k">待补</div>
-                <div className="v" style={{ color: current.exposureQty ? 'var(--up)' : undefined }}>{qty(current.exposureQty)}</div>
-              </div>
-              <div>
-                <div className="k">净持仓</div>
-                <div className="v">{qty(current.netQty)}</div>
-              </div>
-              <div>
-                <div className="k">已实现</div>
-                <div className={`v long ${tone(current.profitCents)}`}>{signedMoney(current.profitCents)}</div>
-              </div>
-            </div>
-            {/* V9.36 回本链：高位批次被回补了结后不留死角——亏损挂在链上，低位做T逐轮冲平 */}
-            {chainsOfStock.length > 0 && (
-              <div className="stack tight" data-testid="overview-chains">
-                {chainsOfStock.map((c) => (
-                  <RepairChainCard key={c.id} chain={c} dense />
-                ))}
-              </div>
-            )}
           </div>
-        </Card>
 
-        <Card className="tree-full">
-          <TreeTrunk
-            stockName={current.stockName}
-            closeCents={closeCents}
-            idealPriceCents={current.targetMaxPriceCents}
-            onPick={({ loCents, hiCents, done }) =>
-              goTrades(
-                loCents === hiCents
-                  ? { stock: current.stockName, price: loCents, showDone: done === true || undefined }
-                  : { stock: current.stockName, priceLo: loCents, priceHi: hiCents, showDone: done === true || undefined },
-              )
-            }
-          />
-        </Card>
+          <Card className="tree-full">
+            <TreeTrunk
+              ledger={viewLedger}
+              stockName={current.stockName}
+              closeCents={closeCents}
+              idealPriceCents={current.targetMaxPriceCents}
+              onPick={({ loCents, hiCents, done }) =>
+                goTrades(
+                  loCents === hiCents
+                    ? { stock: current.stockName, price: loCents, showDone: done === true || undefined }
+                    : { stock: current.stockName, priceLo: loCents, priceHi: hiCents, showDone: done === true || undefined },
+                )
+              }
+            />
+          </Card>
         </div>
       )}
 
       <div className="overview-bottom">
+      {current && (
+        <div className="overview-stock-stats">
+          {/* V9.41 低频四项下移到数轴下方：可卖 / 待补 / 净持仓 / 已实现 */}
+          <div className="grid-4 metric-strip">
+            <div>
+              <div className="k">可卖</div>
+              <div className="v">{qty(current.targetQty)}</div>
+            </div>
+            <div>
+              <div className="k">待补</div>
+              <div className="v" style={{ color: current.exposureQty ? 'var(--up)' : undefined }}>{qty(current.exposureQty)}</div>
+            </div>
+            <div>
+              <div className="k">净持仓</div>
+              <div className="v">{qty(current.netQty)}</div>
+            </div>
+            <div>
+              <div className="k">已实现</div>
+              <div className={`v long ${tone(current.profitCents)}`}>{signedMoney(current.profitCents)}</div>
+            </div>
+          </div>
+          {/* V9.36 回本链：高位批次被回补了结后不留死角——亏损挂在链上，低位做T逐轮冲平 */}
+          {chainsOfStock.length > 0 && (
+            <div className="stack tight" data-testid="overview-chains">
+              {chainsOfStock.map((c) => (
+                <RepairChainCard key={c.id} chain={c} dense />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="page-title">
-        <h2>概览</h2>
+        <h2>全部股票</h2>
         <p>{basename}</p>
       </div>
 
@@ -270,12 +313,12 @@ export function Overview({
           </div>
 
           {openMetric === 'target' &&
-            (ledger.lots.filter((l) => l.remainingQty > 0).length === 0 ? (
+            (viewLedger.lots.filter((l) => l.remainingQty > 0).length === 0 ? (
               <div className="empty-box">没有剩余批次</div>
             ) : (
               <>
                 <div className="data-block">
-                  {ledger.lots
+                  {viewLedger.lots
                     .filter((l) => l.remainingQty > 0)
                     .sort((a, b) => b.buyPriceCents - a.buyPriceCents)
                     .map((l) => (
@@ -298,7 +341,7 @@ export function Overview({
 
           {openMetric === 'exposure' &&
             (() => {
-              const exposed = ledger.orders
+              const exposed = viewLedger.orders
                 .map((o) => ({
                   o,
                   owe: Math.max(0, o.baseQty - Math.max(0, o.execQty - o.doneRewardQty)),
