@@ -28,6 +28,14 @@ function Shell() {
   }, [])
   const { ready, ledger } = useApp()
 
+  // V9.37 切页方向：新页按「往右走」还是「往左走」决定从左/右滑入（底部导航 5 个 tab 的顺序）
+  const tabIdx = TABS.findIndex((t) => t.key === route.tab)
+  const prevTabIdx = useRef(tabIdx)
+  const dir: 'forward' | 'back' = tabIdx >= prevTabIdx.current ? 'forward' : 'back'
+  useEffect(() => {
+    prevTabIdx.current = tabIdx
+  }, [tabIdx])
+
   const goTrades = (q: TradesQuery) => navigate('trades', q)
 
   // 底部导航：已在明细时只回顶部、不动筛选；从其他 tab 回明细时恢复上次离开时的筛选
@@ -57,7 +65,7 @@ function Shell() {
         <div className="spacer" />
       </header>
 
-      <main className="app-main">
+      <main className="app-main" data-dir={dir}>
         {!ready ? (
           <div className="empty-box">初始化本地库…</div>
         ) : route.tab === 'overview' ? (

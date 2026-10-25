@@ -7,6 +7,7 @@ import { limitRange } from '../domain/limit'
 import { toCents } from '../domain/money'
 import { buildNanoIdIndex } from '../ui/nanoid'
 import { downloadText, toCsv } from '../ui/csv'
+import { useFlashOnAppear } from '../ui/motion'
 import { money, price, qty, signedMoney } from '../ui/format'
 import type { TradesQuery } from '../ui/nav'
 import type { RebuyOrder } from '../domain/types'
@@ -71,6 +72,10 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
 
   const targets = ledger.targets.filter((t) => t.stockName === effectiveStock)
   const orders = ledger.orders.filter((o) => o.stockName === effectiveStock)
+  /** V9.37：刚记了回补成交的待买单闪一下——状态变了给个落点提示 */
+  const justRebought = useFlashOnAppear(
+    useMemo(() => orders.filter((o) => o.execQty > 0).map((o) => o.sourceRow), [orders]),
+  )
   const summary = ledger.byStock.find((s) => s.stockName === effectiveStock)
   /** 可挂钩 / 可改挂的裸卖：没买入批次、有卖出量、一次都没回补（与有没有待买订单无关，V9.32） */
   const nakedOpenRows = useMemo(() => {
@@ -563,6 +568,7 @@ export function OrdersPage({ goTrades }: { goTrades: (q: TradesQuery) => void })
                 <div
                   key={o.id}
                   className="line clickable"
+                  data-anim={justRebought.has(o.sourceRow) ? 'done' : undefined}
                   onClick={() => goTrades({ id: idFor(o.sourceRow), stock: o.stockName })}
                 >
                   <div className="left">

@@ -6,7 +6,7 @@
 import { mulCents } from './money'
 import { deriveBuyQty } from './qty'
 import { serialToIso, stockIdOf } from './defaults'
-import { type Anomaly, type ExtraTarget, type HedgeLink, type RebuyExecution, type TradePlan, type CheckResult, type GroupPool, type Ledger, type Lot, type DayBucket, type MonthlyBucket, type RawRecord, type RebuyOrder, type SellExecution, type SellTarget, type StockConfig, type StockSummary } from './types'
+import { type Anomaly, type ExtraTarget, type HedgeLink, type RebuyExecution, type TradePlan, type CheckResult, type GroupPool, type Ledger, type Lot, type DayBucket, type MonthlyBucket, type RawRecord, type RebuyOrder, type RepairChain, type RepairCycle, type SellExecution, type SellTarget, type StockConfig, type StockSummary } from './types'
 
 export interface BuildOptions {
   /** 基准金额，默认 6000 元 */
@@ -219,8 +219,11 @@ export function buildLedger(
   // V9.26 先卖后买挂钩（H）：裸卖在未回补期间，把人工指定的高位批次按挂股数
   // 「暂记卖出」——批次退出待卖（份额置已卖）、按（卖价−买价）记负盈利挂到
   // 批次行上；被挂那部分不再按 P 列算盈利。纯派生，不写任何状态。
-  // V9.33（用户拍板）：**部分买回不再整条作废**——挂钩只作用于「还没买回的股数」，
-  // 已买回的那部分按 P 列正常结算（R6 会给它生成回补批次），全额买回才彻底解除。
+  // V9.33（用户拍板）：**部分买回不再整条作废**——挂钩只作用于「还没买回的股数」。
+  // V9.36（用户拍板）：**回补了的份额不再让批次复活**。买回多少股，就把高位批次里
+  // 相同股数永久了结（按卖出价记亏），批次剩余归零、退出待卖——这样「实物股数」才
+  // 对得上（否则 10 元批次复活 + 6 元回补批次会双算成 1000 股）。了结的亏损进
+  // 「回本链」，由低位继续做T的价差逐轮冲平。
   // V9.32 起按挂单时间（at）先后应用，抢同一批次股数时先挂先占。
   const hedgeLinks = (opts.hedges ?? []).slice().sort((a, b) => (a.at ?? 0) - (b.at ?? 0))
   const sellByRow = new Map(sells.map((s) => [s.sourceRow, s]))
@@ -229,15 +232,28 @@ export function buildLedger(
   const hedgeUsedByLot = new Map<number, number>()
   /** 每张裸卖实际挂住的股数（敞口按差额计：baseQty − 已回补 − hedgeApplied） */
   const hedgeAppliedByRow = new Map<number, number>()
+  /** V9.36 每张裸卖「已回补所以永久了结」的股数（不再往待卖里灌重复股） */
+  const hedgeClosedByRow = new Map<number, number>()
+  /** V9.36 回本链累加器（键 = 被挂掉的高位批次行号） */
+  type ChainAcc = {
+    stockName: string
+    qty: number
+    costSum: number
+    closeSum: number
+    lossCents: number
+    gainCents: number
+    cycles: RepairCycle[]
+  }
+  const chainAcc = new Map<number, ChainAcc>()
   for (const h of hedgeLinks) {
     const rec = byRow.get(h.sellRow)
     const naked =
       rec && rec.buyPriceCents === null && (rec.soldQty ?? 0) > 0 ? sellByRow.get(h.sellRow) : undefined
     if (!rec || !naked) continue // 行没了 / 不是裸卖 → 挂钩失效
-    // 还没买回的股数 = 卖出量 − 已回补量：只有这部分还能挂；买回光了挂钩自然失效
-    const execQty = (execByOrder.get(`rb:${naked.id}`) ?? []).reduce((a, e) => a + e.qty, 0)
+    // 还没买回的股数 = 卖出量 − 已回补量：这部分还能挂；买回光了就整笔永久了结（V9.36）
+    const execs = execByOrder.get(`rb:${naked.id}`) ?? []
+    const execQty = execs.reduce((a, e) => a + e.qty, 0)
     const unrepaid = Math.max(0, naked.qty - execQty)
-    if (unrepaid <= 0) continue
     if (naked.priceCents === null) {
       anomalies.push({
         kind: 'hedgeInvalid',
@@ -249,8 +265,12 @@ export function buildLedger(
     }
     const price = naked.priceCents
     let applied = 0
+    /** 本次写进「暂记（还欠着）」的股数；不超过已回补前的欠量 */
+    let heldQty = 0
+    /** 本次永久了结到各批次上的股数（= 已买回那部分吃掉的额度） */
+    const closedByRow = new Map<number, number>()
     for (const it of h.items) {
-      if (applied >= unrepaid) break // 只挂没买回的那部分，多写的配额直接忽略
+      if (applied >= naked.qty) break // 配额上限是这笔卖的全部股数
       const lot = lotByRow.get(it.row)
       const lotRec = lot ? byRow.get(it.row) : undefined
       if (!lot || !lotRec || lot.stockName !== rec.stockName || (lotRec.soldQty ?? 0) > 0) {
@@ -267,7 +287,7 @@ export function buildLedger(
       // 否则第二张裸卖挂同一批次时可用量被重复扣减（500 股的批次挂 200+300 会只挂上 300）。
       const used = hedgeUsedByLot.get(it.row) ?? 0
       const lotCap = Math.max(0, lot.remainingQty)
-      const sellCap = Math.max(0, unrepaid - applied) // 已买回的股数不参与挂钩，超出的配额静默忽略
+      const sellCap = Math.max(0, naked.qty - applied)
       const q = Math.min(Math.floor(it.qty), lotCap, sellCap)
       // 只有「被批次剩余卡住」才算超挂；因为已买回而被削到剩下的股数属于正常，不报异常
       if (q < it.qty && q >= lotCap) {
@@ -283,31 +303,71 @@ export function buildLedger(
       lot.remainingQty -= q
       hedgeUsedByLot.set(it.row, used + q)
       applied += q
-      // 暂记卖出：价格 = 裸卖成交价，成本 = 批次买价，盈利为负挂到批次行上展示
-      sells.push({
-        id: `sell:hedged:${h.sellRow}:${it.row}`,
-        sourceRow: it.row,
-        stockId: lot.stockId,
-        stockName: lot.stockName,
-        qty: q,
-        priceCents: price,
-        costCents: lot.buyPriceCents,
-        profitCents: mulCents(price - lot.buyPriceCents, q),
-        soldAt: naked.soldAt,
-        dateMissing: naked.dateMissing,
-        priceSource: 'target',
-        rebuyStatus: 'repaid',
-        sellBeforeBuy: false,
-        // 暂记不进组池（P4 的额度消耗只认真实卖出）
-        groupKey: null,
-        costComplete: false,
-        lotId: lot.id,
-        targetId: null,
-        hedgedFromSellRow: h.sellRow,
-      })
+      // V9.36：先满足「还没买回」的份额（暂记，买回后会复原）；剩下的就是已经买回的
+      // 那部分——它对应的批次份额永久卖掉、不再复活。
+      const hold = Math.min(q, Math.max(0, unrepaid - heldQty))
+      const closed = q - hold
+      heldQty += hold
+      if (hold > 0) {
+        // 暂记卖出：价格 = 裸卖成交价，成本 = 批次买价，盈利为负挂到批次行上展示
+        sells.push({
+          id: `sell:hedged:${h.sellRow}:${it.row}`,
+          sourceRow: it.row,
+          stockId: lot.stockId,
+          stockName: lot.stockName,
+          qty: hold,
+          priceCents: price,
+          costCents: lot.buyPriceCents,
+          profitCents: mulCents(price - lot.buyPriceCents, hold),
+          soldAt: naked.soldAt,
+          dateMissing: naked.dateMissing,
+          priceSource: 'target',
+          rebuyStatus: 'repaid',
+          sellBeforeBuy: false,
+          // 暂记不进组池（P4 的额度消耗只认真实卖出）
+          groupKey: null,
+          costComplete: false,
+          lotId: lot.id,
+          targetId: null,
+          hedgedFromSellRow: h.sellRow,
+        })
+      }
+      if (closed > 0) {
+        // 已回补 → 永久了结：亏损是真亏（留在合计盈利里），批次份额不再回来
+        sells.push({
+          id: `sell:closed:${h.sellRow}:${it.row}`,
+          sourceRow: it.row,
+          stockId: lot.stockId,
+          stockName: lot.stockName,
+          qty: closed,
+          priceCents: price,
+          costCents: lot.buyPriceCents,
+          profitCents: mulCents(price - lot.buyPriceCents, closed),
+          soldAt: naked.soldAt,
+          dateMissing: naked.dateMissing,
+          priceSource: 'target',
+          rebuyStatus: 'repaid',
+          sellBeforeBuy: false,
+          groupKey: null,
+          costComplete: false,
+          lotId: lot.id,
+          targetId: null,
+          hedgedFromSellRow: h.sellRow,
+          hedgeClosed: true,
+        })
+        closedByRow.set(it.row, (closedByRow.get(it.row) ?? 0) + closed)
+        const acc =
+          chainAcc.get(it.row) ??
+          ({ stockName: lot.stockName, qty: 0, costSum: 0, closeSum: 0, lossCents: 0, gainCents: 0, cycles: [] } as ChainAcc)
+        acc.qty += closed
+        acc.costSum += lot.buyPriceCents * closed
+        acc.closeSum += price * closed
+        acc.lossCents += mulCents(price - lot.buyPriceCents, closed)
+        chainAcc.set(it.row, acc)
+      }
     }
     if (applied > 0) {
-      // 被挂的那部分不再按 P 列算盈利；没挂的（含已买回的部分）照旧按 P 列结算。
+      // 被挂的那部分不再按 P 列算盈利；没挂的照旧按 P 列结算。
       // 整笔都挂住 → 盈利整笔暂缓（profitCents = null，行上显示「暂缓」）。
       const plain = naked.qty - applied
       const cost = naked.costCents
@@ -327,7 +387,70 @@ export function buildLedger(
         detail: `挂了 ${applied} 股 ≠ 还没买回 ${unrepaid} 股，差额仍按敞口计（守恒式会亮红灯）`,
       })
     }
+    // V9.36 回血：回补成交的价差（卖价 − 回补价）× 股数，按各锚了结的股数分摊进链
+    const closedTotal = [...closedByRow.values()].reduce((a, n) => a + n, 0)
+    if (closedTotal > 0) hedgeClosedByRow.set(h.sellRow, (hedgeClosedByRow.get(h.sellRow) ?? 0) + closedTotal)
+    if (execQty > 0 && closedTotal > 0) {
+      const rebuyAmount = execs.reduce((a, e) => a + e.priceCents * e.qty, 0)
+      const gain = price * execQty - rebuyAmount
+      const avgRebuy = Math.round(rebuyAmount / execQty)
+      const rows = [...closedByRow.entries()].sort((a, b) => b[1] - a[1])
+      let handedQty = 0
+      let handedGain = 0
+      rows.forEach(([row, q], idx) => {
+        const last = idx === rows.length - 1
+        const cq = last ? execQty - handedQty : Math.round((execQty * q) / closedTotal)
+        const share = last ? gain - handedGain : Math.round((gain * q) / closedTotal)
+        handedQty += cq
+        handedGain += share
+        const acc = chainAcc.get(row)
+        if (!acc) return
+        acc.gainCents += share
+        acc.cycles.push({
+          sellRow: h.sellRow,
+          sellPriceCents: price,
+          rebuyPriceCents: avgRebuy,
+          qty: cq,
+          recoveredCents: share,
+          soldAt: naked.soldAt,
+          belowEffectiveCost: false,
+          effectiveCostAtCents: 0,
+        })
+      })
+    }
   }
+
+  // V9.36 回本链：把累加器整理成对外的结构（有效成本、还差多少、每轮是否低于成本）
+  const repairChains: RepairChain[] = [...chainAcc.entries()]
+    .filter(([, acc]) => acc.qty > 0)
+    .map(([row, acc]) => {
+      const anchorCostCents = Math.round(acc.costSum / acc.qty)
+      const closedAtCents = Math.round(acc.closeSum / acc.qty)
+      const recoveredCents = acc.gainCents
+      const lossCents = acc.lossCents
+      // 逐轮跑一遍摊薄：每轮的「当时有效成本」= 上一轮有效成本 − 本轮回血/股
+      let eff = anchorCostCents
+      const cycles = acc.cycles.map((c) => {
+        const marked = { ...c, effectiveCostAtCents: eff, belowEffectiveCost: c.sellPriceCents < eff }
+        if (c.qty > 0) eff = Math.round((eff * acc.qty - c.recoveredCents) / acc.qty)
+        return marked
+      })
+      return {
+        id: `chain:${row}`,
+        stockName: acc.stockName,
+        anchorRow: row,
+        anchorQty: acc.qty,
+        anchorCostCents,
+        closedAtCents,
+        lossCents,
+        recoveredCents,
+        effectiveCostCents: eff,
+        gapCents: Math.max(0, Math.abs(lossCents) - recoveredCents),
+        done: recoveredCents >= Math.abs(lossCents),
+        cycles,
+      }
+    })
+    .sort((a, b) => a.anchorRow - b.anchorRow)
 
   // R1 待卖：有剩余持仓的批次 × E；手动拆分的先占额度，剩下的才走自动目标
   const targets: SellTarget[] = []
@@ -523,14 +646,17 @@ export function buildLedger(
      * 空头挂单回补成交里的基础股部分：既抵了敞口、又以回补批次进了待卖，守恒式里要扣回防双算。
      * V9.33：按「这行的记录是不是裸卖」判定，不看 exposure 标记——部分买回 + 剩下的全挂住时，
      * exposure 已被置否，但买回那部分照样是空头回补基础股，不扣就会让守恒式亮红灯。
+     * V9.36：已经把那截高位批次「永久了结」的，不再扣——批次份额已经不在待卖里，没有双算。
      */
-    exposureExecBaseQty: sumBy(
-      scopedExecs.filter((e) => {
-        const o = orderById.get(e.orderId)
-        return o !== undefined && byRow.get(o.sourceRow)?.buyPriceCents === null
-      }),
-      (e) => Math.max(0, e.qty - e.rewardQty),
-    ),
+    exposureExecBaseQty: (() => {
+      let sum = 0
+      for (const o of orders) {
+        if (byRow.get(o.sourceRow)?.buyPriceCents !== null) continue
+        const base = Math.max(0, o.execQty - o.doneRewardQty)
+        sum += Math.max(0, base - (hedgeClosedByRow.get(o.sourceRow) ?? 0))
+      }
+      return sum
+    })(),
     rebuyRemainingQty: sumBy(orders, (o) => o.remainingQty),
     netQty: 0,
     // 只算真空头敞口：无买入批次、且还没回补掉的那部分（D5）。
@@ -637,6 +763,7 @@ export function buildLedger(
     anomalies,
     checks,
     totals,
+    repairChains,
   }
 }
 

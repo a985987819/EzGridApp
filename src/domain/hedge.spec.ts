@@ -1,11 +1,13 @@
 /**
  * V9.26 先卖后买挂钩（H）：裸卖 → 高位批次的人工分配，纯派生语义。
  *
- * 口径（用户 2026-10-25 拍板）：
+ * 口径（用户 2026-10-25 拍板，V9.36 修订）：
  *   挂钩期间：被挂份额退出待卖，按（卖价−买价）暂记负盈利挂到批次行上；
  *             裸卖自身盈利暂缓；全额挂住不算敞口（交割股由批次提供）。
- *   回补成交一出现：挂钩失效——批次复原、裸卖恢复按回补价结算、
- *             回补批次照常进待卖；撤销成交又自动恢复挂钩。
+ *   回补一部分：**那部分永久了结**——高位批次不再复活（否则 10 元批次 + 6 元回补
+ *             批次会双算成 1000 股），按卖出价记下的亏损留在合计盈利里，交给
+ *             「回本链」用低位做T的价差逐轮冲平；还没买回的那截继续挂着。
+ *   全部买回：整批了结，只剩回补批次在待卖，实物股数对得上。
  *   一直不买回：暂记的负盈利就是真实亏损（计入合计盈利）。
  */
 import { describe, expect, it } from 'vitest'
@@ -113,7 +115,7 @@ describe('先卖后买挂钩（V9.26）', () => {
     expect(led.daily.reduce((a, d) => a + d.sellQty, 0)).toBe(500)
   })
 
-  it('回补成交后挂钩自动失效：批次复原、裸卖按回补价结算、回补批次进待卖', () => {
+  it('回补后高位批次永久了结、不复活：待卖只剩回补批次，股数对得上（V9.36）', () => {
     const exec: RebuyExecution = {
       id: 'exec:rb:sell:3:1',
       orderId: 'rb:sell:3',
@@ -127,21 +129,79 @@ describe('先卖后买挂钩（V9.26）', () => {
       at: 46020,
     }
     const led = buildLedger(records(), [STOCK], { hedges: [LINK], executions: [exec] })
-    // 挂钩失效：批次复原
+    // 高位批次 500 股全部了结：剩余 0、退出待卖（不再复活成另一笔 500 股待卖）
     const lot = led.lots.find((l) => l.sourceRow === 2)
-    expect(lot?.remainingQty).toBe(500)
+    expect(lot?.remainingQty).toBe(0)
+    expect(lot?.soldQty).toBe(500)
+    expect(led.targets.filter((t) => t.lotId === 'lot:2')).toHaveLength(0)
+    // 了结卖出挂到批次行：7.00 卖 / 10.00 成本 → −1,500，且标 hedgeClosed
+    const closed = led.sells.find((s) => s.id === 'sell:closed:3:2')
+    expect(closed).toMatchObject({ sourceRow: 2, qty: 500, profitCents: -150000, hedgeClosed: true })
+    // 没有「暂记」那一截了（全部买回）
     expect(led.sells.find((s) => s.id === 'sell:hedged:3:2')).toBeUndefined()
-    // 裸卖恢复按 P 列结算：+250 元；高位批次回原目标 11
+    // 裸卖自身盈利仍暂缓（股份由批次交割）
     const naked = led.sells.find((s) => s.sourceRow === 3)
-    expect(naked?.profitCents).toBe(25000)
-    expect(naked?.hedgedHold).toBeUndefined()
-    expect(led.targets.find((t) => t.lotId === 'lot:2')?.priceCents).toBe(1100)
-    // 回补批次 6.5 × 500 进待卖，目标 = 6.5 + 0.5 = 7
+    expect(naked?.profitCents).toBeNull()
+    expect(naked?.hedgedHold).toBe(true)
+    // 回补批次 6.5 × 500 进待卖，目标 = 6.5 + 0.5 = 7；待卖合计 500（不是 1000）
     const vl = led.lots.find((l) => l.id.startsWith('lot:exec:'))
     expect(vl).toMatchObject({ buyPriceCents: 650, qty: 500 })
     expect(led.targets.find((t) => t.lotId === vl?.id)?.priceCents).toBe(700)
-    // 盈利回到 +250，守恒式全绿
-    expect(led.totals.profitCents).toBe(25000)
+    expect(led.totals.targetQty).toBe(500)
+    expect(led.totals.netQty).toBe(500)
+    expect(led.totals.exposureQty).toBe(0)
+    // 合计盈利：留着了结那笔 −1,500（不是复原成 +250）
+    expect(led.totals.profitCents).toBe(-150000)
+    expect(led.checks.every((c) => c.ok)).toBe(true)
+    // 回本链：原成本 10.00 被 7.00 了结，低位回补 6.50 挣回 0.50/股 → 有效成本 9.50
+    expect(led.repairChains).toHaveLength(1)
+    const chain = led.repairChains[0]
+    expect(chain).toMatchObject({
+      anchorRow: 2,
+      anchorQty: 500,
+      anchorCostCents: 1000,
+      closedAtCents: 700,
+      lossCents: -150000,
+      recoveredCents: 25000,
+      effectiveCostCents: 950,
+      gapCents: 125000,
+      done: false,
+    })
+    expect(chain.cycles).toHaveLength(1)
+    expect(chain.cycles[0]).toMatchObject({ sellRow: 3, sellPriceCents: 700, rebuyPriceCents: 650, qty: 500 })
+    // 7.00 卖 < 当时有效成本 10.00 → 标「低位出货」
+    expect(chain.cycles[0].belowEffectiveCost).toBe(true)
+  })
+
+  it('用户场景：10 买 500 挂 7 卖 500，6 回补 → 只记 6 买 7 卖，高位那笔不再回来（V9.36）', () => {
+    // 回补价改成 6.00（差 1 元/股）
+    const exec: RebuyExecution = {
+      id: 'exec:rb:sell:3:1',
+      orderId: 'rb:sell:3',
+      sellExecId: 'sell:3',
+      stockId: STOCK.id,
+      stockName: STOCK.name,
+      qty: 500,
+      priceCents: 600,
+      rewardQty: 0,
+      groupKeyAtExecution: `${STOCK.id}|600`,
+      at: 46020,
+    }
+    const led = buildLedger(records(), [STOCK], { hedges: [LINK], executions: [exec] })
+    // 高位 10 元批次彻底离场，账上只剩回补的 500 股（成本 6，目标 6.5）
+    expect(led.lots.find((l) => l.sourceRow === 2)?.remainingQty).toBe(0)
+    const vl = led.lots.find((l) => l.id.startsWith('lot:exec:'))
+    expect(vl).toMatchObject({ buyPriceCents: 600, qty: 500 })
+    expect(led.targets.find((t) => t.lotId === vl?.id)?.priceCents).toBe(650)
+    expect(led.totals.targetQty).toBe(500)
+    expect(led.totals.netQty).toBe(500)
+    // 已实现：−1,500（10 元按 7 元了结）；回补挣的 1.00/股体现为「有效成本 10 → 9」
+    expect(led.totals.profitCents).toBe(-150000)
+    const chain = led.repairChains[0]
+    expect(chain).toMatchObject({ lossCents: -150000, recoveredCents: 50000, gapCents: 100000, done: false })
+    expect(chain.effectiveCostCents).toBe(900)
+    // 再回血 1,000 元（两次 6.5 价差的规模）就够冲平 —— 结构上 gapCents 归零即 done
+    expect(chain.done).toBe(false)
     expect(led.checks.every((c) => c.ok)).toBe(true)
   })
 
@@ -167,8 +227,8 @@ describe('先卖后买挂钩（V9.26）', () => {
     expect(led.checks.every((c) => c.ok)).toBe(true)
   })
 
-  it('V9.33 部分买回：挂钩只保留在还没买回的股数上，已买回那截按 P 列结算', () => {
-    // 挂 500 到 10.00 的批次；只买回 100 @6.50 → 剩下 400 继续挂，暂记亏损 −1,200
+  it('V9.33/V9.36 部分买回：买回那截永久了结，剩下 400 继续挂着', () => {
+    // 挂 500 到 10.00 的批次；只买回 100 @6.50 → 100 股了结（−300），400 继续挂（暂记 −1,200）
     const exec: RebuyExecution = {
       id: 'exec:rb:sell:3:1',
       orderId: 'rb:sell:3',
@@ -182,20 +242,29 @@ describe('先卖后买挂钩（V9.26）', () => {
       at: 46020,
     }
     const led = buildLedger(records(), [STOCK], { hedges: [LINK], executions: [exec] })
-    // 批次只剩 100 股（被挂走 400），暂记也没算满 500
+    // 批次 500 股全部离场（400 挂住 + 100 了结），不会留 100 股给自己
     const lot = led.lots.find((l) => l.sourceRow === 2)
-    expect(lot?.remainingQty).toBe(100)
-    const hedged = led.sells.find((s) => s.id === 'sell:hedged:3:2')
-    expect(hedged).toMatchObject({ qty: 400, profitCents: -120000 })
-    // 裸卖：没挂的 100 股（= 已买回那截）按 P 列 +50，剩下 400 挂在批次上
+    expect(lot?.remainingQty).toBe(0)
+    expect(led.sells.find((s) => s.id === 'sell:hedged:3:2')).toMatchObject({ qty: 400, profitCents: -120000 })
+    expect(led.sells.find((s) => s.id === 'sell:closed:3:2')).toMatchObject({
+      qty: 100,
+      profitCents: -30000,
+      hedgeClosed: true,
+    })
+    // 裸卖：全部由批次交割，自身不再按 P 列记盈利
     const naked = led.sells.find((s) => s.sourceRow === 3)
-    expect(naked?.profitCents).toBe(5000)
-    expect(naked?.hedgedHold).toBeUndefined()
-    // 没买回的 400 已全部挂住 → 不再有敞口，守恒式全绿
+    expect(naked?.profitCents).toBeNull()
+    expect(naked?.hedgedHold).toBe(true)
+    // 待卖只剩回补的 100 股；没买回的 400 已挂住 → 无敞口
+    expect(led.totals.targetQty).toBe(100)
+    expect(led.totals.netQty).toBe(100)
     expect(led.totals.exposureQty).toBe(0)
-    expect(led.totals.profitCents).toBe(-120000 + 5000)
+    expect(led.totals.profitCents).toBe(-150000)
     expect(led.anomalies.filter((a) => a.kind === 'hedgeMismatch' || a.kind === 'hedgeOverflow')).toHaveLength(0)
     expect(led.checks.every((c) => c.ok)).toBe(true)
+    // 链只认「已了结」的 100 股：亏 −300，回血 (7 − 6.5) × 100 = +50
+    const chain = led.repairChains[0]
+    expect(chain).toMatchObject({ anchorQty: 100, lossCents: -30000, recoveredCents: 5000, gapCents: 25000 })
   })
 
   it('V9.33 只挂一部分（没买回）：差额仍算敞口并标 hedgeMismatch，守恒式仍平', () => {

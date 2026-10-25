@@ -36,12 +36,18 @@ export function TradeItem({
   nanoId,
   onClick,
   extraTag,
+  anim,
 }: {
   row: TradeRow
   nanoId?: string
   onClick?: () => void
   /** 追加到标签行的页内标签（明细页的挂钩状态等；hover 预览不传） */
   extraTag?: ReactNode
+  /**
+   * V9.37 进场/退场动效：new = 新增落位（弹窗收成一行）、leaving = 删除滑出、
+   * done = 刚完成洗一层青。样式全在 styles.css 的 `[data-anim=…]` 里。
+   */
+  anim?: 'new' | 'leaving' | 'done'
 }) {
   const { rec, lot, sell } = row
   const deleted = Boolean(rec.deletedAt)
@@ -58,6 +64,7 @@ export function TradeItem({
       onClick={onClick}
       className={`trade-item${stateCls}${deleted ? ' deleted' : ''}`}
       data-row={rec.sourceRow}
+      data-anim={anim}
     >
       <div className="head">
         <Tag size="small" variant="soft">{rec.origin === 'manual' ? '手动' : `行 ${rec.sourceRow}`}</Tag>

@@ -132,6 +132,11 @@ export interface SellExecution {
    * 结算；一直不买回则挂钩暂记的负盈利就是真实亏损。
    */
   hedgedHold?: boolean
+  /**
+   * V9.36：这一截已经被回补永久了结——亏损是真亏（留在合计盈利里），批次不复活，
+   * 由回本链继续用低位循环的价差去补。hedgedFromSellRow 同时置位（不算卖出量）。
+   */
+  hedgeClosed?: boolean
 }
 
 /** 计划价（P8）：只挂在页面上与导出里，不动真实成交与任何计算 */
@@ -166,6 +171,53 @@ export interface HedgeLink {
   /** 挂到哪些买入行、各挂多少股（合计应等于卖单股数） */
   items: { row: number; qty: number }[]
   at: number
+}
+
+/**
+ * 回本链（V9.36）：先卖后买挂钩的高位批次一旦被「回补」了结，它按卖出价记下的亏损
+ * （10 元成本按 7 元了结 = −1,500）不再随回补消失，而是变成一条待回本的账。
+ * 低位每做一轮「卖高 → 回补低」，价差持续累加进来，够冲平就标「已回本」。
+ * 纯派生：来源是 hedges + 回补成交，不落库。
+ */
+export interface RepairCycle {
+  /** 这张裸卖（先卖后买）的行号 */
+  sellRow: number
+  sellPriceCents: number
+  /** 回补价（多笔成交按股数加权） */
+  rebuyPriceCents: number | null
+  qty: number
+  /** 本轮价差 =（卖价 − 回补价）× 股数，正数表示回血 */
+  recoveredCents: number
+  soldAt: string | null
+  /** 卖出价低于当时的有效成本（低位出货：不回补就是纯亏） */
+  belowEffectiveCost: boolean
+  /** 那一轮的有效成本（分/股），给界面标注用 */
+  effectiveCostAtCents: number
+}
+
+export interface RepairChain {
+  /** chain:<锚行号> */
+  id: string
+  stockName: string
+  /** 被挂掉的高位批次行号 */
+  anchorRow: number
+  /** 了结的股数 */
+  anchorQty: number
+  /** 高位批次原始成本（分/股） */
+  anchorCostCents: number
+  /** 了结时的卖出价（分/股，多笔按股数加权） */
+  closedAtCents: number | null
+  /** 了结记下的亏损（负数）= Σ(卖价 − 成本) × 股数 */
+  lossCents: number
+  /** 已回血（正数）：各轮价差累加 */
+  recoveredCents: number
+  /** 有效成本 =（原成本 × 股数 − 回血）/ 股数 */
+  effectiveCostCents: number
+  /** 还差多少回本（正数；冲平后为 0） */
+  gapCents: number
+  /** 回血 ≥ 亏损 → 这笔高位买入已彻底冲平 */
+  done: boolean
+  cycles: RepairCycle[]
 }
 
 export interface SellTarget {
@@ -321,6 +373,8 @@ export interface Ledger {
   monthly: MonthlyBucket[]
   anomalies: Anomaly[]
   checks: CheckResult[]
+  /** V9.36 回本链：高位批次被回补了结后的待回本账（没有就不返回） */
+  repairChains: RepairChain[]
   totals: {
     rows: number
     buyQty: number

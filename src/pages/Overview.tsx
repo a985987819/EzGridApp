@@ -4,6 +4,7 @@ import { activeStockNames } from '../domain/stocks'
 import type { StockSummary } from '../domain/types'
 import { useApp } from '../store/useApp'
 import { TreeTrunk } from '../components/TreeTrunk'
+import { RepairChainCard } from '../components/RepairChainCard'
 import { money, price, qty, signedMoney, tone } from '../ui/format'
 import type { TradesQuery } from '../ui/nav'
 
@@ -51,6 +52,8 @@ export function Overview({
 
   const hiddenCount = ledger.byStock.filter((s) => s.rows > 0 && !enabledNames.includes(s.stockName)).length
   const current = withRows.find((s) => s.stockName === active) ?? withRows[0]
+  /** V9.36 当前股票的回本链（高位批次了结后待回本的账） */
+  const chainsOfStock = current ? ledger.repairChains.filter((c) => c.stockName === current.stockName) : []
   // V9.28 当前股票概述：今年共卖 x 次（真实卖出，不含挂钩暂记）。
   // 早退（无数据）之后才到这里，不能用 useMemo——过滤量小，直接算
   const yearSellCount = current
@@ -100,10 +103,9 @@ export function Overview({
               <div>
                 <div className="k">已实现盈利</div>
                 {/* V9.33：被高位挂住的裸卖盈利暂缓，合计里就没算它们——给一句提示免得以为数据丢了 */}
-                <div className={`v long ${tone(current.profitCents)}`}>
-                  {signedMoney(current.profitCents)}
-                  {holdCount > 0 && <span className="tiny muted"> 含 {holdCount} 笔暂缓</span>}
-                </div>
+                <div className={`v long ${tone(current.profitCents)}`}>{signedMoney(current.profitCents)}</div>
+                {/* V9.36 实测：这句跟在金额后面会横向顶穿格子、压到隔壁的「理想可卖到」，改成独立一行 */}
+                {holdCount > 0 && <div className="tiny muted nowrap">含 {holdCount} 笔暂缓</div>}
               </div>
               <div>
                 <div className="k">理想可卖到</div>
@@ -142,6 +144,14 @@ export function Overview({
                 <div className={`v long ${tone(current.profitCents)}`}>{signedMoney(current.profitCents)}</div>
               </div>
             </div>
+            {/* V9.36 回本链：高位批次被回补了结后不留死角——亏损挂在链上，低位做T逐轮冲平 */}
+            {chainsOfStock.length > 0 && (
+              <div className="stack tight" data-testid="overview-chains">
+                {chainsOfStock.map((c) => (
+                  <RepairChainCard key={c.id} chain={c} dense />
+                ))}
+              </div>
+            )}
           </div>
         </Card>
 

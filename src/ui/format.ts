@@ -29,6 +29,12 @@ export function tone(cents: number | null | undefined): string {
   return cents > 0 ? 'up' : 'down'
 }
 
+/** 今天（本地时区，YYYY-MM-DD）：新增一笔 / 补买入日期的默认值（V9.35） */
+export function todayIso(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 export function isoDate(iso: string | null): string {
   return iso ?? '待补'
 }

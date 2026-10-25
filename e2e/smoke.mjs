@@ -178,11 +178,9 @@ try {
   check('底部导航 5 项', (await evaluate(`document.querySelectorAll('button[data-nav]').length`)) === 5)
   check('空态引导', text.includes('还没有导入数据') || text.includes('去导入'))
   check('没有横向溢出', (await evaluate(`document.documentElement.scrollWidth <= window.innerWidth + 2`)) === true)
-  // V9.13：切页有轻浮现动画
-  check(
-    '页面进场动画生效',
-    (await evaluate(`getComputedStyle(document.querySelector('.app-main > *')).animationName`)) === 'page-in',
-  )
+  // V9.37：切页有方向感动画（往右走 = page-in-forward，往左走 = page-in-back）
+  const pageAnim = await evaluate(`getComputedStyle(document.querySelector('.app-main > *')).animationName`)
+  check('页面进场动画生效', ['page-in', 'page-in-forward', 'page-in-back'].includes(pageAnim), pageAnim)
 
   console.log('\n[2] 管理 · 股票（第一个 tab）+ 拖动排序')
   check('切到管理页', await nav('manage'))
@@ -1153,6 +1151,9 @@ try {
   check('点「新增一笔」', await clickByText('button', '新增一笔'))
   await sleep(600)
   check('弹窗立即可见（无打字机）', (await bodyText()).includes('买入份额') || (await bodyText()).includes('卖出数量'))
+  // V9.35：日期默认今天，不用每格都填
+  const preDate = await evaluate(`document.querySelector('input[data-field="date"]')?.value ?? ''`)
+  check('新增表单日期默认填今天', /^\d{4}-\d{2}-\d{2}$/.test(preDate), preDate)
   check('切到卖出', await clickByText('.type-toggle button', '卖出'))
   await sleep(300)
   text = await bodyText()
@@ -1173,8 +1174,19 @@ try {
   await setInput('input[data-field="qty"]', '500')
   // R3：回补价留空 → 卖出价 8.68 − 柳工间隔 0.57 = 8.11，且默认生成待买
   await sleep(300)
+  // V9.35：placeholder 直接把推导出来的回补价报出来，不用自己减间隔
+  const rebuyPh = await evaluate(`document.querySelector('input[data-field="rebuyPrice"]')?.placeholder ?? ''`)
+  check('回补价 placeholder 直接给出推导值 8.11', rebuyPh.includes('8.11'), rebuyPh)
   check('点保存', await clickByText('button', '保存'))
-  await sleep(1200)
+  await sleep(500)
+  // V9.37：弹窗收起 → 新行弹入 + 微光（「弹窗收成一条明细」的落点）
+  check(
+    '新增后新行带进场动效',
+    Boolean(await evaluate(`Boolean(document.querySelector('.trade-item[data-anim="new"]'))`)),
+  )
+  const newRowShot = await send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync(join(OUT, 'trades-new-row.png'), Buffer.from(newRowShot.data, 'base64'))
+  await sleep(800)
   await nav('overview')
   text = await bodyText()
   check('卖出后净持仓 12,700', text.includes('12,700'))
@@ -1183,6 +1195,11 @@ try {
   // V9.30 裸卖待挂钩：行上标签点一下直接弹绑定面板（不必先开抽屉）
   await nav('trades')
   await sleep(600)
+  // V9.37 切页方向：概览(0) → 明细(1) 是「往右走」，新页从右侧进来
+  check(
+    '切页带方向（概览→明细 = forward）',
+    (await evaluate(`document.querySelector('.app-main')?.dataset.dir ?? ''`)) === 'forward',
+  )
   text = await bodyText()
   check('裸卖行有「裸卖待挂钩」标签', text.includes('裸卖待挂钩'))
   check(
@@ -1240,6 +1257,31 @@ try {
   text = await bodyText()
   check('抽屉标出「回补价 = 卖出价 − 间隔」', text.includes('回补价 = 卖出价 − 间隔'))
   check('推导出的回补价 8.11', text.includes('8.11'))
+  // V9.35：普通「编辑」不预填买入侧（免得只想改卖出侧却把买入写进台账）
+  check('进编辑', await clickByText('button', '编辑'))
+  await sleep(500)
+  const plainEdit = await evaluate(`document.querySelector('input[data-field="buyPrice"]')?.value ?? 'X'`)
+  check('普通编辑不预填买入价', plainEdit === '', plainEdit)
+  check('取消编辑', await clickByText('button', '取消'))
+  await sleep(400)
+  // 点「补买入」：买入价=回补价、份额=卖出量、日期=今天，卖出侧保持原样
+  check('点「补买入」', await clickByText('button', '补买入'))
+  await sleep(500)
+  const preEdit = await evaluate(`JSON.stringify({
+    buyPrice: document.querySelector('input[data-field="buyPrice"]')?.value ?? '',
+    buyQty: document.querySelector('input[data-field="buyQty"]')?.value ?? '',
+    buyDate: document.querySelector('input[data-field="buyDate"]')?.value ?? '',
+    target: document.querySelector('input[data-field="targetPrice"]')?.value ?? '',
+    sold: document.querySelector('input[data-field="soldQty"]')?.value ?? '',
+    day: new Date().toISOString().slice(0, 10),
+  })`)
+  const pe = JSON.parse(preEdit)
+  check('编辑时买入价预填回补价 8.11', pe.buyPrice === '8.11', preEdit)
+  check('编辑时买入份额 = 卖出量 500', pe.buyQty === '500', preEdit)
+  check('编辑时卖出侧重卖价 8.68 / 份额 500', pe.target === '8.68' && pe.sold === '500', preEdit)
+  check('编辑时买入日期默认今天', /^\d{4}-\d{2}-\d{2}$/.test(pe.buyDate), preEdit)
+  check('取消编辑', await clickByText('button', '取消'))
+  await sleep(400)
 
   // V9.26 先卖后买挂钩：裸卖 8.68×500 挂到未卖的高位批次上
   check(
@@ -1285,22 +1327,76 @@ try {
     text = await bodyText()
     check('挂钩后敞口 2,000', text.includes('2,000'), '')
     check('挂钩后净持仓 12,700', text.includes('12,700'), '')
+    check(
+      '未回补时概览没有回本链',
+      !(await evaluate(`Boolean(document.querySelector('[data-testid="overview-chains"]'))`)),
+    )
     // V9.30 挂单页待买行也有同一个入口（已挂的显示「已挂钩 · 改挂」）
     await nav('orders')
     await sleep(900)
     text = await bodyText()
     check('挂单页待买行有「已挂钩 · 改挂」入口', text.includes('已挂钩 · 改挂'))
     check('挂单页标注「已挂高位，这张买单可撤」', text.includes('已挂高位，这张买单可撤'))
+
+    // V9.36 回补 → 高位批次永久了结（不再复活），概览出现「回本链」
+    const opened = await evaluate(`(() => {
+      const line = [...document.querySelectorAll('.data-block .line')].find((l) => l.textContent.includes('行100000'))
+      const btn = line && [...line.querySelectorAll('button')].find((b) => b.textContent.trim() === '记成交')
+      if (!btn) return false
+      btn.click()
+      return true
+    })()`)
+    check('找到这笔裸卖的「记成交」', opened)
+    if (opened) {
+      await sleep(700)
+      check('回补弹窗打开', (await bodyText()).includes('本次回补股数'))
+      check('点保存回补', await clickByText('button', '保存'))
+      await sleep(1400)
+      await nav('overview')
+      await sleep(1000)
+      // 概览默认停在第一只股票，先点回柳工再看这条链
+      await clickByText('.stock-tabs > *', '柳工')
+      await sleep(700)
+      text = await bodyText()
+      check(
+        '回补后概览出现回本链',
+        Boolean(await evaluate(`Boolean(document.querySelector('[data-testid="overview-chains"]'))`)),
+      )
+      check('回本链显示「已回血」进度', text.includes('已回血'))
+      check('回本链给出「还差」金额', text.includes('还差'))
+      const chainShot = await send('Page.captureScreenshot', { format: 'png' })
+      writeFileSync(join(OUT, 'overview-chain.png'), Buffer.from(chainShot.data, 'base64'))
+    }
   } else {
     await closeDrawer()
   }
 
   console.log('\n[11] 删掉这笔手动卖出，恢复原状')
   await nav('trades')
+  await sleep(700)
+  // V9.36：被了结的高位批次虽然「卖完了」，但还欠着回本，默认隐藏已成交时也要留在列表里
+  text = await bodyText()
+  check('明细里仍能看到「高位已了结」那一行', text.includes('高位已了结'))
+  const listChainShot = await send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync(join(OUT, 'trades-chain-list.png'), Buffer.from(listChainShot.data, 'base64'))
   await evaluate(`document.querySelector('[data-row="100000"]')?.click()`)
   await sleep(600)
+  // V9.36：这笔裸卖自己身上也能看到它牵连的回本链（高位批次已了结、正在被低位回血）
+  check(
+    '裸卖抽屉里显示回本链',
+    Boolean(await evaluate(`Boolean(document.querySelector('[data-testid="chain-section"] .chain-card'))`)),
+  )
+  check('回本链带进度条', Boolean(await evaluate(`Boolean(document.querySelector('.chain-bar'))`)))
+  const drawerChainShot = await send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync(join(OUT, 'trades-chain-drawer.png'), Buffer.from(drawerChainShot.data, 'base64'))
   await evaluate(`window.confirm = () => true`)
   check('删除手动行', await clickByText('button', '删除'))
+  await sleep(120)
+  // V9.37：删除不是「啪」地消失——先向右滑出并收高度
+  check(
+    '删除时行带滑出动效',
+    Boolean(await evaluate(`Boolean(document.querySelector('.trade-item[data-anim="leaving"]'))`)),
+  )
   await sleep(900)
   await nav('overview')
   text = await bodyText()
@@ -1364,6 +1460,30 @@ try {
   await sleep(600)
   const deskShot = await send('Page.captureScreenshot', { format: 'png' })
   writeFileSync(join(OUT, 'tree-cells-desktop.png'), Buffer.from(deskShot.data, 'base64'))
+
+  // V9.34 明细编辑抽屉：桌面下要和主内容列同宽（--app-max 560）并居中，不再铺满整屏
+  await nav('trades')
+  await sleep(800)
+  await evaluate(`document.querySelector('.trade-item')?.click()`)
+  await sleep(800)
+  const drawerInfo = await evaluate(`(() => {
+    const el = document.querySelector('.trades-edit-drawer')
+    if (!el) return null
+    const r = el.getBoundingClientRect()
+    return JSON.stringify({ w: Math.round(r.width), l: Math.round(r.left), r: Math.round(r.right), vw: window.innerWidth })
+  })()`)
+  console.log('  桌面抽屉:', drawerInfo)
+  const dw = drawerInfo ? JSON.parse(drawerInfo) : null
+  check(
+    '桌面下编辑抽屉与主内容列同宽（560）且居中',
+    Boolean(dw && dw.w >= 520 && dw.w <= 562 && Math.abs(dw.l - (dw.vw - dw.w) / 2) <= 2),
+    drawerInfo ?? '',
+  )
+  const deskDrawerShot = await send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync(join(OUT, 'trades-drawer-desktop.png'), Buffer.from(deskDrawerShot.data, 'base64'))
+  await evaluate(`document.querySelector('[aria-label="关闭"]')?.click()`)
+  await sleep(500)
+
   // 还原移动端视口，让后面的截图保持 390 尺寸
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true })
   await send('Page.navigate', { url: `${BASE}/#/overview` })

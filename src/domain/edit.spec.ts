@@ -36,8 +36,16 @@ describe('日期序列号往返', () => {
   })
   it('空串 → null；坏格式 → null', () => {
     expect(isoToSerial('')).toBeNull()
-    expect(isoToSerial('2026/10/23')).toBeNull()
     expect(isoToSerial('2026-13-45')).toBeNull()
+    expect(isoToSerial('2026-2-30')).toBeNull()
+  })
+  it('V9.35 分隔符放宽：斜杠 / 点 / 一位数月日都收，输出补零', () => {
+    const want = isoToSerial('2026-10-25')
+    expect(isoToSerial('2026/10/25')).toBe(want)
+    expect(isoToSerial('2026.10.25')).toBe(want)
+    expect(isoToSerial(' 2026/10/25 ')).toBe(want)
+    expect(isoToSerial('2026/1/5')).toBe(isoToSerial('2026-01-05'))
+    expect(isoToSerial('2026／10／25')).toBe(want) // 全角斜杠
   })
 })
 

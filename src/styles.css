@@ -11,6 +11,12 @@
   --line: #e4dccd;
   --line-strong: #cbbfa9;
   --line-soft: #efe9de;
+  /* V9.37 动效：一套缓动三档时长（1=微交互 2=结构位移 3=强调） */
+  --ease-soft: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-back: cubic-bezier(0.34, 1.5, 0.64, 1);
+  --dur-1: 0.16s;
+  --dur-2: 0.24s;
+  --dur-3: 0.42s;
   --block-bg: rgba(255, 255, 255, 0.55);
   --head-bg: rgba(240, 232, 216, 0.72);
 }
@@ -76,6 +82,27 @@ button { font-family: inherit; }
   max-width: var(--app-max);
   margin: 0 auto;
   padding: 12px 14px calc(92px + env(safe-area-inset-bottom));
+}
+
+/* V9.35 日期字段旁的「今天」快捷键：省得手打日期 */
+.date-today {
+  margin-left: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--buy, #2f6fd6);
+  font-size: 11px;
+  line-height: 1;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* 明细的编辑抽屉（V9.34 用户要求）：和主内容列同宽并居中，不再铺满整屏。
+   bottom 抽屉本身是 left:0/right:0 的固定定位，写死 width + auto 外边距即可居中等宽
+   （只靠 max-width 不居中：宽度 auto 时超出部分会全部落到右外边距）。 */
+.trades-edit-drawer {
+  width: min(100%, var(--app-max));
+  margin-inline: auto;
 }
 
 /* ---------- 底部导航 ---------- */
@@ -245,6 +272,17 @@ button { font-family: inherit; }
 .hedge-binder .row { width: 100%; flex-wrap: wrap; }
 /* 弹层里给底部的「已分配 / 保存挂钩」留位置：候选列表矮一点（V9.33 实测列表 42vh 会把按钮顶出可视区） */
 .hedge-modal .data-block { max-height: 30vh; }
+
+/* V9.36 回本链：高位批次被回补了结后的待回本账 + 低位做T的回血进度 */
+.chain-card { border: 1px solid #e8e1d3; border-radius: 10px; padding: 8px 10px; background: #fffdf7; }
+.chain-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.chain-line { margin: 6px 0; line-height: 1.55; }
+.chain-bar { height: 8px; border-radius: 4px; background: #efe8da; overflow: hidden; margin-top: 2px; }
+.chain-bar > i { display: block; height: 100%; border-radius: 4px; background: linear-gradient(90deg, #f0b350, #d0453f); transition: width 0.3s; }
+.chain-bar-meta { display: flex; align-items: center; gap: 6px; margin-top: 4px; flex-wrap: wrap; }
+.chain-cycles { margin-top: 8px; max-height: 30vh; overflow-y: auto; }
+.chain-cycles .line .t1 { font-size: 13px; }
+.chain-cycles .line .t2 { font-size: 11px; line-height: 1.45; }
 
 /* 右侧「剩余 / 已卖」仍加大加粗（扫读重点），但颜色回归默认 */
 .trade-item .right-qty {
@@ -797,39 +835,179 @@ button { font-family: inherit; }
 .line.clickable { cursor: pointer; }
 .line.clickable:active { background: rgba(25, 200, 185, 0.07); }
 
-/* ————— V9.13 轻动效：进出场统一 200ms 档，只动透明度与位移，跟手不拖沓 ————— */
+/* ————— V9.37 动效层｜一套缓动、三档时长 —————
+   原则：只动 transform / opacity / 色彩，不动 layout 尺寸——唯一的例外是「删除」那一行
+   用 max-height 收高度（只影响被删的那行，且只持续 300ms）。
+   切页带方向感：往右边的 tab 走，新页从右边进来，回来则从左进。 */
 @keyframes page-in {
-  from { opacity: 0; transform: translateY(10px); }
+  from { opacity: 0; transform: translate3d(0, 10px, 0); }
+}
+@keyframes page-in-forward {
+  from { opacity: 0; transform: translate3d(20px, 8px, 0) scale(0.994); }
+}
+@keyframes page-in-back {
+  from { opacity: 0; transform: translate3d(-20px, 8px, 0) scale(0.994); }
 }
 @keyframes reveal-in {
-  from { opacity: 0; transform: translateY(-8px); }
+  from { opacity: 0; transform: translate3d(0, -8px, 0); }
 }
 @keyframes chip-in {
   from { opacity: 0; transform: scale(0.92); }
 }
+/* 新增条目：先缩一点上浮，再带一圈微光落位——看着像「弹窗收成了一行」 */
+@keyframes row-arrive {
+  0% { opacity: 0; transform: translate3d(0, -14px, 0) scale(0.94); }
+  55% { opacity: 1; transform: translate3d(0, 2px, 0) scale(1.008); }
+  100% { opacity: 1; transform: none; }
+}
+@keyframes row-glow {
+  0%, 25% { box-shadow: 0 0 0 0 rgba(25, 200, 185, 0); }
+  50% { box-shadow: 0 0 0 9px rgba(25, 200, 185, 0.3); }
+  100% { box-shadow: 0 0 0 0 rgba(25, 200, 185, 0); }
+}
+/* 删除：向右淡出并收掉高度，下面几行自然顶上来 */
+@keyframes row-leave {
+  0% { opacity: 1; transform: none; max-height: 260px; }
+  55% { opacity: 0.3; transform: translate3d(16px, 0, 0); }
+  100% {
+    opacity: 0;
+    transform: translate3d(40px, 0, 0) scale(0.95);
+    max-height: 0;
+    margin-bottom: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    border-width: 0;
+  }
+}
+/* 完成（卖满 / 待回补清零）：整行透一层青，再淡掉 */
+@keyframes done-wash {
+  0% { background-color: rgba(25, 200, 185, 0.22); }
+  100% { background-color: transparent; }
+}
+/* 底部导航：图标弹一下（横线用 scaleX 过渡，见 .nav-btn::after） */
+@keyframes nav-pop {
+  0% { transform: scale(1); }
+  38% { transform: scale(1.16) translateY(-1px); }
+  100% { transform: scale(1); }
+}
+/* 指标格进场：只给前四格错开一点，多了会显得拖 */
+@keyframes rise-in {
+  from { opacity: 0; transform: translate3d(0, 8px, 0); }
+}
 
-/* 底部导航切页：整页轻浮现（各 tab 内容本来就地重挂，key 相同时不重放） */
+/* 切页：底导航按「往右还是往左」给方向 */
 .app-main > * {
-  animation: page-in 0.24s cubic-bezier(0.22, 0.61, 0.36, 1) backwards;
+  animation: page-in var(--dur-2, 0.24s) var(--ease-soft, cubic-bezier(0.22, 1, 0.36, 1)) backwards;
+}
+.app-main[data-dir='forward'] > * {
+  animation-name: page-in-forward;
+}
+.app-main[data-dir='back'] > * {
+  animation-name: page-in-back;
 }
 /* 管理页 tab 切换：面板内容轻浮现 */
 [class*='animal-tabContentInner'] > * {
-  animation: page-in 0.22s cubic-bezier(0.22, 0.61, 0.36, 1) backwards;
+  animation: page-in var(--dur-2, 0.22s) var(--ease-soft, cubic-bezier(0.22, 1, 0.36, 1)) backwards;
 }
 /* 条件展开（概览三格构成等）：从上方滑入 */
 .reveal {
-  animation: reveal-in 0.22s cubic-bezier(0.22, 0.61, 0.36, 1) backwards;
+  animation: reveal-in var(--dur-2, 0.22s) var(--ease-soft, cubic-bezier(0.22, 1, 0.36, 1)) backwards;
 }
 /* 筛选/排序 chips 新增一颗时的小弹入（已有的不重放） */
 .filter-chips .filter-chip {
-  animation: chip-in 0.18s ease-out backwards;
+  animation: chip-in var(--dur-1, 0.18s) ease-out backwards;
 }
 
+/* —— 明细行三态：新增 / 删除中 / 刚完成（由 TradesPage 打 data-anim） —— */
+.trade-item {
+  transition: background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+[data-anim='new'] {
+  animation: row-arrive 0.42s var(--ease-back, cubic-bezier(0.34, 1.5, 0.64, 1)) both,
+    row-glow 1.1s ease-out both;
+  will-change: transform, opacity;
+}
+[data-anim='leaving'] {
+  animation: row-leave 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+  overflow: hidden;
+  pointer-events: none;
+}
+[data-anim='done'] {
+  animation: done-wash 1.15s ease-out both;
+}
+
+/* —— 底部导航：常驻短横线 + scaleX 过渡，切 tab 时滑过去 —— */
+.nav-btn::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  width: 18px;
+  height: 3px;
+  border-radius: 0 0 3px 3px;
+  background: var(--animal-primary-color, #19c8b9);
+  transform: scaleX(0);
+  opacity: 0;
+  transition: transform 0.26s var(--ease-back, cubic-bezier(0.34, 1.5, 0.64, 1)), opacity 0.18s ease;
+}
+.nav-btn.active::after {
+  transform: scaleX(1);
+  opacity: 1;
+}
+.nav-btn.active svg {
+  animation: nav-pop 0.34s var(--ease-back, cubic-bezier(0.34, 1.5, 0.64, 1));
+}
+
+/* —— 轻交互：按下有回弹、标签出现有小弹入 —— */
+button:not(:disabled) {
+  transition: transform 0.12s ease, box-shadow 0.18s ease, background 0.18s ease, color 0.18s ease;
+}
+button:not(:disabled):active {
+  transform: scale(0.97);
+}
+.tag-row > * {
+  animation: chip-in 0.2s var(--ease-back, cubic-bezier(0.34, 1.5, 0.64, 1)) backwards;
+}
+
+/* —— 数据行进场：列表里的行轻微上浮，只给前六行错开，后面一起进（多了会像波浪） —— */
+.data-block > .line {
+  animation: rise-in 0.26s var(--ease-soft, cubic-bezier(0.22, 1, 0.36, 1)) backwards;
+}
+.data-block > .line:nth-child(2) { animation-delay: 0.03s; }
+.data-block > .line:nth-child(3) { animation-delay: 0.06s; }
+.data-block > .line:nth-child(4) { animation-delay: 0.09s; }
+.data-block > .line:nth-child(5) { animation-delay: 0.12s; }
+.data-block > .line:nth-child(6) { animation-delay: 0.15s; }
+
+/* —— 指标格进场错位（概览 / 统计） —— */
+.metric-strip > * {
+  animation: rise-in 0.34s var(--ease-soft, cubic-bezier(0.22, 1, 0.36, 1)) backwards;
+}
+.metric-strip > *:nth-child(2) { animation-delay: 0.04s; }
+.metric-strip > *:nth-child(3) { animation-delay: 0.08s; }
+.metric-strip > *:nth-child(4) { animation-delay: 0.12s; }
+
+/* —— 系统开了「减少动态效果」：全部退化为瞬切（不是变慢） —— */
 @media (prefers-reduced-motion: reduce) {
   .app-main > *,
+  .app-main[data-dir='forward'] > *,
+  .app-main[data-dir='back'] > *,
   [class*='animal-tabContentInner'] > *,
   .reveal,
-  .filter-chips .filter-chip {
+  .filter-chips .filter-chip,
+  [data-anim='new'],
+  [data-anim='leaving'],
+  [data-anim='done'],
+  .nav-btn.active svg,
+  .tag-row > *,
+  .metric-strip > * {
     animation: none;
+  }
+  button:not(:disabled),
+  .nav-btn::after,
+  .trade-item {
+    transition: none;
+  }
+  button:not(:disabled):active {
+    transform: none;
   }
 }

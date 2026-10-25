@@ -6,13 +6,16 @@ import { EDITABLE, fieldText, type EditableKey } from '../domain/edit'
 import { activeStocks } from '../domain/stocks'
 import { isHedgeable } from '../domain/hedge'
 import type { ManualInput } from '../domain/manual'
-import { isoDate, money, price, qty, signedMoney, tone } from '../ui/format'
+import type { RawRecord, RepairChain } from '../domain/types'
+import { isoDate, money, price, qty, signedMoney, todayIso, tone } from '../ui/format'
 import { replaceRoute, type TradesQuery } from '../ui/nav'
 import { buildNanoIdIndex } from '../ui/nanoid'
-import { toCents } from '../domain/money'
+import { centsToYuan, toCents } from '../domain/money'
 import { downloadText, toCsv } from '../ui/csv'
+import { useFlashOnAppear } from '../ui/motion'
 import { TradeItem, buyDateOf, isDone, sellDateOf, type TradeRow } from '../components/TradeItem'
 import { HedgeBinder, HedgeSheet } from '../components/HedgeBinder'
+import { RepairChainCard } from '../components/RepairChainCard'
 
 /** 状态筛选可多选（V9 可叠加）：命中的行要满足每一个勾选的状态 */
 const STATUS_KEYS = ['holding', 'soldout', 'pending', 'exposure', 'buyDateMissing', 'sellDateMissing', 'needsPrice'] as const
@@ -120,6 +123,16 @@ const BLANK_FORM: ManualInput = {
   buyDate: '',
 }
 
+/** 新增一笔的空白表单（V9.35）：日期默认今天，股票默认当前筛选/第一只，少填两个格子 */
+function blankForm(stockName: string): ManualInput {
+  return { ...BLANK_FORM, stockName, date: todayIso() }
+}
+
+/** 先卖后买：没有买入批次的卖出行（这类行补买入侧时有一堆可复用的数据） */
+function isNakedSell(rec: RawRecord): boolean {
+  return rec.buyPriceCents === null && (rec.soldQty ?? 0) > 0
+}
+
 export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   const {
     ledger,
@@ -161,6 +174,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   const [draft, setDraft] = useState<Record<EditableKey, string>>(BLANK_DRAFT)
   const [adding, setAdding] = useState(false)
   const [form, setForm] = useState<ManualInput>(BLANK_FORM)
+
   const [tpPrice, setTpPrice] = useState('')
   const [tpQty, setTpQty] = useState('')
 
@@ -206,6 +220,11 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   // 股票顺序 / 启停都来自「管理 · 股票」
   const stockList = useMemo(() => activeStocks(stocks), [stocks])
   const stockNames = useMemo(() => stockList.map((s) => s.name), [stockList])
+  // V9.35 新增表单的「按间隔自动算出来」提示：成交价改了 placeholder 就跟着变，省得自己减
+  const formInterval = stockList.find((s) => s.name === form.stockName)?.intervalCents ?? 0
+  const formPrice = toCents(form.price)
+  const autoTarget = formPrice !== null && formInterval > 0 ? centsToYuan(formPrice + formInterval) : ''
+  const autoRebuy = formPrice !== null && formInterval > 0 && formPrice > formInterval ? centsToYuan(formPrice - formInterval) : ''
   const enabledSet = useMemo(() => new Set(stockNames), [stockNames])
   const hiddenStockCount = useMemo(
     () => new Set(records.map((r) => r.stockName).filter((n) => !enabledSet.has(n))).size,
@@ -225,6 +244,11 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   // 过滤 + 顺带统计「没有日期、被日期区间条件排除」的行数（空态时提示用）
   const { filtered, noDateHidden } = useMemo(() => {
     let hidden = 0
+    /**
+     * V9.36 回本链的锚点（被了结的高位批次）：它「卖完了但还没回本」，
+     * 不是真的完成——默认 hideDone 也留着，否则用户找不到那笔 10 元买入去哪了。
+     */
+    const chainAnchors = new Set(ledger.repairChains.map((c) => c.anchorRow))
     const list = rows.filter((r) => {
       // nanoId 深链要能命中已软删的行，showDeleted 的门对目标行放行
       const rId = nano.rowToId.get(r.rec.sourceRow)
@@ -250,7 +274,8 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       // 状态多选取交集：勾了几个状态，行必须全都满足
       if (statuses.length > 0 && !statuses.every((k) => statusMatch(r, k))) return false
       // V9.5：默认隐藏已完成；勾「已卖完」或深链带该状态时自动放开，避免空列表陷阱
-      if (hideDone && !statuses.includes('soldout') && isDone(r)) return false
+      // V9.36：回本链锚点不算完成（还欠着一笔要补），继续显示
+      if (hideDone && !statuses.includes('soldout') && isDone(r) && !chainAnchors.has(r.rec.sourceRow)) return false
       // 日期区间：卖出日期优先，其次买入日期；没日期的行在有区间条件时直接排除
       if (fromDate || toDate) {
         const d = tradeDate(r)
@@ -264,7 +289,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       return true
     })
     return { filtered: list, noDateHidden: hidden }
-  }, [rows, stockFilter, keyword, priceFilter, priceLo, priceHi, statuses, showDeleted, enabledSet, fromDate, toDate, idFilter, nano, hideDone])
+  }, [rows, stockFilter, keyword, priceFilter, priceLo, priceHi, statuses, showDeleted, enabledSet, fromDate, toDate, idFilter, nano, hideDone, ledger.repairChains])
 
   /** 已生效的条件 chips：每颗都能单独点掉 */
   const activeChips = useMemo(() => {
@@ -341,6 +366,16 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
 
   const current = visible.find((r) => r.rec.sourceRow === openRow) ?? null
 
+  // ---------- V9.37 动效状态：新增落位 / 删除滑出 / 刚完成洗色 ----------
+  /** 刚新增的那一行：弹入 + 微光，1.8s 后自动摘掉（「弹窗收成一行」的观感由它承担） */
+  const [flashRow, setFlashRow] = useState<number | null>(null)
+  /** 正在滑出删除的行：留在列表里播完 300ms 动画再真删 */
+  const [leaving, setLeaving] = useState<Set<number>>(() => new Set())
+  /** 刚变成「已完成」的行：整行洗一层青，提示状态变了 */
+  const justDone = useFlashOnAppear(
+    useMemo(() => visible.filter(isDone).map((r) => r.rec.sourceRow), [visible]),
+  )
+
   // ---------- V9.26 先卖后买挂钩（V9.30 起入口独立：行上「裸卖待挂钩」标签 → 弹层） ----------
   const hedgeOf = useMemo(() => new Map(hedges.map((h) => [h.sellRow, h])), [hedges])
   /** 有挂钩异常（失效 / 超挂 / 挂不满）的卖出行（V9.33）：行上标红，点开面板能看到原因 */
@@ -359,12 +394,47 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   /** 点标签打开的「裸卖待挂钩」弹层（null = 关着） */
   const [hedgeRow, setHedgeRow] = useState<number | null>(null)
 
+  /** V9.36 回本链：高位批次行号 → 那条链（用于行上标签 + 抽屉里的进度卡） */
+  const repairByAnchor = useMemo(
+    () => new Map(ledger.repairChains.map((c) => [c.anchorRow, c])),
+    [ledger.repairChains],
+  )
+  /** 回本链的另一个入口：这笔裸卖（先卖后买）自己身上也能看到它牵连的那条链 */
+  const repairBySell = useMemo(() => {
+    const m = new Map<number, RepairChain[]>()
+    for (const c of ledger.repairChains) {
+      for (const cy of c.cycles) {
+        const arr = m.get(cy.sellRow) ?? []
+        if (!arr.some((x) => x.id === c.id)) arr.push(c)
+        m.set(cy.sellRow, arr)
+      }
+    }
+    return m
+  }, [ledger.repairChains])
+
   function open(r: Row) {
     const next = { ...BLANK_DRAFT }
     for (const f of EDITABLE) next[f.key] = fieldText(r.rec, f.key)
     setDraft(next)
     setEditing(false)
     setOpenRow(r.rec.sourceRow)
+  }
+
+  /**
+   * 进入编辑（V9.35）：backfill=true 是「补买入」——先卖后买的行点它，买入价=回补价、
+   * 份额=卖出量、日期=今天，一次填好。普通「编辑」不动这三格：
+   * 只想改卖出侧的人不该因为保存而把买入写进台账（这是账，不能靠"记得清空"）。
+   */
+  function startEdit(backfill = false) {
+    if (backfill && current) {
+      const rec = current.rec
+      const next = { ...draft }
+      if (rec.earlyBuyPriceCents !== null) next.buyPrice = centsToYuan(rec.earlyBuyPriceCents)
+      if ((rec.soldQty ?? 0) > 0) next.buyQty = String(rec.soldQty)
+      if (!next.buyDate) next.buyDate = todayIso()
+      setDraft(next)
+    }
+    setEditing(true)
   }
 
   async function save() {
@@ -384,8 +454,16 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
 
   async function onDelete(row: number) {
     if (!window.confirm(`把第 ${row} 行标记为删除？软删除，可恢复。`)) return
-    await softDelete(row)
     setOpenRow(null)
+    // V9.37：先让这一行滑出、高度收掉，再真删——否则列表会「啪」地跳一下
+    setLeaving((s) => new Set(s).add(row))
+    await new Promise((r) => window.setTimeout(r, 280))
+    await softDelete(row)
+    setLeaving((s) => {
+      const n = new Set(s)
+      n.delete(row)
+      return n
+    })
     notificationOpen({ message: `第 ${row} 行已删除`, description: '勾「显示已删除」可以恢复', type: 'info' })
   }
 
@@ -398,7 +476,10 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     try {
       const row = await addManualRecord(form)
       setAdding(false)
-      setForm(BLANK_FORM)
+      setForm(blankForm(form.stockName))
+      // V9.37：新行弹入 + 微光，承接「弹窗收成一条明细」的观感
+      setFlashRow(row)
+      window.setTimeout(() => setFlashRow((cur) => (cur === row ? null : cur)), 1800)
       notificationOpen({
         message: `已新增第 ${row} 行`,
         description: form.kind === 'sell' && !form.buyPrice ? '先卖后买：之后可在明细里补买入信息' : undefined,
@@ -556,7 +637,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
           type="primary"
           style={{ marginTop: 8 }}
           onClick={() => {
-            setForm({ ...BLANK_FORM, stockName: stockFilter === 'all' ? stockNames[0] ?? '' : stockFilter })
+            setForm(blankForm(stockFilter === 'all' ? stockNames[0] ?? '' : stockFilter))
             setAdding(true)
           }}
         >
@@ -601,12 +682,29 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
               )
             }
           } else if (r.sell && r.sell.hedgedFromSellRow !== undefined) {
-            hedgeTag = (
+            // V9.36：回补过的截 = 高位批次「已了结」，不再是暂记（它会一直挂着等低位冲平）
+            const chain = repairByAnchor.get(r.rec.sourceRow)
+            hedgeTag = r.sell.hedgeClosed ? (
+              <Tag size="small" variant="soft" color={chain?.done ? 'app-green' : 'app-red'}>
+                {chain?.done
+                  ? '高位已冲平'
+                  : chain
+                    ? `高位已了结 · 还差 ${money(chain.gapCents)}`
+                    : '高位已了结'}
+              </Tag>
+            ) : (
               <Tag size="small" variant="soft" color="app-orange">
                 挂钩暂记{r.lot ? ` · 原目标 ${price(r.lot.targetPriceCents)}` : ''}
               </Tag>
             )
           }
+          const anim = leaving.has(r.rec.sourceRow)
+            ? 'leaving'
+            : flashRow === r.rec.sourceRow
+              ? 'new'
+              : justDone.has(r.rec.sourceRow)
+                ? 'done'
+                : undefined
           return (
             <TradeItem
               key={r.rec.sourceRow}
@@ -614,6 +712,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
               nanoId={nano.rowToId.get(r.rec.sourceRow)}
               onClick={() => open(r)}
               extraTag={hedgeTag}
+              anim={anim}
             />
           )
         })
@@ -628,6 +727,8 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
         open={current !== null}
         placement="bottom"
         height="84vh"
+        // V9.34：抽屉和主内容列同宽（见 styles.css .trades-edit-drawer），不再占满整屏
+        className="trades-edit-drawer"
         title={
           current
             ? `${current.rec.stockName} · ${current.rec.origin === 'manual' ? '手动' : `第 ${current.rec.sourceRow} 行`} · #${nano.rowToId.get(current.rec.sourceRow)}`
@@ -644,7 +745,11 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                 </>
               ) : (
                 <>
-                  <Button type="primary" style={{ flex: 1 }} onClick={() => setEditing(true)}>编辑</Button>
+                  <Button type="primary" style={{ flex: 1 }} onClick={() => startEdit()}>编辑</Button>
+                  {/* V9.35：先卖后买的行，一键把买入侧按回补价填好再进编辑 */}
+                  {isNakedSell(current.rec) && !current.rec.deletedAt && (
+                    <Button onClick={() => startEdit(true)}>补买入</Button>
+                  )}
                   {current.rec.deletedAt ? (
                     <Button onClick={() => void onRestore(current.rec.sourceRow)}>恢复</Button>
                   ) : (
@@ -662,10 +767,22 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
               <div className="form-grid">
                 {EDITABLE.map((f) => (
                   <label key={f.key}>
-                    <span>{f.label}</span>
+                    <span>
+                      {f.label}
+                      {/* V9.35：日期给个「今天」快捷键，省得手打；输入框也认 2026/10/25 */}
+                      {f.kind === 'date' && (
+                        <button
+                          type="button"
+                          className="date-today"
+                          onClick={() => setDraft({ ...draft, [f.key]: todayIso() })}
+                        >
+                          今天
+                        </button>
+                      )}
+                    </span>
                     <Input
                       value={draft[f.key]}
-                      placeholder={f.kind === 'date' ? 'YYYY-MM-DD' : f.kind === 'qty' ? '股数' : '元'}
+                      placeholder={f.kind === 'date' ? '2026-10-25 或 2026/10/25' : f.kind === 'qty' ? '股数' : '元'}
                       onChange={(e) => setDraft({ ...draft, [f.key]: e.target.value })}
                       data-field={f.key}
                     />
@@ -674,6 +791,12 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                 <p className="tiny muted" style={{ margin: 0 }}>
                   成交价由 E 列（目标售价）决定；成本优先取买入价，无批次时取 P 列。
                 </p>
+                {isNakedSell(current.rec) && (
+                  <p className="tiny muted" style={{ margin: 0 }}>
+                    先卖后买：点「补买入」会按「回补价 / 卖出量 / 今天」把买入三格填好，
+                    你只需改成实际成交价；只想改卖出侧就别填这三格。
+                  </p>
+                )}
               </div>
             ) : (
               <>
@@ -720,12 +843,15 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
 
                 {current.sell?.hedgedHold === true && (
                   <p className="tiny muted" style={{ margin: '0 0 4px' }}>
-                    已挂钩：盈利暂缓计算——低位买回后按回补价结算；一直不买回则按挂钩暂记为真实亏损。
+                    已挂钩：盈利暂缓计算——买回后由高位批次按卖出价了结，亏损进「回本链」，
+                    靠低位继续做T的价差冲平；一直不买回则挂钩暂记就是真实亏损。
                   </p>
                 )}
                 {current.sell?.hedgedFromSellRow !== undefined && (
                   <p className="tiny muted" style={{ margin: '0 0 4px' }}>
-                    挂钩暂记：这是第 {current.sell.hedgedFromSellRow} 行裸卖暂挂到本批次的份额，买回后自动复原。
+                    {current.sell.hedgeClosed
+                      ? `已了结：本批次有 ${qty(current.sell.qty)} 股按第 ${current.sell.hedgedFromSellRow} 行裸卖的卖出价兑现了，份额不再回到待卖——亏损挂在「回本链」上等低位回血。`
+                      : `挂钩暂记：这是第 ${current.sell.hedgedFromSellRow} 行裸卖暂挂到本批次的份额；买回后这批份额按卖出价永久了结，不再复活。`}
                   </p>
                 )}
 
@@ -839,6 +965,18 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                   </div>
                 )}
 
+                {/* V9.36 回本链：高位批次被回补了结后的待回本进度（低位做T逐轮冲平） */}
+                {(repairByAnchor.has(current.rec.sourceRow) || repairBySell.has(current.rec.sourceRow)) && (
+                  <div className="divider-top" data-testid="chain-section">
+                    {(repairByAnchor.get(current.rec.sourceRow)
+                      ? [repairByAnchor.get(current.rec.sourceRow)!]
+                      : repairBySell.get(current.rec.sourceRow) ?? []
+                    ).map((c) => (
+                      <RepairChainCard key={c.id} chain={c} />
+                    ))}
+                  </div>
+                )}
+
                 <div className="divider-top">
                   <div className="sec-head sm">
                     <strong>变更历史</strong>
@@ -948,7 +1086,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                 <span>目标售价（可空，空则按「买入价 + 间隔」派生）</span>
                 <Input
                   value={form.targetPrice ?? ''}
-                  placeholder="8.58"
+                  placeholder={autoTarget || '留空＝买入价 + 该股间隔'}
                   onChange={(e) => setForm({ ...form, targetPrice: e.target.value })}
                   data-field="targetPrice"
                 />
@@ -959,7 +1097,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                   <span>回补价 P（可空，按 R3 自动推导）</span>
                   <Input
                     value={form.rebuyPrice ?? ''}
-                    placeholder="留空则按优先级推导"
+                    placeholder={autoRebuy ? `留空＝${autoRebuy}` : '留空则按优先级推导'}
                     onChange={(e) => setForm({ ...form, rebuyPrice: e.target.value })}
                     data-field="rebuyPrice"
                   />
@@ -983,7 +1121,16 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                     <Input
                       value={form.buyPrice ?? ''}
                       placeholder="8.30"
-                      onChange={(e) => setForm({ ...form, buyPrice: e.target.value })}
+                      onChange={(e) => {
+                        const v = e.target.value
+                        // V9.35：开始填买入价（=这笔回补）时，份额默认=卖出数量、日期默认=今天
+                        setForm((f) => ({
+                          ...f,
+                          buyPrice: v,
+                          buyQty: f.buyQty || (v.trim() ? f.qty : ''),
+                          buyDate: f.buyDate || (v.trim() ? todayIso() : ''),
+                        }))
+                      }}
                       data-field="buyPrice"
                     />
                   </label>

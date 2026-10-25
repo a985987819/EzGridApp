@@ -35,16 +35,24 @@ export const LABEL: Record<EditableKey, string> = {
   earlyBuyPrice: '回补价（P 列）',
 }
 
-/** ISO 日期 → Excel 序列号（1900 系统） */
+/**
+ * ISO 日期 → Excel 序列号（1900 系统）。
+ * V9.35：**分隔符放宽**——`2026-10-25` / `2026/10/25` / `2026.10.25`、月份日期一位数都收；
+ * 输出永远是补零的 YYYY-MM-DD，所以 2026/1/5 和 2026-01-05 是同一天。
+ */
 export function isoToSerial(iso: string): number | null {
-  const s = iso.trim()
+  const s = iso.trim().replace(/[/／.．—－]/g, '-').replace(/\s+/g, '')
   if (s === '') return null
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s)
+  const m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s)
   if (!m) return null
-  const ms = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
-  const serial = Math.round((ms - Date.UTC(1899, 11, 30)) / 86400000)
-  // 用反解校验，挡掉 2026-13-45 这种会被 Date 自动进位的写法
-  if (serial <= 0 || serialToIso(serial) !== s) return null
+  const y = Number(m[1])
+  const mo = Number(m[2])
+  const day = Number(m[3])
+  if (mo < 1 || mo > 12 || day < 1 || day > 31) return null
+  const serial = Math.round((Date.UTC(y, mo - 1, day) - Date.UTC(1899, 11, 30)) / 86400000)
+  // 用反解校验，挡掉 2026-2-30 / 2026-13-45 这种会被 Date 自动进位的写法
+  const want = `${y}-${String(mo).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+  if (serial <= 0 || serialToIso(serial) !== want) return null
   return serial
 }
 
@@ -147,7 +155,7 @@ export function applyEdits(rec: RawRecord, draft: Partial<Record<EditableKey, st
     } else {
       const serial = text === '' ? null : isoToSerial(text)
       if (text !== '' && serial === null) {
-        errors.push(`${LABEL[key]} 要写成 YYYY-MM-DD：${text}`)
+        errors.push(`${LABEL[key]} 要写成 YYYY-MM-DD 或 YYYY/MM/DD：${text}`)
         continue
       }
       const before = fieldText(rec, key)
