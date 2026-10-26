@@ -137,6 +137,12 @@ schemaVersion 11（V9.50 加 buyTargets；V9.49 加行级成交来源；V9.46 �
 - **animal-island-ui 的 `Tag` 不透传 `data-*`**（只透传 className/style/onClick/size 等声明过的 prop）：
   给 Tag 加 `data-xxx` 在 DOM 上找不到。e2e 对沙盒挂钩标签用 `.hedge-entry`；普通 div 行上的
   `[data-sandbox-row]` 不受影响。
+- **Dexie 事务只能碰声明过的表（V9.54 踩过）**：`recordRebuy` / `recordLotSales` / `recordBuySuggestion`
+  的事务体里都调 `currentLedger()`（重建整本账做额度校验），而 `currentLedger()` 会读 records / stocks /
+  rebuyExecutions / hedges / extraTargets / chainLinks / **buyTargets**——V9.50 加表时漏同步，
+  点「记成交 / 记卖出」直接抛 `NotFoundError: The specified object store was not found`。
+  现在三处统一用 `useApp.tsx` 的 `LEDGER_TX_TABLES()`，**再加派生输入表时只改这一处**；
+  恢复备份的整库事务同样要列全。
 - **导入不要用组件库的 `Upload`（V9.52）**：它内部是隐藏 input + 程序 `click()` + 只写扩展名的
   `accept`，iOS / 微信 WebView 里点开选择器后文件会被全部过滤成灰的，表现就是「无法选择文件」。
   **V9.52.1 进一步**：`<label htmlFor>` + `display:none` 的 input 在部分手机 WebView 里点击仍无反应，
