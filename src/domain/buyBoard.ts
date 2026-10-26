@@ -66,6 +66,18 @@ export function buildNextRoundBuyRows(opts: {
   /** 还有没回补完的卖单 → 那张 P 列待买已经在提醒，这里不再给一档 */
   const openRows = new Set(orders.filter((o) => o.remainingQty > 0).map((o) => o.sourceRow))
   const repaidRows = new Set(orders.filter((o) => o.remainingQty === 0 && o.execQty > 0).map((o) => o.sourceRow))
+  /**
+   * V9.57：「记卖出」子成交消耗掉的批次，买回由那张子卖出的待买负责。
+   * 原批次自己不能再排「下一轮」——否则同一笔钱会被提示两次（一次待买、一次下一轮）：
+   * 还没买回时两档同价并列，买回后又因为虚拟批次已经持有 500 股仍提示再买 500。
+   */
+  const orderSellIds = new Set(orders.map((o) => o.sellExecId))
+  const childOrderLotIds = new Set<string>()
+  for (const s of sells) {
+    if (!s.lotId) continue
+    if (s.lotId === `lot:${s.sourceRow}`) continue
+    if (orderSellIds.has(s.id)) childOrderLotIds.add(s.lotId)
+  }
 
   const soldAtByRow = new Map<number, string | null>()
   for (const s of sells) soldAtByRow.set(s.sourceRow, latest(soldAtByRow.get(s.sourceRow) ?? null, s.soldAt))
@@ -76,6 +88,7 @@ export function buildNextRoundBuyRows(opts: {
     l.remainingQty === 0 &&
     l.qty > 0 &&
     !openRows.has(l.sourceRow) &&
+    !childOrderLotIds.has(l.id) &&
     !sandboxRows?.has(l.sourceRow)
 
   const candidates = lots.filter(isCandidate).map((l) => ({...l, qty: Math.max(0,l.qty-(consumed?.get(l.sourceRow)??0))})).filter((l)=>l.qty>0)

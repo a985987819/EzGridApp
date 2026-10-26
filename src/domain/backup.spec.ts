@@ -115,6 +115,57 @@ describe('恢复前的备份内容校验', () => {
     ).toBeNull()
   })
 
+  /**
+   * V9.57：V9.56 只查了关联表的外键；records 自己的 soldLotId / nextRoundOfRow
+   * 同样会静默失效（成本变 null、已消耗额度对不上），一并拦。
+   */
+  it('records 的 soldLotId / nextRoundOfRow 悬空也拒绝（V9.57）', () => {
+    const base = [
+      { sourceRow: 2, importKey: 'k2', stockName: '柳工' },
+      { sourceRow: 3, importKey: 'k3', stockName: '柳工', soldLotId: 'lot:2' },
+    ]
+    // 合法：子卖出指向存在的批次；下一轮指向存在的行
+    expect(
+      validateBackup({
+        records: [...base, { sourceRow: 4, importKey: 'k4', stockName: '柳工', nextRoundOfRow: 2 }],
+      }),
+    ).toBeNull()
+    // 悬空批次
+    expect(
+      validateBackup({ records: [...base, { sourceRow: 5, importKey: 'k5', stockName: '柳工', soldLotId: 'lot:99' }] }),
+    ).toContain('soldLotId')
+    // 悬空下一轮来源
+    expect(
+      validateBackup({ records: [...base, { sourceRow: 6, importKey: 'k6', stockName: '柳工', nextRoundOfRow: 99 }] }),
+    ).toContain('nextRoundOfRow')
+    // 回补虚拟批次要找得到对应成交
+    expect(
+      validateBackup({ records: [...base, { sourceRow: 7, importKey: 'k7', stockName: '柳工', soldLotId: 'lot:exec:e1' }] }),
+    ).toContain('lot:exec:e1')
+    expect(
+      validateBackup({
+        records: [
+          ...base,
+          { sourceRow: 7, importKey: 'k7', stockName: '柳工', soldLotId: 'lot:exec:e1' },
+        ],
+        rebuyExecutions: [
+          {
+            id: 'e1',
+            orderId: 'rb:sell:2',
+            sellExecId: 'sell:2',
+            stockId: 'stock:柳工',
+            stockName: '柳工',
+            qty: 100,
+            priceCents: 500,
+            rewardQty: 0,
+            groupKeyAtExecution: 'stock:柳工|500',
+            at: 1,
+          },
+        ],
+      }),
+    ).toBeNull()
+  })
+
   it('回本链归属缺 anchorRow/memberRows 拒绝，空成员（仅结束标记）放行（V9.46）', () => {
     expect(validateBackup({ chainLinks: [{ id: 'chainlink:2', stockName: '柳工' }] })).toContain('anchorRow')
     expect(

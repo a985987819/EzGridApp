@@ -9,7 +9,7 @@ import { useMemo, useState } from 'react'
 import { Button, Tag, notificationOpen } from 'animal-island-ui'
 import { useApp } from '../store/useApp'
 import { recordNoLabel } from '../domain/recordNo'
-import type { Ledger } from '../domain/types'
+import { realizedProfitOf } from '../domain/chain'
 import { money, price, qty, signedMoney } from '../ui/format'
 
 export function ChainBinder({
@@ -118,50 +118,14 @@ export function ChainBinder({
         </span>
       </div>
 
-      <div className="data-block chain-candidates" data-testid="chain-candidates">
-        {candidates.length === 0 && <p className="tiny muted" style={{ margin: 0 }}>没有可归属的买入批次。</p>}
-        {candidates.map((c) => (
-          <label key={c.sourceRow} className="line merge-row" data-chain-candidate={c.sourceRow}>
-            <input
-              type="checkbox"
-              checked={selected.includes(c.sourceRow)}
-              onChange={() => toggle(c.sourceRow)}
-              aria-label={`归入 ${recordNoLabel(c.sourceRow, recordNo)}`}
-            />
-            <div className="left">
-              <div className="t1">
-                {recordNoLabel(c.sourceRow, recordNo)}
-                <span className="muted" style={{ fontWeight: 400 }}>
-                  {' '}
-                  · {price(c.buyPriceCents)} 买 × {qty(c.qty)} 股
-                </span>
-                {c.remainingQty > 0 && (
-                  <Tag size="small" variant="soft" color="app-blue" style={{ marginLeft: 6 }}>
-                    手持 {qty(c.remainingQty)}
-                  </Tag>
-                )}
-              </div>
-              <div className="t2">
-                {c.buyDate ?? '—'} · 已卖 {qty(c.soldQty)} 股{c.remainingQty > 0 ? ' · 未卖出部分只算持仓' : ''}
-              </div>
-            </div>
-            <span className="num">{signedMoney(profitOf(ledger, c.sourceRow))}</span>
-          </label>
-        ))}
-      </div>
-
+      {/* V9.57：正常网格靠价位槽自动归链，人工勾选退成「高级」例外，默认收起 */}
       <div className="row nowrap" style={{ gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
-        <span className="tiny muted grow">
-          已选 {picked.length} 笔 · 已实现合计 {signedMoney(picked.reduce((a, c) => a + profitOf(ledger, c.sourceRow), 0))}
-        </span>
-        <Button size="small" type="primary" data-action="chain-save" onClick={() => void save()}>
-          保存归属
-        </Button>
         {onAddToChain && (
           <Button size="small" data-action="chain-add" onClick={() => onAddToChain(chain.anchorRow)}>
             ＋ 新增一笔归入本链
           </Button>
         )}
+        <div className="spacer" />
         {chain.closedByUserAt === null ? (
           <Button size="small" data-action="chain-close" onClick={() => void close()}>
             结束这条链
@@ -172,20 +136,59 @@ export function ChainBinder({
           </Button>
         )}
       </div>
-      <p className="tiny muted" style={{ margin: '6px 0 0' }}>
-        每笔盈亏只归属一次：勾进来就计入这条链的「后续净盈利」，取消勾选即退回独立交易。买回还没卖出的部分只算持仓，不计回本。
-      </p>
+
+      <details className="chain-manual" data-testid="chain-manual">
+        <summary className="tiny muted">
+          高级：手动改归属（可选） · 已选 {picked.length} 笔
+        </summary>
+        <div className="data-block chain-candidates" data-testid="chain-candidates">
+          {candidates.length === 0 && <p className="tiny muted" style={{ margin: 0 }}>没有可归属的买入批次。</p>}
+          {candidates.map((c) => (
+            <label key={c.sourceRow} className="line merge-row" data-chain-candidate={c.sourceRow}>
+              <input
+                type="checkbox"
+                checked={selected.includes(c.sourceRow)}
+                onChange={() => toggle(c.sourceRow)}
+                aria-label={`归入 ${recordNoLabel(c.sourceRow, recordNo)}`}
+              />
+              <div className="left">
+                <div className="t1">
+                  {recordNoLabel(c.sourceRow, recordNo)}
+                  <span className="muted" style={{ fontWeight: 400 }}>
+                    {' '}
+                    · {price(c.buyPriceCents)} 买 × {qty(c.qty)} 股
+                  </span>
+                  {c.remainingQty > 0 && (
+                    <Tag size="small" variant="soft" color="app-blue" style={{ marginLeft: 6 }}>
+                      手持 {qty(c.remainingQty)}
+                    </Tag>
+                  )}
+                </div>
+                <div className="t2">
+                  {c.buyDate ?? '—'} · 已卖 {qty(c.soldQty)} 股{c.remainingQty > 0 ? ' · 未卖出部分只算持仓' : ''}
+                </div>
+              </div>
+              <span className="num">{signedMoney(realizedProfitOf(ledger.sells, c.sourceRow))}</span>
+            </label>
+          ))}
+        </div>
+
+        <div className="row nowrap" style={{ gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+          <span className="tiny muted grow">
+            已选 {picked.length} 笔 · 已实现合计 {signedMoney(picked.reduce((a, c) => a + realizedProfitOf(ledger.sells, c.sourceRow), 0))}
+          </span>
+          <Button size="small" type="primary" data-action="chain-save" onClick={() => void save()}>
+            保存归属
+          </Button>
+        </div>
+        <p className="tiny muted" style={{ margin: '6px 0 0' }}>
+          每笔盈亏只归属一次：勾进来就计入这条链的「后续净盈利」，取消勾选即退回独立交易。买回还没卖出的部分只算持仓，不计回本。
+        </p>
+      </details>
     </div>
   )
 }
 
 function sameList(a: number[], b: number[]): boolean {
   return a.length === b.length && a.every((x, i) => b[i] === x)
-}
-
-/** 某一行的已实现卖出盈亏（链的进度就靠它，口径与 domain/chain.ts 一致） */
-function profitOf(ledger: Ledger, row: number): number {
-  return ledger.sells
-    .filter((s) => s.sourceRow === row && (s.hedgedFromSellRow === undefined || s.hedgeClosed === true))
-    .reduce((a, s) => a + (s.profitCents ?? 0), 0)
 }

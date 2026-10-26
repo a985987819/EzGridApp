@@ -467,7 +467,8 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   /** 还没回补过的裸卖单（可挂/可改挂）：按行本身判定，不看有没有待买订单（V9.32） */
   const hedgeableRows = useMemo(() => {
     const execByRow = new Map<number, number>()
-    for (const o of ledger.orders) execByRow.set(o.sourceRow, o.execQty)
+    // V9.57：挂钩只作用在「基础股」上；奖励股是额外买入，不算已买回欠量
+    for (const o of ledger.orders) execByRow.set(o.sourceRow, Math.max(0, o.execQty - o.doneRewardQty))
     const set = new Set<number>()
     for (const r of records) if (isHedgeable(r, execByRow.get(r.sourceRow) ?? 0)) set.add(r.sourceRow)
     return set

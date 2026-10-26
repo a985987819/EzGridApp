@@ -44,7 +44,8 @@ export function HedgeBinder({
   const order = ledger.orders.find((o) => o.sourceRow === sellRow) ?? null
   const link = hedges.find((h) => h.sellRow === sellRow) ?? null
   const soldQty = rec?.soldQty ?? 0
-  const execQty = order?.execQty ?? 0
+  /** V9.57：只算基础股——奖励股是额外买入，不算「已买回」的欠量 */
+  const execQty = order ? Math.max(0, order.execQty - order.doneRewardQty) : 0
   /** 还需要挂的股数 = 卖出量 − 已买回（买回来的那截不参与挂钩） */
   const required = Math.max(0, soldQty - execQty)
   const sellPrice = sell?.priceCents ?? rec?.targetPriceCents ?? null

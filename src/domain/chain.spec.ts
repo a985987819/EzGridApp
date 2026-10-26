@@ -14,7 +14,7 @@ const STOCK: StockConfig = { id: 's-liugong', name: '柳工', intervalCents: 50,
 
 function rec(
   sourceRow: number,
-  o: { buy?: number; qty?: number; sell?: number; soldQty?: number; sellDate?: number; buyDate?: number; p?: number },
+  o: { buy?: number; qty?: number; sell?: number; soldQty?: number; sellDate?: number; buyDate?: number; p?: number; lotId?: string },
 ): RawRecord {
   return {
     sourceRow,
@@ -30,6 +30,7 @@ function rec(
     earlyBuyPriceCents: o.p ?? null,
     rawProfitCents: null,
     importKey: `k${sourceRow}`,
+    ...(o.lotId ? { soldLotId: o.lotId } : {}),
   }
 }
 
@@ -189,7 +190,7 @@ describe('回本进度＝归属交易的已实现净盈利（用户原例）', (
       importKey: 'vx',
     }
     // 只回补、未再卖：节省 500，进度 0
-    const only = buildRepairChains({ lots: [...lots, virtual], sells, executions: [exec] })
+    const only = buildRepairChains({ lots: [...lots, virtual], sells, executions: [exec] }).chains
     expect(only).toHaveLength(1)
     expect(only[0]).toMatchObject({ lossCents: -150000, profitCents: 0, savingCents: 50000, gapCents: 150000, holdingQty: 500 })
     expect(only[0].relatedSellRows).toEqual([9])
@@ -209,7 +210,7 @@ describe('回本进度＝归属交易的已实现净盈利（用户原例）', (
       lots: [...lots, { ...virtual, soldQty: 500, remainingQty: 0 }],
       sells: [...sells, resold],
       executions: [exec],
-    })
+    }).chains
     expect(after[0]).toMatchObject({ profitCents: 50000, savingCents: 50000, netCents: -100000, gapCents: 100000, holdingQty: 0 })
     expect(after[0].branches[0]).toMatchObject({ kind: 'rebuy', sellPriceCents: 700, profitCents: 50000 })
   })
@@ -251,9 +252,9 @@ describe('V9.49 价位槽：同价买入全自动归链', () => {
     expect(slots.map((b) => b.buyPriceCents)).toEqual([500, 600])
     expect(slots[0]).toMatchObject({ rootSellRow: 3, qty: 500, profitCents: 200000, cycles: 2 })
     expect(slots[1]).toMatchObject({ rootSellRow: 4, qty: 500, profitCents: 150000, cycles: 2 })
-    // C/D 的待买被同价买回盖满 → 自动完成，不再欠股、不算敞口
-    expect(led.orders.find((o) => o.sourceRow === 3)?.baseQty).toBe(0)
-    expect(led.orders.find((o) => o.sourceRow === 4)?.baseQty).toBe(0)
+    // C/D 的待买被同价买回盖满 → 自动完成：不再生成幽灵订单、不算敞口
+    expect(led.orders.find((o) => o.sourceRow === 3)).toBeUndefined()
+    expect(led.orders.find((o) => o.sourceRow === 4)).toBeUndefined()
     expect(led.totals.exposureQty).toBe(0)
     // 每份盈亏只算一次：全局盈利仍按原始成交走
     expect(led.totals.profitCents).toBe(-300000 + 50000 + 100000 + 100000 + 100000)
@@ -297,8 +298,8 @@ describe('V9.49 价位槽：同价买入全自动归链', () => {
     expect(slots[0].rootSellRow).toBe(3)
     expect(slots[0].memberRows).toEqual([3, 5])
     expect(c.relatedSellRows).toEqual([3])
-    // 结束前那笔已被同价买回盖住 → 待买归零；结束后的那笔照旧欠 500
-    expect(led.orders.find((o) => o.sourceRow === 3)?.baseQty).toBe(0)
+    // 结束前那笔已被同价买回盖住 → 连订单都不生成；结束后的那笔照旧欠 500
+    expect(led.orders.find((o) => o.sourceRow === 3)).toBeUndefined()
     expect(led.orders.find((o) => o.sourceRow === 4)?.baseQty).toBe(500)
   })
 
@@ -359,6 +360,126 @@ describe('V9.49 价位槽：同价买入全自动归链', () => {
     // 槽根还是那笔有日期的再卖（3），但买入日期空着的那批不能算「买回来」（4 不在成员里）
     expect(c.branches.find((b) => b.kind === 'sell')?.memberRows).toEqual([3])
     expect(led.orders.find((o) => o.sourceRow === 3)?.baseQty).toBe(500)
+  })
+})
+
+/** 回补成交（默认成交价正好落在价位槽上） */
+function execAt(id: string, sellRow: number, qty: number, priceCents: number, iso: string): RebuyExecution {
+  return {
+    id,
+    orderId: `rb:sell:${sellRow}`,
+    sellExecId: `sell:${sellRow}`,
+    stockId: STOCK.id,
+    stockName: '柳工',
+    qty,
+    priceCents,
+    rewardQty: 0,
+    groupKeyAtExecution: `${STOCK.id}|${priceCents}`,
+    at: new Date(iso).getTime(),
+  }
+}
+
+describe('V9.57 统一覆盖模型（cover）', () => {
+  it('真实同价买入盖住裸卖：守恒式通过、不再生成零股订单、链计划归零', () => {
+    const led = buildLedger(
+      [
+        rec(2, { buy: 1000, qty: 500, sell: 700, soldQty: 500, sellDate: 46010 }),
+        rec(3, { sell: 700, soldQty: 500, sellDate: 46020, p: 500 }),
+        rec(4, { buy: 500, qty: 500, buyDate: 46030 }),
+      ],
+      [STOCK],
+    )
+    expect(led.checks.every((c) => c.ok)).toBe(true)
+    expect(led.orders.find((o) => o.sourceRow === 3)).toBeUndefined()
+    expect(led.totals.exposureExecBaseQty).toBe(500)
+    expect(led.totals.exposureQty).toBe(0)
+    expect(led.repairChains[0]).toMatchObject({ plannedQty: 0, profitCents: 100000 })
+  })
+
+  it('回补成交的虚拟批次不重复 cover：敞口与链计划量按真实欠量算', () => {
+    const led = buildLedger(
+      [
+        rec(2, { buy: 1000, qty: 1000, sell: 700, soldQty: 1000, sellDate: 46010 }),
+        rec(3, { sell: 700, soldQty: 1000, sellDate: 46020, p: 500 }),
+      ],
+      [STOCK],
+      { executions: [execAt('e1', 3, 400, 500, '2026-01-05T12:00:00')] },
+    )
+    const order = led.orders.find((o) => o.sourceRow === 3)
+    expect(order).toMatchObject({ baseQty: 1000, execQty: 400, exposure: true })
+    // 真实空头 = 1000 − 400 = 600，虚拟批次不能把 baseQty 再减一遍
+    expect(led.totals.exposureQty).toBe(600)
+    expect(led.totals.exposureExecBaseQty).toBe(400)
+    expect(led.repairChains[0].plannedQty).toBe(600)
+    expect(led.checks.every((c) => c.ok)).toBe(true)
+  })
+
+  it('部分回补 200 / 500：敞口 300、链还欠 300', () => {
+    const led = buildLedger(
+      [
+        rec(2, { buy: 1000, qty: 500, sell: 700, soldQty: 500, sellDate: 46010 }),
+        rec(3, { sell: 700, soldQty: 500, sellDate: 46020, p: 500 }),
+      ],
+      [STOCK],
+      { executions: [execAt('e2', 3, 200, 500, '2026-01-05T12:00:00')] },
+    )
+    expect(led.orders.find((o) => o.sourceRow === 3)).toMatchObject({ baseQty: 500, execQty: 200, exposure: true })
+    expect(led.totals.exposureQty).toBe(300)
+    expect(led.repairChains[0].plannedQty).toBe(300)
+    expect(led.checks.every((c) => c.ok)).toBe(true)
+  })
+
+  it('链成员被挂高永久了结后，亏损计进链（与 ChainBinder 的已实现口径一致）', () => {
+    const led = buildLedger(
+      [
+        rec(2, { buy: 1000, qty: 1000, sell: 700, soldQty: 1000, sellDate: 46010 }),
+        rec(5, { buy: 1000, qty: 500, buyDate: 46015 }),
+        rec(6, { sell: 900, soldQty: 500, sellDate: 46020 }),
+      ],
+      [STOCK],
+      {
+        hedges: [{ id: 'hedge:6', sellRow: 6, items: [{ row: 5, qty: 500 }], at: 1 }],
+        chainLinks: [{ id: 'chainlink:2', anchorRow: 2, stockName: '柳工', memberRows: [5], closedAt: null, at: 0 }],
+        executions: [execAt('e3', 6, 500, 1200, '2026-01-05T12:00:00')],
+      },
+    )
+    // 10 元批次按 9 元永久了结 = −500；这笔亏损属于成员 5，必须进链
+    expect(led.repairChains[0].profitCents).toBe(-50000)
+    expect(led.totals.profitCents).toBe(-350000)
+  })
+
+  it('锚点分多价卖出时，后续同价裸卖仍能归链（不再用加权均价匹配）', () => {
+    const led = buildLedger(
+      [
+        rec(2, { buy: 1000, qty: 1000, sell: 700, soldQty: 500, sellDate: 46010 }),
+        rec(5, { sell: 690, soldQty: 500, sellDate: 46011, lotId: 'lot:2' }),
+        rec(6, { sell: 700, soldQty: 500, sellDate: 46020, p: 500 }),
+        rec(7, { buy: 500, qty: 500, buyDate: 46030 }),
+      ],
+      [STOCK],
+    )
+    const slot = led.repairChains[0].branches.find((b) => b.kind === 'sell')
+    expect(slot?.rootSellRow).toBe(6)
+    expect(slot?.memberRows).toEqual([6, 7])
+    expect(led.orders.find((o) => o.sourceRow === 6)).toBeUndefined()
+  })
+
+  it('已结束的同价链不挡住另一条未结束的链', () => {
+    const closedAt = new Date('2025-12-30T12:00:00').getTime()
+    const led = buildLedger(
+      [
+        rec(2, { buy: 1000, qty: 500, sell: 700, soldQty: 500, sellDate: 46010 }),
+        rec(5, { buy: 900, qty: 500, sell: 700, soldQty: 500, sellDate: 46020 }),
+        rec(6, { sell: 700, soldQty: 500, sellDate: 46027, p: 500 }),
+      ],
+      [STOCK],
+      {
+        chainLinks: [{ id: 'chainlink:5', anchorRow: 5, stockName: '柳工', memberRows: [], closedAt, at: 1 }],
+      },
+    )
+    const withSlot = led.repairChains.filter((c) => c.branches.some((b) => b.kind === 'sell'))
+    expect(withSlot.map((c) => c.anchorRow)).toEqual([2])
+    expect(withSlot[0].branches.find((b) => b.kind === 'sell')?.rootSellRow).toBe(6)
   })
 })
 
@@ -432,7 +553,7 @@ describe('归属、结束与部分成交', () => {
   })
 
   it('没有归属时链仍能建（锚点自身的亏损留在账上）', () => {
-    const chains = buildRepairChains({ lots: [], sells: [], executions: [], links: [] })
+    const chains = buildRepairChains({ lots: [], sells: [], executions: [], links: [] }).chains
     expect(chains).toEqual([])
   })
 })

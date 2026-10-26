@@ -8,7 +8,8 @@ import { deriveBuyQty } from './qty'
 import { deriveRebuyPrice } from './manual'
 import { serialToIso, stockIdOf } from './defaults'
 import { buildRepairChains } from './chain'
-import { type Anomaly, type BuySplit, type ExtraBuyTarget, type ExtraTarget, type HedgeLink, type RebuyExecution, type TradePlan, type CheckResult, type GroupPool, type Ledger, type Lot, type DayBucket, type MonthlyBucket, type RawRecord, type RebuyOrder, type RepairChain, type RepairChainLink, type SellExecution, type SellTarget, type StockConfig, type StockSummary } from './types'
+import { coverOfSell, type SellCover } from './cover'
+import { type Anomaly, type BuySplit, type ExtraBuyTarget, type ExtraTarget, type HedgeLink, type RebuyExecution, type TradePlan, type CheckResult, type GroupPool, type Ledger, type Lot, type DayBucket, type MonthlyBucket, type RawRecord, type RebuyOrder, type RepairChainLink, type SellExecution, type SellTarget, type StockConfig, type StockSummary } from './types'
 
 export interface BuildOptions {
   /** 基准金额，默认 6000 元 */
@@ -269,7 +270,6 @@ export function buildLedger(
   const hedgeLinks = (opts.hedges ?? []).slice().sort((a, b) => (a.at ?? 0) - (b.at ?? 0))
   const sellByRow = new Map(sells.map((s) => [s.sourceRow, s]))
   const lotByRow = new Map(lots.map((l) => [l.sourceRow, l]))
-  const fullyHedgedRows = new Set<number>()
   const hedgeUsedByLot = new Map<number, number>()
   /** 每张裸卖实际挂住的股数（敞口按差额计：baseQty − 已回补 − hedgeApplied） */
   const hedgeAppliedByRow = new Map<number, number>()
@@ -398,10 +398,8 @@ export function buildLedger(
       naked.hedgedHold = plain > 0 ? undefined : true
       hedgeAppliedByRow.set(h.sellRow, applied)
     }
-    // 没买回的那部分全挂住了 = 这笔卖不再欠股（敞口归零）；只挂一部分算挂不满
-    if (applied >= unrepaid) {
-      fullyHedgedRows.add(h.sellRow)
-    } else if (applied > 0) {
+    // 没买回的那部分全挂住了 = 这笔卖不再欠股（敞口由 cover 按差额算）；只挂一部分算挂不满
+    if (applied < unrepaid && applied > 0) {
       anomalies.push({
         kind: 'hedgeMismatch',
         sourceRow: h.sellRow,
@@ -508,34 +506,58 @@ export function buildLedger(
 
   const allLots = lots
 
-  // V9.49 回本链先算：价位槽会把「同股、同价买入」自动认作回补，输出每笔裸卖的覆盖量，
-  // 待买单据此自动关掉（用户拍板「不手动关」）。链本身仍是纯派生，不落库。
-  const chainCover = new Map<number, number>()
-  const repairChains: RepairChain[] = buildRepairChains(
-    {
-      lots: allLots,
-      sells,
-      executions: scopedExecs,
-      links: opts.chainLinks ?? [],
-    },
-    chainCover,
-  )
+  /**
+   * V9.57 回本链先算：价位槽只收编「同股、同价的真实买入」，输出每笔裸卖掉多少股。
+   * 回补成交生成的虚拟批次不算 cover（它已经由 execQty 扣过一次），否则同一笔股数被减两遍。
+   */
+  const chainBuild = buildRepairChains({
+    lots: allLots,
+    sells,
+    executions: scopedExecs,
+    links: opts.chainLinks ?? [],
+  })
+  const repairChains = chainBuild.chains
 
-  // R2 待买：只认 P 列（D3）
+  /**
+   * V9.57 回补覆盖：每笔真实卖出的「本行覆盖 / 成交基础股 / 同价真实覆盖 / 挂钩股」
+   * 只在这里合成一次，orders / 敞口 / 守恒式 / byStock 全部读同一份结果。
+   */
+  const execBaseBySell = new Map<string, number>()
+  for (const e of scopedExecs) {
+    execBaseBySell.set(e.sellExecId, (execBaseBySell.get(e.sellExecId) ?? 0) + e.qty - e.rewardQty)
+  }
+  const covers = new Map<number, SellCover>()
+  for (const sell of sells) {
+    if (sell.hedgedFromSellRow !== undefined) continue
+    const own = sell.ownLotCoverQty ?? 0
+    const cover = coverOfSell({
+      sellQty: sell.qty,
+      ownLotCoverQty: own,
+      execBaseQty: execBaseBySell.get(sell.id) ?? 0,
+      realCoverQty: chainBuild.realCoverBySell.get(sell.sourceRow) ?? 0,
+      hedgeAppliedQty: hedgeAppliedByRow.get(sell.sourceRow) ?? 0,
+      hedgeClosedQty: hedgeClosedByRow.get(sell.sourceRow) ?? 0,
+      exposureEligible: !sell.lotId || (own > 0 && sell.qty > own),
+      rebuyPriceCents: sell.rebuyPriceCents ?? null,
+    })
+    covers.set(sell.sourceRow, cover)
+    sell.rebuyStatus = cover.pending ? 'pending' : 'repaid'
+  }
+
+  // R2 待买：只认 P 列（D3）。baseQty 0（被同价真实买入盖满）不再生成幽灵订单；
+  // 已回补完的订单保留成 closed，历史/奖励（doneRewardQty）还要看得见。
   const orders: RebuyOrder[] = []
   for (const sell of sells) {
-    if (sell.rebuyStatus !== 'pending') continue
+    if (sell.hedgedFromSellRow !== undefined) continue
+    const cover = covers.get(sell.sourceRow)
     const rec = byRow.get(sell.sourceRow)
-    if (!rec) continue
+    if (!cover || !rec || cover.baseQty <= 0) continue
     const rebuyPrice = sell.rebuyPriceCents ?? null
     if (rebuyPrice === null) continue
     const orderId = `rb:${sell.id}`
     const myExecs = execByOrder.get(orderId) ?? []
     const execQty = myExecs.reduce((a, e) => a + e.qty, 0)
     const doneRewardQty = myExecs.reduce((a, e) => a + e.rewardQty, 0)
-    // V9.47.1：本行买入批次已经盖住的那部分不再挂单，只剩真欠的
-    // V9.49：回本链价位槽里同价买回的股数同样算「已完成」，直接从待买里扣掉
-    const needQty = Math.max(0, sell.qty - (sell.ownLotCoverQty ?? 0) - (chainCover.get(sell.sourceRow) ?? 0))
     orders.push({
       id: orderId,
       sellExecId: sell.id,
@@ -543,22 +565,18 @@ export function buildLedger(
       stockId: sell.stockId,
       stockName: sell.stockName,
       rebuyPriceCents: rebuyPrice,
-      baseQty: needQty,
+      baseQty: cover.baseQty,
       rewardQty: 0,
       execQty,
       doneRewardQty,
-      remainingQty: Math.max(0, needQty - execQty),
+      remainingQty: cover.openBaseQty,
       status: execQty <= 0 ? 'open' : 'partial',
       groupKey: groupKeyOf(sell.stockId, rebuyPrice),
       grossProfitCents: 0,
       hands: 0,
       createdAt: sell.sourceRow,
-      // 全额挂住的裸卖不算敞口：交割股由挂的高位批次提供（V9.26）
-      // V9.49：已被回本链同价买回盖满的也不算敞口（空头已经平了）
-      exposure:
-        needQty > 0 &&
-        (!sell.lotId || ((sell.ownLotCoverQty ?? 0) > 0 && sell.qty > (sell.ownLotCoverQty ?? 0))) &&
-        !fullyHedgedRows.has(rec.sourceRow),
+      // 真空头敞口：本行买入 / 成交 / 同价真实买入 / 挂钩交割之后还剩多少股
+      exposure: cover.openExposureQty > 0,
       planPriceCents: planByRef.get(orderId)?.priceCents ?? null,
       planQty: planByRef.get(orderId)?.qty ?? null,
       // V9.54：先卖后买（卖出日早于/等于买入日，或压根没有买入批次的裸卖）——这笔待买
@@ -616,41 +634,23 @@ export function buildLedger(
     rewardQty: sumBy(orders, (o) => o.rewardQty),
     rebuyExecQty: sumBy(scopedExecs, (e) => e.qty),
     /**
-     * 空头挂单回补成交里的基础股部分：既抵了敞口、又以回补批次进了待卖，守恒式里要扣回防双算。
-     * V9.33：按「这行的记录是不是裸卖」判定，不看 exposure 标记——部分买回 + 剩下的全挂住时，
-     * exposure 已被置否，但买回那部分照样是空头回补基础股，不扣就会让守恒式亮红灯。
-     * V9.36：已经把那截高位批次「永久了结」的，不再扣——批次份额已经不在待卖里，没有双算。
+     * V9.57：守恒式的「空头回补基础股」统一由 cover 给出：
+     *   成交基础股（扣掉已永久了结的挂钩股）+ 同价真实买入覆盖。
+     * 这两部分都「既抵了敞口、又以批次进了待卖」，不扣回就双算。
      */
-    exposureExecBaseQty: (() => {
-      let sum = 0
-      for (const o of orders) {
-        const parent=byRow.get(o.sourceRow)
-        const sale=sells.find((s)=>s.id===o.sellExecId)
-        if (parent?.soldLotId || (parent?.buyPriceCents!==null && !(sale?.ownLotCoverQty))) continue
-        const base = Math.max(0, o.execQty - o.doneRewardQty)
-        sum += Math.max(0, base - (hedgeClosedByRow.get(o.sourceRow) ?? 0))
-      }
-      return sum
-    })(),
+    exposureExecBaseQty: sumBy([...covers.values()], (c) => c.deductQty),
     rebuyRemainingQty: sumBy(orders, (o) => o.remainingQty),
     netQty: 0,
-    // 只算真空头敞口：无买入批次、且还没回补掉的那部分（D5）。
-    // 奖励股是额外买入，不算欠账；V9.26：挂住的份额已由高位批次交割，按差额计。
+    // 只算真空头敞口：cover 已把本行买入 / 成交 / 同价真实买入 / 挂钩交割全部扣掉
     exposureQty: sumBy(
       orders.filter((o) => o.exposure),
-      (o) =>
-        Math.max(
-          0,
-          o.baseQty -
-            (hedgeAppliedByRow.get(o.sourceRow) ?? 0) -
-            Math.max(0, o.execQty - o.doneRewardQty),
-        ),
+      (o) => covers.get(o.sourceRow)?.openExposureQty ?? 0,
     ),
   }
   // 回补批次已在 Σ买入 里，净持仓 = Σ买入 − Σ卖出
   totals.netQty = totals.buyQty - totals.sellQty
 
-  const byStock = summarizeByStock(live, allLots, sells, targets, orders, hedgeAppliedByRow)
+  const byStock = summarizeByStock(live, allLots, sells, targets, orders, covers)
   const monthly = summarizeMonthly(sells)
   const daily = summarizeDaily(sells)
 
@@ -939,8 +939,8 @@ function summarizeByStock(
   sells: SellExecution[],
   targets: SellTarget[],
   orders: RebuyOrder[],
-  /** 每张裸卖挂住的股数（敞口按差额计，V9.26） */
-  hedgeAppliedByRow: Map<number, number>,
+  /** 每笔真实卖出的回补覆盖（V9.57：敞口与 totals 同一份） */
+  covers: Map<number, SellCover>,
 ): StockSummary[] {
   const names = [...new Set(records.map((r) => r.stockName))]
   return names.map((name) => {
@@ -972,13 +972,7 @@ function summarizeByStock(
       netQty: sumBy(ls, (l) => l.qty) - sumBy(real, (s) => s.qty),
       exposureQty: sumBy(
         os.filter((o) => o.exposure),
-        (o) =>
-          Math.max(
-            0,
-            o.baseQty -
-              (hedgeAppliedByRow.get(o.sourceRow) ?? 0) -
-              Math.max(0, o.execQty - o.doneRewardQty),
-          ),
+        (o) => covers.get(o.sourceRow)?.openExposureQty ?? 0,
       ),
     }
   })

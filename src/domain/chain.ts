@@ -29,9 +29,11 @@ interface Seed {
   qty: number
   costSum: number
   closeSum: number
-  /** 这次亏损卖出的加权成交价（分）；用来认「同价再卖」的裸卖 */
-  closePrice: number | null
-  /** 锚点最早一笔卖出日期；后续「再卖」必须不早于它 */
+  /** 锚点出现过的全部真实卖出价；「同价再卖」按实际成交价匹配，不用加权均价 */
+  closePrices: number[]
+  /** 每个卖出价上最晚的一笔成交日期；再卖 / 买入必须不早于它 */
+  closeDatesByPrice: Map<number, string | null>
+  /** 锚点最晚一笔卖出日期（多链同价时「最近的一轮」优先） */
   closeDate: string | null
   lossCents: number
   relatedSellRows: number[]
@@ -73,9 +75,24 @@ function earliestDate(dates: (string | null)[]): string | null {
   return out
 }
 
-/** 真实卖出（排除挂钩暂记/了结的合成成交） */
+/**
+ * 一笔卖出算不算「已实现」——暂记的挂钩卖出（hold）只是临时视角，不算；
+ * 已经买回、永久了结的挂钩卖出（hedgeClosed）是真亏，必须算，否则链会少记这笔亏损。
+ */
+export function isRealizedSale(s: SellExecution): boolean {
+  return s.hedgedFromSellRow === undefined || s.hedgeClosed === true
+}
+
+/** 某一行（真实明细行）的已实现卖出盈亏；ChainBinder 与链分支共用同一口径 */
+export function realizedProfitOf(sells: readonly SellExecution[], row: number): number {
+  return sells
+    .filter((s) => s.sourceRow === row && isRealizedSale(s))
+    .reduce((a, s) => a + (s.profitCents ?? 0), 0)
+}
+
+/** 真实卖出（含已了结的挂钩卖出，排除挂钩暂记） */
 function plainSellsOf(lotId: string, sellsByLot: Map<string, SellExecution[]>): SellExecution[] {
-  return (sellsByLot.get(lotId) ?? []).filter((s) => s.hedgedFromSellRow === undefined)
+  return (sellsByLot.get(lotId) ?? []).filter(isRealizedSale)
 }
 
 /** 一条分支 = 一个买入批次（真实行或回补虚拟批次）+ 它自己的已实现卖出盈亏 */
@@ -130,14 +147,28 @@ function collectSeeds(
     if (qty <= 0 || lossCents >= 0) continue
     const costSum = sum(related, (s) => (s.costCents ?? 0) * s.qty)
     const closeSum = sum(related, (s) => (s.priceCents ?? 0) * s.qty)
+    /**
+     * V9.57：锚点批次可能分多价卖出，「同价再卖」必须按**实际成交价**匹配，
+     * 不能拿所有卖出的加权均价（7.00 + 6.90 卖成 6.95，后面 7.00 再卖就永远归不进链）。
+     * 每个价位记录它最晚的一笔卖出日期；认不出日期（null）就 fail-closed 不归链。
+     */
+    const closeDatesByPrice = new Map<number, string | null>()
+    for (const s of related) {
+      if (s.priceCents === null) continue
+      const prev = closeDatesByPrice.get(s.priceCents)
+      const next =
+        prev && s.soldAt ? (prev > s.soldAt ? prev : s.soldAt) : (prev ?? s.soldAt ?? null)
+      closeDatesByPrice.set(s.priceCents, next)
+    }
     seeds.set(lot.sourceRow, {
       anchorRow: lot.sourceRow,
       stockName: lot.stockName,
       qty,
       costSum,
       closeSum,
-      closePrice: weighted(closeSum, qty),
-      closeDate: earliestDate(related.map((s) => s.soldAt)),
+      closePrices: [...closeDatesByPrice.keys()],
+      closeDatesByPrice,
+      closeDate: latestDate(related.map((s) => s.soldAt)),
       lossCents,
       relatedSellRows: [...new Set(related.map((s) => s.hedgedFromSellRow).filter((r): r is number => typeof r === 'number'))],
       sells: related,
@@ -148,7 +179,11 @@ function collectSeeds(
 
 /**
  * 价位槽收集（V9.49）：链下同价再卖的裸卖 → 根；同股、同价的买入批次 → 槽成员。
- * cover 输出「每笔裸卖被自动回补覆盖的股数」，ledger 用它把待买单自动关掉。
+ *
+ * V9.57：
+ * - cover 只统计**同价真实买入**（`lot:<行>`）；「记成交」生成的虚拟批次已经由
+ *   execBaseQty 扣过一次，再算进 cover 会让 baseQty 被减两遍。
+ * - 虚拟批次仍留在 slot.lots 里参与分支盈亏 / 持仓展示，只是不参与 cover / 计划量。
  */
 function collectPriceSlots(opts: {
   seeds: Map<number, Seed>
@@ -158,20 +193,28 @@ function collectPriceSlots(opts: {
   memberOwner: Map<number, RepairChainLink>
   anchorRows: Set<number>
   linkByAnchor: Map<number, RepairChainLink>
-}): { slots: PriceSlot[]; autoLotIds: Set<string>; cover: Map<number, number>; pending: Map<number, number> } {
+}): { slots: PriceSlot[]; autoLotIds: Set<string>; realCoverBySell: Map<number, number>; pending: Map<number, number> } {
   const { seeds, lots, sells, executions, memberOwner, anchorRows, linkByAnchor } = opts
   const slots: PriceSlot[] = []
   const autoLotIds = new Set<string>()
-  const cover = new Map<number, number>()
+  /** 每笔裸卖被「同价真实买入」覆盖的股数（不含回补成交虚拟批次） */
+  const realCover = new Map<number, number>()
   /** 每条链「槽里还没买回来」的股数（已成交的不算欠） */
   const pending = new Map<number, number>()
 
   /** 用户结束这条链的本地日期：之后发生的再卖 / 买入都算独立交易，不再自动归链 */
-  const endedIsoOf = (anchorRow: number): string | null => {
-    const at = linkByAnchor.get(anchorRow)?.closedAt
-    if (!at) return null
+  const endedIsoByAnchor = new Map<number, string | null>()
+  for (const [anchorRow, link] of linkByAnchor) {
+    const at = link.closedAt
+    if (!at) {
+      endedIsoByAnchor.set(anchorRow, null)
+      continue
+    }
     const d = new Date(at)
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    endedIsoByAnchor.set(
+      anchorRow,
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`,
+    )
   }
 
   // 有挂钩合成成交的裸卖走 V9.36 那条路径，不重复进价位槽
@@ -188,26 +231,26 @@ function collectPriceSlots(opts: {
     // 回补价位：P 列 > 卖出价 − 该股间隔（ledger 在生成 sell 时已经算好）
     const price = s.rebuyPriceCents ?? s.costCents
     if (price === null || price <= 0) continue
-    const seed = chainsByDate.find(
-      (x) =>
-        x.stockName === s.stockName &&
-        x.closePrice !== null &&
-        s.priceCents === x.closePrice &&
-        /**
-         * V9.55 修：**认不出先后就不归链**（fail-closed）。原来 `s.soldAt === null`
-         * 也放行，于是「卖出日期是 =TODAY() 公式、没有缓存值」的老裸卖（R60–63 这种）
-         * 会被当成链之后的同价再卖：它的待买被槽「买回」自动关掉 → 敞口凭空少 500 股、
-         * 守恒式红灯，链的盈利还被这笔空头收益顶成「已不亏钱」（e2e 四条断言就是这么红的）。
-         * 和 V9.47.1 一个口径：日期空着 → 无法判序 → 保守地保留整张单（想归链可以人工指定）。
-         */
-        x.closeDate !== null &&
-        s.soldAt !== null &&
-        s.soldAt >= x.closeDate,
-    )
+    const seed = chainsByDate.find((x) => {
+      if (x.stockName !== s.stockName) return false
+      // V9.57：按锚点**实际卖出过的价位**匹配，不再拿全部卖出的加权均价
+      if (!x.closePrices.includes(s.priceCents as number)) return false
+      const closeAt = x.closeDatesByPrice.get(s.priceCents as number) ?? null
+      /**
+       * V9.55 修：**认不出先后就不归链**（fail-closed）。原来 `s.soldAt === null`
+       * 也放行，于是「卖出日期是 =TODAY() 公式、没有缓存值」的老裸卖（R60–63 这种）
+       * 会被当成链之后的同价再卖：它的待买被槽「买回」自动关掉 → 敞口凭空少 500 股、
+       * 守恒式红灯，链的盈利还被这笔空头收益顶成「已不亏钱」（e2e 四条断言就是这么红的）。
+       * 和 V9.47.1 一个口径：日期空着 → 无法判序 → 保守地保留整张单（想归链可以人工指定）。
+       */
+      if (closeAt === null || s.soldAt === null || s.soldAt < closeAt) return false
+      // 用户结束的链不再收编之后的交易；V9.57：结束判据放进 find 里，
+      // 这样「最近的一条已结束」不会把同价位另一条还在进行的链挡住。
+      const ended = endedIsoByAnchor.get(x.anchorRow) ?? null
+      return ended === null || s.soldAt <= ended
+    })
     if (!seed) continue
-    const ended = endedIsoOf(seed.anchorRow)
-    // 链已经被用户结束：之后再卖的算独立交易，不再挂回（历史槽根照旧保留）
-    if (ended !== null && s.soldAt !== null && s.soldAt > ended) continue
+    const ended = endedIsoByAnchor.get(seed.anchorRow) ?? null
     let slot = slots.find((x) => x.chainAnchor === seed.anchorRow && x.priceCents === price)
     if (!slot) {
       slot = { chainAnchor: seed.anchorRow, stockName: seed.stockName, priceCents: price, roots: [], lots: [], date: null, endedIso: ended }
@@ -250,13 +293,16 @@ function collectPriceSlots(opts: {
     execBySell.set(e.sellExecId, (execBySell.get(e.sellExecId) ?? 0) + e.qty - e.rewardQty)
   }
   for (const slot of slots) {
-    let left = sum(slot.lots, (l) => l.qty)
+    // V9.57：只有真实买入能「盖住」裸卖。回补成交的虚拟批次已经在 execQty 里扣过，
+    // 算进来 === 同一笔股数被扣两次（敞口 / 链计划量因此少算）。
+    const realQty = sum(slot.lots.filter((l) => l.id === `lot:${l.sourceRow}`), (l) => l.qty)
+    let left = realQty
     let slotPending = 0
     for (const root of slot.roots) {
       const need = Math.max(0, root.qty - (execBySell.get(root.id) ?? 0))
       const q = Math.min(need, left)
       if (q > 0) {
-        cover.set(root.sourceRow, (cover.get(root.sourceRow) ?? 0) + q)
+        realCover.set(root.sourceRow, (realCover.get(root.sourceRow) ?? 0) + q)
         left -= q
       }
       // 已成交的部分不再是欠账，只把「没买回来」的算进计划量
@@ -265,7 +311,7 @@ function collectPriceSlots(opts: {
     pending.set(slot.chainAnchor, (pending.get(slot.chainAnchor) ?? 0) + slotPending)
   }
 
-  return { slots, autoLotIds, cover, pending }
+  return { slots, autoLotIds, realCoverBySell: realCover, pending }
 }
 
 /** 价位槽 → 分支：根裸卖的空头收益 + 槽内锁仓批次自己的卖出盈亏 */
@@ -301,16 +347,21 @@ function slotBranch(slot: PriceSlot, sellsByLot: Map<string, SellExecution[]>): 
   }
 }
 
-export function buildRepairChains(
-  opts: {
-    lots: readonly Lot[]
-    sells: readonly SellExecution[]
-    executions: readonly RebuyExecution[]
-    links?: readonly RepairChainLink[]
-  },
-  /** 输出：每笔裸卖被价位槽自动回补覆盖的股数（ledger 用来把待买单自动关掉） */
-  coverOut?: Map<number, number>,
-): RepairChain[] {
+export interface ChainBuildResult {
+  chains: RepairChain[]
+  /**
+   * 每笔裸卖被「同价真实买入」自动回补覆盖的股数。
+   * ledger 用它算待买基数 / 敞口 / 守恒式；不含回补成交虚拟批次（那些走 execQty）。
+   */
+  realCoverBySell: Map<number, number>
+}
+
+export function buildRepairChains(opts: {
+  lots: readonly Lot[]
+  sells: readonly SellExecution[]
+  executions: readonly RebuyExecution[]
+  links?: readonly RepairChainLink[]
+}): ChainBuildResult {
   const { lots, sells, executions, links = [] } = opts
   const lotById = new Map(lots.map((l) => [l.id, l]))
   const sellsByLot = new Map<string, SellExecution[]>()
@@ -347,7 +398,6 @@ export function buildRepairChains(
     anchorRows: new Set(seeds.keys()),
     linkByAnchor,
   })
-  if (coverOut) for (const [k, v] of auto.cover) coverOut.set(k, v)
 
   const chains: RepairChain[] = []
   // 所有权按股数区间传递：同一回补不能被两条链整笔认领。
@@ -535,5 +585,8 @@ export function buildRepairChains(
     })
   }
 
-  return chains.sort((a, b) => a.anchorRow - b.anchorRow)
+  return {
+    chains: chains.sort((a, b) => a.anchorRow - b.anchorRow),
+    realCoverBySell: auto.realCoverBySell,
+  }
 }

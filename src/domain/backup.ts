@@ -181,8 +181,11 @@ const TABLES: { key: keyof BackupShape; label: string; check: (list: unknown[]) 
  */
 function checkReferences(data: BackupShape): string | null {
   if (!Array.isArray(data.records)) return null
-  const rows = new Set((data.records as Obj[]).map((r) => r.sourceRow as number))
+  const recordList = data.records as Obj[]
+  const rows = new Set(recordList.map((r) => r.sourceRow as number))
   const list = (v: unknown): Obj[] => (Array.isArray(v) ? (v as Obj[]) : [])
+  const execs = list(data.rebuyExecutions)
+  const execIds = new Set(execs.map((e) => e.id).filter((id): id is string => typeof id === 'string'))
   const lotRow = (id: unknown): number | null => {
     if (typeof id !== 'string') return null
     const m = /^lot:(\d+)$/.exec(id)
@@ -200,6 +203,30 @@ function checkReferences(data: BackupShape): string | null {
     if (typeof id !== 'string') return null
     const m = /^sell:(\d+)$/.exec(id)
     return m ? Number(m[1]) : null
+  }
+
+  /**
+   * V9.57：records 自己的两个引用也要查——V9.56 只查了关联表。
+   * - soldLotId 指向不存在的批次 / 回补成交 → 那笔卖出的成本变 null，盈利静默不计；
+   * - nextRoundOfRow 指向不存在的行 → 下一轮买入的「已消耗额度」对不上。
+   */
+  for (let i = 0; i < recordList.length; i += 1) {
+    const sold = recordList[i].soldLotId
+    if (sold !== undefined) {
+      if (typeof sold !== 'string') return `records[${i}].soldLotId 不是字符串`
+      if (sold.startsWith('lot:exec:')) {
+        if (!execIds.has(sold.slice('lot:exec:'.length))) {
+          return `records[${i}].soldLotId 指向不存在的回补成交 ${sold}`
+        }
+      } else {
+        const row = lotRow(sold)
+        if (row === null || !rows.has(row)) return `records[${i}].soldLotId 指向不存在的批次 ${sold}`
+      }
+    }
+    const next = recordList[i].nextRoundOfRow
+    if (next !== undefined && !rows.has(next as number)) {
+      return `records[${i}].nextRoundOfRow 指向不存在的行 ${String(next)}`
+    }
   }
 
   const hedges = list(data.hedges)
@@ -240,7 +267,6 @@ function checkReferences(data: BackupShape): string | null {
     }
   }
 
-  const execs = list(data.rebuyExecutions)
   for (let i = 0; i < execs.length; i += 1) {
     const row = execRow(execs[i].sellExecId)
     if (row !== null && !rows.has(row)) return `rebuyExecutions[${i}] 指向不存在的卖出行 ${String(execs[i].sellExecId)}`

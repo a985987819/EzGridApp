@@ -120,6 +120,41 @@ describe('下一轮应买（V9.47）', () => {
     expect(rows).toHaveLength(0)
   })
 
+  it('V9.57：「记卖出」子成交已有待买 → 原批次不再排下一轮（同一笔钱不提示两次）', () => {
+    // 第 2 行买入 500 股被第 10 行的「记卖出」卖掉，买回由 rb:sell:10 负责
+    const child = { ...sell(10, '2026-10-21'), lotId: 'lot:2' }
+    const rows = buildNextRoundBuyRows({
+      lots: [lot(2, 1000, 500, 500)],
+      orders: [order(10, 500, 0)],
+      sells: [child],
+      merges: [],
+    })
+    expect(rows).toHaveLength(0)
+  })
+
+  it('V9.57：子成交已经买回完（虚拟批次已持有）也不再提示原批次', () => {
+    const child = { ...sell(10, '2026-10-21'), lotId: 'lot:2' }
+    const rows = buildNextRoundBuyRows({
+      lots: [lot(2, 1000, 500, 500)],
+      orders: [order(10, 0, 500)],
+      sells: [child],
+      merges: [],
+    })
+    expect(rows).toHaveLength(0)
+  })
+
+  it('V9.57：子卖出没有待买（没填 P）→ 原批次照旧给下一轮', () => {
+    const child = { ...sell(10, '2026-10-21'), lotId: 'lot:2' }
+    const rows = buildNextRoundBuyRows({
+      lots: [lot(2, 1000, 500, 500)],
+      orders: [],
+      sells: [child],
+      merges: [],
+    })
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ key: 'buy:2', priceCents: 1000, qty: 500 })
+  })
+
   it('沙盒模拟行不参与', () => {
     const rows = buildNextRoundBuyRows({
       lots: [lot(300001, 1031, 500, 500)],

@@ -39,6 +39,18 @@ export function consumedNextRounds(records: readonly RawRecord[]): Map<number,nu
   return out
 }
 /**
+ * V9.57：先卖后买的排最前。挂单页的待买列表、可挂买档、推荐挂单三处共用这一个比较器，
+ * 避免以后只改一处导致三个列表排序不一致。
+ */
+export function compareSellFirstOnly<T extends { sellFirst?: boolean }>(a: T, b: T): number {
+  return Number(b.sellFirst === true) - Number(a.sellFirst === true)
+}
+
+/** 推荐行排序：先卖后买 → 价格升序 → key 兜底稳定 */
+function compareBuySuggestion(a: BuySuggestion, b: BuySuggestion): number {
+  return compareSellFirstOnly(a, b) || a.priceCents - b.priceCents || a.key.localeCompare(b.key)
+}
+/**
  * 买入建议（V9.50）：输入改成「待买展示档」——卖单拆了几笔买入就按几档出建议，
  * 同价再合并（7.01 买 500 ×2 → 7.01 买 1000）。账务仍按 orderId 记成交。
  */
@@ -115,7 +127,7 @@ export function buildBuySuggestions(splits: readonly BuySplit[], next: readonly 
    * V9.54：先卖后买的待买排最前（欠的股是真欠，先处理），其余仍按价格从低到高。
    * 同组内价格升序，最后按 key 兜底保证顺序稳定（不吃 sort 的实现细节）。
    */
-  return list.sort((a,b)=>(Number(b.sellFirst)-Number(a.sellFirst))||(a.priceCents-b.priceCents)||a.key.localeCompare(b.key))
+  return list.sort(compareBuySuggestion)
 }
 /** 明细是按行聚合的视图，必须累计全部成交，不能 Map 覆盖上一笔。 */
 export function sellsByRecord(ledger: Ledger) {

@@ -1219,6 +1219,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setHedges([])
     setMerges([])
     setChainLinks([])
+    // V9.57：清库时把拆分买入也清掉（原来只清表、忘了清内存，行号复用时旧档会静默套上）
+    setBuyTargets([])
     setSandbox(EMPTY_SANDBOX)
     setBasename('—')
     setPreview(null)

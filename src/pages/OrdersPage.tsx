@@ -12,7 +12,7 @@ import { isoToSerial } from '../domain/edit'
 import { serialToIso } from '../domain/defaults'
 import { sandboxRowOf, type SandboxItem, type SandboxKind } from '../domain/sandbox'
 import { mergeTargetRows, type TargetRow } from '../domain/merge'
-import { buildBuySuggestions, consumedNextRounds, type BuySuggestion } from '../domain/suggestions'
+import { buildBuySuggestions, compareSellFirstOnly, consumedNextRounds, type BuySuggestion } from '../domain/suggestions'
 import { buildNextRoundBuyRows, type NextRoundBuyRow } from '../domain/buyBoard'
 import { buildNanoIdIndex } from '../ui/nanoid'
 import { downloadText, toCsv } from '../ui/csv'
@@ -150,7 +150,7 @@ export function OrdersPage({
    * sort 是稳定的，同组内保持账本原来的顺序，不用另设排序。
    */
   const orderedRebuys = useMemo(
-    () => [...orders].sort((a, b) => Number(b.sellFirst === true) - Number(a.sellFirst === true)),
+    () => [...orders].sort(compareSellFirstOnly),
     [orders],
   )
   const summary = view.byStock.find((s) => s.stockName === effectiveStock)
@@ -164,7 +164,8 @@ export function OrdersPage({
   /** 可挂钩 / 可改挂的裸卖：没买入批次、有卖出量、一次都没回补（与有没有待买订单无关，V9.32） */
   const nakedOpenRows = useMemo(() => {
     const execByRow = new Map<number, number>()
-    for (const o of orders) execByRow.set(o.sourceRow, o.execQty)
+    // V9.57：挂钩只作用在「基础股」上；奖励股是额外买入，不算已买回欠量
+    for (const o of orders) execByRow.set(o.sourceRow, Math.max(0, o.execQty - o.doneRewardQty))
     const set = new Set<number>()
     for (const r of previewRecords) {
       if (r.deletedAt || r.stockName !== effectiveStock) continue
@@ -193,7 +194,7 @@ export function OrdersPage({
   const orderById = new Map(orders.map((o) => [o.id, o]))
   // V9.54：沙盒预览的档位也把先卖后买排最前（与推荐挂单同一口径）
   const buyToday = range
-    ? buySplits.filter((b) => b.qty > 0 && within(b.priceCents)).sort((a, b) => Number(b.sellFirst === true) - Number(a.sellFirst === true))
+    ? buySplits.filter((b) => b.qty > 0 && within(b.priceCents)).sort(compareSellFirstOnly)
     : []
   const sellToday = range ? targetRows.filter((r) => within(r.priceCents)) : []
   const buyOut = range ? buySplits.filter((b) => b.qty > 0 && !within(b.priceCents)).length : 0

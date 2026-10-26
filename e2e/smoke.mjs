@@ -1971,6 +1971,13 @@ try {
       '锚点抽屉里有归属面板',
       Boolean(await evaluate(`Boolean(document.querySelector('[data-testid="chain-binder"]'))`)),
     )
+    // V9.57：人工归属收进「高级」折叠区，默认收起；先展开再勾选
+    check(
+      '手动归属默认收起',
+      await evaluate(`document.querySelector('[data-testid="chain-manual"]')?.open === false`),
+    )
+    await evaluate(`document.querySelector('[data-testid="chain-manual"] summary')?.click()`)
+    await sleep(300)
     check(
       '回本卡给出四个数字',
       await evaluate(`(() => {
