@@ -268,3 +268,51 @@ export async function parseWorkbookFile(file: File): Promise<ParseResult> {
   const buf = await file.arrayBuffer()
   return parseWorkbook(new Uint8Array(buf))
 }
+
+/**
+ * 【交易记录】模板表头（V9.64）：与上方解析别名一一对应，顺序即用户原 Excel 的列序。
+ * 模板下载与明细导出共用这一份表头，改列名只改这里。
+ */
+export const TEMPLATE_HEADERS = [
+  '股票',
+  '日期',
+  '买入价',
+  '买入份额',
+  '目标售价',
+  '实现份数',
+  '实现盈利',
+  '卖出日期',
+  '提前卖的买价',
+] as const
+
+const TEMPLATE_GUIDE: (string | number)[][] = [
+  ['列名', '说明', '必填'],
+  ['股票', '一行一笔交易；同一股票可以有很多行（每行一批买入）', '必填'],
+  ['日期', '买入日期。2026/1/5、2026-01-05、Excel 日期格都可以', '可空（纯先卖后买行）'],
+  ['买入价', '这批买入的成交价', '可空（纯先卖后买行）'],
+  ['买入份额', '买入股数。可填公式 FLOOR(6000/买入价,100)，文件没存计算结果也能解析', '可空（纯先卖后买行）'],
+  ['目标售价', '待卖目标价（E 列）。留空按「买入价 + 间隔」推导', '可空'],
+  ['实现份数', '已卖出的数量；留空 = 还没卖', '可空'],
+  ['实现盈利', '可留空——台账按买卖价自动重算，本列只是留档', '可空'],
+  ['卖出日期', '留空 = 未卖出。先卖后买允许卖出日期早于买入日期', '可空'],
+  ['提前卖的买价（P 列）', '先卖后买要买回的价位；留空按「卖出价 − 间隔」推导', '可空'],
+  ['', '', ''],
+  ['说明', '只读第一个工作表；多加的行直接留空股票格即可；改完保存为 .xlsx 导入', ''],
+]
+
+/** V9.64：下载模板（表头 + 填写说明两个工作表；导入只读第一个） */
+export async function buildTemplateWorkbook(): Promise<Uint8Array> {
+  await loadXlsx()
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([[...TEMPLATE_HEADERS]]), '交易记录')
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(TEMPLATE_GUIDE), '填写说明')
+  return XLSX.write(wb, { bookType: 'xlsx', type: 'array' }) as Uint8Array
+}
+
+/** V9.64：把明细行（已按表头顺序拼好）导出为【交易记录】格式的 xlsx 字节 */
+export async function exportRecordsWorkbook(rows: (string | number | null)[][]): Promise<Uint8Array> {
+  await loadXlsx()
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([[...TEMPLATE_HEADERS], ...rows]), '交易记录')
+  return XLSX.write(wb, { bookType: 'xlsx', type: 'array' }) as Uint8Array
+}

@@ -1,13 +1,13 @@
 import { useMemo, useRef, useState } from 'react'
 import { Button, Card, Tag, notificationOpen } from 'animal-island-ui'
 import { useApp } from '../../store/useApp'
-import { parseWorkbookFile, parseCsvFile } from '../../io/parseWorkbook'
+import { buildTemplateWorkbook, parseWorkbookFile, parseCsvFile } from '../../io/parseWorkbook'
 import { buildLedger } from '../../domain/ledger'
 import { compareBaseline } from '../../domain/baseline'
 import { buildNanoIdIndex } from '../../ui/nanoid'
 import { openFilePicker } from '../../ui/pickFile'
 import { CheckList } from '../../components/CheckGrid'
-import { downloadText, toCsv } from '../../ui/csv'
+import { downloadBytes, downloadText, toCsv } from '../../ui/csv'
 import { money, price, qty } from '../../ui/format'
 import type { TradesQuery } from '../../ui/nav'
 import { IconDownload, IconUpload } from '../../ui/icons'
@@ -186,8 +186,23 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
           </div>
         </label>
         <p className="tiny muted" style={{ margin: '6px 0 0' }}>
-          支持 .xlsx / .xls / .csv；xlsx 只读第 1 个工作表「交易记录」，csv 整表读入，不改原文件
+          支持 .xlsx / .xls / .csv；xlsx 只读第 1 个工作表「交易记录」，csv 整表读入，不改原文件。
+          还没有台账文件？点下面按钮下载标准模板，填好再选进来。
         </p>
+        <div className="row" style={{ marginTop: 8 }}>
+          <Button
+            size="small"
+            data-action="download-template"
+            onClick={() => {
+              void buildTemplateWorkbook().then((data) => {
+                downloadBytes('网格交易导入模板.xlsx', data, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+                notificationOpen({ message: '模板已下载', description: '【交易记录】表填数据，【填写说明】看格式，存成 .xlsx 再导入', type: 'success' })
+              })
+            }}
+          >
+            <IconDownload /> 下载 Excel 模板
+          </Button>
+        </div>
         <div className="row" style={{ marginTop: 10 }}>
           <span className="tiny muted">
             本地已有 {records.filter((r) => !r.deletedAt).length} 行

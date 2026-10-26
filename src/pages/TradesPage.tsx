@@ -14,7 +14,8 @@ import { isoDate, money, price, qty, signedMoney, todayIso, tone } from '../ui/f
 import { replaceRoute, type TradesQuery } from '../ui/nav'
 import { buildNanoIdIndex } from '../ui/nanoid'
 import { centsToYuan, toCents } from '../domain/money'
-import { downloadText, toCsv } from '../ui/csv'
+import { downloadBytes, downloadText, toCsv } from '../ui/csv'
+import { exportRecordsWorkbook } from '../io/parseWorkbook'
 import { useFlashOnAppear } from '../ui/motion'
 import { useKeyboardInset } from '../ui/viewport'
 import { useScrollHold } from '../ui/scrollHold'
@@ -678,6 +679,32 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     downloadText('交易明细.csv', toCsv([head, ...body]), 'text/csv;charset=utf-8')
   }
 
+  /**
+   * V9.64：按【交易记录】原表头逐列导出当前筛选的明细（xlsx），列序与导入模板一一对应——
+   * 导出的文件可以直接改完再导入（行身份按 股票+买入日期+买入价+份额 匹配，同身份更新卖出侧）。
+   * 日期写 YYYY-MM-DD 文本（解析器两种都认），价格写数字。
+   */
+  async function exportExcel() {
+    const body = visible.map((r) => [
+      r.rec.stockName,
+      r.lot ? isoDate(r.lot.buyDate) : serialToIso(r.rec.buyDateSerial) ?? '',
+      r.rec.buyPriceCents === null ? null : r.rec.buyPriceCents / 100,
+      r.lot?.qty ?? r.rec.buyQtyRaw ?? null,
+      (r.lot?.targetPriceCents ?? r.rec.targetPriceCents) == null
+        ? null
+        : (r.lot?.targetPriceCents ?? r.rec.targetPriceCents)! / 100,
+      r.rec.soldQty ?? null,
+      (r.rec.rawProfitCents ?? r.sell?.profitCents) == null
+        ? null
+        : (r.rec.rawProfitCents ?? r.sell!.profitCents!) / 100,
+      r.sell?.soldAt ?? serialToIso(r.rec.sellDateSerial) ?? '',
+      r.rec.earlyBuyPriceCents === null ? null : r.rec.earlyBuyPriceCents / 100,
+    ])
+    const data = await exportRecordsWorkbook(body)
+    downloadBytes(`交易明细-${todayIso()}.xlsx`, data, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    notificationOpen({ message: '已导出 Excel', description: `${visible.length} 行 · 【交易记录】表头可直接改完再导入`, type: 'success' })
+  }
+
   return (
     <div className="stack">
       <div className={`page-sticky trades-sticky${filtersHidden ? ' is-condensed' : ''}`} data-sticky="trades">
@@ -771,6 +798,9 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
             显示已删除
           </label>
           <div className="spacer" />
+          <Button size="small" data-action="export-excel" onClick={() => void exportExcel()}>
+            导出 Excel
+          </Button>
           <Button size="small" onClick={exportCsv}>导出 CSV</Button>
         </div>
         {/* 排序平铺（V9.4）：像表头一样直接可见；同项单击反序，再点回默认「录入顺序 新→旧」 */}
