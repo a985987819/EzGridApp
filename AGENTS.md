@@ -136,6 +136,11 @@ schemaVersion 11（V9.50 加 buyTargets；V9.49 加行级成交来源；V9.46 �
 - **animal-island-ui 的 `Tag` 不透传 `data-*`**（只透传 className/style/onClick/size 等声明过的 prop）：
   给 Tag 加 `data-xxx` 在 DOM 上找不到。e2e 对沙盒挂钩标签用 `.hedge-entry`；普通 div 行上的
   `[data-sandbox-row]` 不受影响。
+- **导入不要用组件库的 `Upload`（V9.52）**：它内部是隐藏 input + 程序 `click()` + 只写扩展名的
+  `accept`，iOS / 微信 WebView 里点开选择器后文件会被全部过滤成灰的，表现就是「无法选择文件」。
+  改用原生 `<label htmlFor>` + `<input type="file" id="import-file-input">`（label 激活最可靠），
+  `accept` 同时写上 MIME 与 `application/octet-stream`，并在 onChange 里清空 value 以便重复选同一文件；
+  桌面端的拖拽（`onDrop`）保留。e2e 仍用 `input[type="file"]` 塞 fixture。
 
 ## 设计决定记录（2026-10-24 用户拍板，接手 agent 不要擅自推翻）
 

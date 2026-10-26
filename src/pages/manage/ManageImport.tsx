@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Button, Card, Tag, Upload, notificationOpen } from 'animal-island-ui'
+import { Button, Card, Tag, notificationOpen } from 'animal-island-ui'
 import { useApp } from '../../store/useApp'
 import { parseWorkbookFile, parseCsvFile } from '../../io/parseWorkbook'
 import { buildLedger } from '../../domain/ledger'
@@ -112,25 +112,49 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
   return (
     <div className="stack">
       <Card>
-        <Upload
-          accept=".xlsx,.xls,.csv"
-          maxCount={1}
-          drag
-          disabled={busy}
-          showUploadList={false}
-          tip="支持 .xlsx / .xls / .csv；xlsx 只读第 1 个工作表「交易记录」，csv 整表读入，不改原文件"
-          beforeUpload={(file) => {
-            void handleFile(file)
-            return false
+        {/*
+         * V9.52 移动端修复：原来用组件库的 Upload（隐藏 input + 程序 click + 只认扩展名的 accept），
+         * iOS / 微信 WebView 里点开选择器后文件全被过滤成灰的，等于「无法选择文件」。
+         * 改成原生 <label> + <input type="file">（label 激活最可靠），accept 补上 MIME 与 octet-stream，
+         * 桌面端的拖拽仍然保留。
+         */}
+        <label
+          htmlFor="import-file-input"
+          className="import-drop"
+          data-testid="import-picker"
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => {
+            e.preventDefault()
+            if (busy) return
+            const f = e.dataTransfer?.files?.[0]
+            if (f) void handleFile(f)
           }}
+          style={{ display: 'block', cursor: 'pointer' }}
         >
+          <input
+            id="import-file-input"
+            name="import-file"
+            type="file"
+            accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv,application/octet-stream"
+            disabled={busy}
+            style={{ display: 'none' }}
+            onChange={(e) => {
+              const f = e.target.files?.[0]
+              // 同一个文件连选两次也要触发 change
+              e.currentTarget.value = ''
+              if (f) void handleFile(f)
+            }}
+          />
           <div className="empty-box" style={{ padding: '10px 0' }}>
             <strong>
               <IconUpload /> 选一个 Excel / CSV
             </strong>
-            或者把文件拖进来
+            点这里选择文件，或者把文件拖进来
           </div>
-        </Upload>
+        </label>
+        <p className="tiny muted" style={{ margin: '6px 0 0' }}>
+          支持 .xlsx / .xls / .csv；xlsx 只读第 1 个工作表「交易记录」，csv 整表读入，不改原文件
+        </p>
         <div className="row" style={{ marginTop: 10 }}>
           <span className="tiny muted">
             本地已有 {records.filter((r) => !r.deletedAt).length} 行
