@@ -6,7 +6,7 @@
  *             裸卖自身盈利暂缓；全额挂住不算敞口（交割股由批次提供）。
  *   回补一部分：**那部分永久了结**——高位批次不再复活（否则 10 元批次 + 6 元回补
  *             批次会双算成 1000 股），按卖出价记下的亏损留在合计盈利里，交给
- *             「回本链」用低位做T的价差逐轮冲平；还没买回的那截继续挂着。
+ *             「回本链」用后续归属交易的已实现净盈利逐笔冲抵（V9.46）；还没买回的那截继续挂着。
  *   全部买回：整批了结，只剩回补批次在待卖，实物股数对得上。
  *   一直不买回：暂记的负盈利就是真实亏损（计入合计盈利）。
  */
@@ -153,7 +153,8 @@ describe('先卖后买挂钩（V9.26）', () => {
     // 合计盈利：留着了结那笔 −1,500（不是复原成 +250）
     expect(led.totals.profitCents).toBe(-150000)
     expect(led.checks.every((c) => c.ok)).toBe(true)
-    // 回本链：原成本 10.00 被 7.00 了结，低位回补 6.50 挣回 0.50/股 → 有效成本 9.50
+    // 回本链（V9.46）：7.00 了结即成链，亏 −1,500 全挂在链上；回补 6.50 的 0.50/股
+    // 只是「回补节省」，那 500 股还没再卖出 → 进度 0，还差 1,500
     expect(led.repairChains).toHaveLength(1)
     const chain = led.repairChains[0]
     expect(chain).toMatchObject({
@@ -162,15 +163,27 @@ describe('先卖后买挂钩（V9.26）', () => {
       anchorCostCents: 1000,
       closedAtCents: 700,
       lossCents: -150000,
-      recoveredCents: 25000,
-      effectiveCostCents: 950,
-      gapCents: 125000,
+      profitCents: 0,
+      netCents: -150000,
+      savingCents: 25000,
+      gapCents: 150000,
       done: false,
+      holdingQty: 500,
+      plannedQty: 0,
+      relatedSellRows: [3],
     })
-    expect(chain.cycles).toHaveLength(1)
-    expect(chain.cycles[0]).toMatchObject({ sellRow: 3, sellPriceCents: 700, rebuyPriceCents: 650, qty: 500 })
-    // 7.00 卖 < 当时有效成本 10.00 → 标「低位出货」
-    expect(chain.cycles[0].belowEffectiveCost).toBe(true)
+    expect(chain.branches).toHaveLength(1)
+    expect(chain.branches[0]).toMatchObject({
+      kind: 'rebuy',
+      row: null,
+      buyPriceCents: 650,
+      qty: 500,
+      remainingQty: 500,
+      sellQty: 0,
+      profitCents: 0,
+      savingCents: 25000,
+      allocatedLossCents: -150000,
+    })
   })
 
   it('用户场景：10 买 500 挂 7 卖 500，6 回补 → 只记 6 买 7 卖，高位那笔不再回来（V9.36）', () => {
@@ -195,13 +208,18 @@ describe('先卖后买挂钩（V9.26）', () => {
     expect(led.targets.find((t) => t.lotId === vl?.id)?.priceCents).toBe(650)
     expect(led.totals.targetQty).toBe(500)
     expect(led.totals.netQty).toBe(500)
-    // 已实现：−1,500（10 元按 7 元了结）；回补挣的 1.00/股体现为「有效成本 10 → 9」
+    // 已实现：−1,500（10 元按 7 元了结）；6 元回补省下的 1.00/股只算「回补节省」
     expect(led.totals.profitCents).toBe(-150000)
     const chain = led.repairChains[0]
-    expect(chain).toMatchObject({ lossCents: -150000, recoveredCents: 50000, gapCents: 100000, done: false })
-    expect(chain.effectiveCostCents).toBe(900)
-    // 再回血 1,000 元（两次 6.5 价差的规模）就够冲平 —— 结构上 gapCents 归零即 done
-    expect(chain.done).toBe(false)
+    expect(chain).toMatchObject({
+      lossCents: -150000,
+      profitCents: 0,
+      savingCents: 50000,
+      gapCents: 150000,
+      holdingQty: 500,
+      done: false,
+    })
+    // 结构上：gapCents 要靠这 500 股真的高价卖出兑现才归零
     expect(led.checks.every((c) => c.ok)).toBe(true)
   })
 
@@ -262,9 +280,16 @@ describe('先卖后买挂钩（V9.26）', () => {
     expect(led.totals.profitCents).toBe(-150000)
     expect(led.anomalies.filter((a) => a.kind === 'hedgeMismatch' || a.kind === 'hedgeOverflow')).toHaveLength(0)
     expect(led.checks.every((c) => c.ok)).toBe(true)
-    // 链只认「已了结」的 100 股：亏 −300，回血 (7 − 6.5) × 100 = +50
+    // 链只认「已了结」的 100 股：亏 −300；回补的 100 股还没再卖出 → 进度 0，节省 +50
     const chain = led.repairChains[0]
-    expect(chain).toMatchObject({ anchorQty: 100, lossCents: -30000, recoveredCents: 5000, gapCents: 25000 })
+    expect(chain).toMatchObject({
+      anchorQty: 100,
+      lossCents: -30000,
+      profitCents: 0,
+      savingCents: 5000,
+      gapCents: 30000,
+      holdingQty: 100,
+    })
   })
 
   it('V9.33 只挂一部分（没买回）：差额仍算敞口并标 hedgeMismatch，守恒式仍平', () => {

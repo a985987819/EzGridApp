@@ -6,6 +6,7 @@ import type {
   LotMergeLink,
   RawRecord,
   RebuyExecution,
+  RepairChainLink,
   StockConfig,
   TradePlan,
 } from '../domain/types'
@@ -37,6 +38,7 @@ class GridTradingDB extends Dexie {
   extraTargets!: Table<ExtraTarget, string>
   hedges!: Table<HedgeLink, string>
   merges!: Table<LotMergeLink, string>
+  chainLinks!: Table<RepairChainLink, string>
 
   constructor() {
     super('grid-trading')
@@ -74,6 +76,10 @@ class GridTradingDB extends Dexie {
     // V9.45：同价未卖完批次的合并关联（只影响挂单提醒的合并显示，不改 records）
     this.version(8).stores({
       merges: 'id, stockName',
+    })
+    // V9.46：回本链归属（锚点行 + 后续归属的真实买入行 + 用户结束时间），盈亏仍纯派生
+    this.version(9).stores({
+      chainLinks: 'id, anchorRow, stockName',
     })
   }
 }

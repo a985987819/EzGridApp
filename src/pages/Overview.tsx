@@ -59,8 +59,10 @@ export function Overview({
 
   const hiddenCount = viewLedger.byStock.filter((s) => s.rows > 0 && !enabledNames.includes(s.stockName)).length
   const current = withRows.find((s) => s.stockName === active) ?? withRows[0]
-  /** V9.36 当前股票的回本链（高位批次了结后待回本的账） */
-  const chainsOfStock = current ? viewLedger.repairChains.filter((c) => c.stockName === current.stockName) : []
+  /** V9.46 当前股票的回本链：只摆还开着的；已结束（含已回本）的折成一行，点进明细看全部 */
+  const allChains = current ? viewLedger.repairChains.filter((c) => c.stockName === current.stockName) : []
+  const chainsOfStock = allChains.filter((c) => c.closedByUserAt === null && !c.done)
+  const closedChainCount = allChains.length - chainsOfStock.length
   // V9.28 当前股票概述：今年共卖 x 次（真实卖出，不含挂钩暂记）。
   // 早退（无数据）之后才到这里，不能用 useMemo——过滤量小，直接算
   const yearSellCount = current
@@ -206,12 +208,17 @@ export function Overview({
               <div className={`v long ${tone(current.profitCents)}`}>{signedMoney(current.profitCents)}</div>
             </div>
           </div>
-          {/* V9.36 回本链：高位批次被回补了结后不留死角——亏损挂在链上，低位做T逐轮冲平 */}
-          {chainsOfStock.length > 0 && (
+          {/* V9.46 回本链：亏损清仓当场成链，进度只累计归属交易的已实现净盈利 */}
+          {(chainsOfStock.length > 0 || closedChainCount > 0) && (
             <div className="stack tight" data-testid="overview-chains">
               {chainsOfStock.map((c) => (
                 <RepairChainCard key={c.id} chain={c} dense rowLabel={(row) => recordNoLabel(row, recordNo)} />
               ))}
+              {closedChainCount > 0 && (
+                <p className="tiny muted" style={{ margin: 0 }} data-testid="overview-chains-closed">
+                  另有 {closedChainCount} 条已结束的回本链（含已回本），历史留在明细页那笔买入的抽屉里
+                </p>
+              )}
             </div>
           )}
         </div>

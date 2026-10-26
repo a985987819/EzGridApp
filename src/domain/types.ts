@@ -66,7 +66,7 @@ export interface RawRecord {
 /** 编辑审计（P10）：实体 / 字段 / 旧值 / 新值 / 时间 / 来源 */
 export interface AuditLog {
   id?: number
-  entity: 'record' | 'stock' | 'order' | 'merge'
+  entity: 'record' | 'stock' | 'order' | 'merge' | 'chain'
   entityId: string
   field: string
   oldValue: string
@@ -174,50 +174,86 @@ export interface HedgeLink {
 }
 
 /**
- * 回本链（V9.36）：先卖后买挂钩的高位批次一旦被「回补」了结，它按卖出价记下的亏损
- * （10 元成本按 7 元了结 = −1,500）不再随回补消失，而是变成一条待回本的账。
- * 低位每做一轮「卖高 → 回补低」，价差持续累加进来，够冲平就标「已回本」。
- * 纯派生：来源是 hedges + 回补成交，不落库。
+ * 回本链的后续分支（V9.46）：一笔归属进链的买入批次。
+ *   - record = 真实明细行（买回后再卖出，盈亏进链）；
+ *   - rebuy  = 「记成交」产生的回补批次（虚拟，未卖前只有持仓与「回补节省」）。
+ * 原始亏损按买入份额分摊到各分支：分摊额 = 原始亏损 × 本支买入股数 / 锚点股数。
  */
-export interface RepairCycle {
-  /** 这张裸卖（先卖后买）的行号 */
-  sellRow: number
-  sellPriceCents: number
-  /** 回补价（多笔成交按股数加权） */
-  rebuyPriceCents: number | null
+export interface RepairBranch {
+  /** 真实行号；回补批次用 exec:<成交 id> */
+  key: string
+  /** 真实行号；回补批次为 null */
+  row: number | null
+  kind: 'record' | 'rebuy'
+  buyDate: string | null
+  buyPriceCents: number
   qty: number
-  /** 本轮价差 =（卖价 − 回补价）× 股数，正数表示回血 */
-  recoveredCents: number
+  remainingQty: number
+  sellPriceCents: number | null
+  sellQty: number
   soldAt: string | null
-  /** 卖出价低于当时的有效成本（低位出货：不回补就是纯亏） */
-  belowEffectiveCost: boolean
-  /** 那一轮的有效成本（分/股），给界面标注用 */
-  effectiveCostAtCents: number
+  /** 本支后续已实现净盈利（未卖 = 0） */
+  profitCents: number
+  /** 分摊到的原始亏损（≤0） */
+  allocatedLossCents: number
+  /** 分支累计 = 分摊亏损 + 已实现盈利 */
+  netCents: number
+  /** 回补批次：相对锚点卖出价省下的资金（只展示，不计入回本进度） */
+  savingCents: number
 }
 
+/**
+ * 回本链（V9.46 新口径）：一条链 = 一次「亏着清仓」的原始亏损 + 后续归属交易的已实现净盈利。
+ *
+ * 主进度只认**已完成的买卖净盈利**；买回后没卖只有持仓和浮盈亏，不算回本。
+ * 回补价差（卖价 − 买回价）单独作为「回补节省」展示，绝不重复计入进度。
+ * 链在首次亏损清仓时就成立——一直不买回，原始亏损也留在账上。
+ */
 export interface RepairChain {
-  /** chain:<锚行号> */
   id: string
   stockName: string
-  /** 被挂掉的高位批次行号 */
+  /** 锚点行：这次亏损清仓对应的买入批次 */
   anchorRow: number
-  /** 了结的股数 */
   anchorQty: number
-  /** 高位批次原始成本（分/股） */
   anchorCostCents: number
-  /** 了结时的卖出价（分/股，多笔按股数加权） */
   closedAtCents: number | null
-  /** 了结记下的亏损（负数）= Σ(卖价 − 成本) × 股数 */
+  /** 原始已实现亏损（≤0） */
   lossCents: number
-  /** 已回血（正数）：各轮价差累加 */
-  recoveredCents: number
-  /** 有效成本 =（原成本 × 股数 − 回血）/ 股数 */
-  effectiveCostCents: number
-  /** 还差多少回本（正数；冲平后为 0） */
+  /** 后续归属交易的已实现净盈利（可负） */
+  profitCents: number
+  /** 链累计盈亏 = 原始亏损 + 后续净盈利 */
+  netCents: number
+  /** 距离回本（正数；已回本为 0） */
   gapCents: number
-  /** 回血 ≥ 亏损 → 这笔高位买入已彻底冲平 */
   done: boolean
-  cycles: RepairCycle[]
+  /** 已覆盖比例 0..1 */
+  covered: number
+  /** 回补价差合计（只展示，不计进度） */
+  savingCents: number
+  /** 链条当前实际持仓（归属批次还没卖的股数，含回补批次） */
+  holdingQty: number
+  /** 计划还要买回的股数 = 锚点股数 − 已归属买入股数 */
+  plannedQty: number
+  /** 还没买回那部分对应的原始亏损（≤0，未分摊） */
+  unallocatedLossCents: number
+  /** 人为结束这条链的时间（null = 还开着） */
+  closedByUserAt: number | null
+  /** 触发这次了结的裸卖行（先卖后买挂在锚点批次上的那笔；用于在裸卖行上也展示链） */
+  relatedSellRows: number[]
+  branches: RepairBranch[]
+}
+
+/** 回本链归属（V9.46）：锚点 + 后续归属的真实买出行 */
+export interface RepairChainLink {
+  /** chainlink:<锚点行号>（派生链的 id 才是 chain:<行号>） */
+  id: string
+  anchorRow: number
+  stockName: string
+  /** 归属到本链的后续买入行（真实 records） */
+  memberRows: number[]
+  /** 人为结束的时间 */
+  closedAt: number | null
+  at: number
 }
 
 /**

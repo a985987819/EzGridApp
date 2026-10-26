@@ -20,6 +20,7 @@ export interface BackupShape {
   extraTargets?: unknown
   hedges?: unknown
   merges?: unknown
+  chainLinks?: unknown
 }
 
 type Obj = Record<string, unknown>
@@ -124,6 +125,23 @@ function checkMerges(list: unknown[]): string | null {
   return null
 }
 
+/** 回本链归属（V9.46）：anchorRow + memberRows 直接喂给 buildRepairChains，缺了会白屏 */
+function checkChainLinks(list: unknown[]): string | null {
+  for (let i = 0; i < list.length; i += 1) {
+    const c = list[i] as Obj | null
+    if (!isObj(c)) return `chainLinks[${i}] 不是对象`
+    if (typeof c.id !== 'string' || c.id === '') return `chainLinks[${i}] 缺 id`
+    if (!isRow(c.anchorRow)) return `chainLinks[${i}] 缺 anchorRow（锚点行号）`
+    if (typeof c.stockName !== 'string' || c.stockName === '') return `chainLinks[${i}] 缺 stockName`
+    if (!Array.isArray(c.memberRows)) return `chainLinks[${i}].memberRows 不是数组`
+    for (let j = 0; j < c.memberRows.length; j += 1) {
+      if (!isRow(c.memberRows[j])) return `chainLinks[${i}].memberRows[${j}] 不是整数行号`
+    }
+    if (c.closedAt !== null && !isNum(c.closedAt)) return `chainLinks[${i}] 的 closedAt 只能是数字或 null`
+  }
+  return null
+}
+
 /** 每张表：是数组 + 逐项校验；键不存在就跳过（老备份允许缺表） */
 const TABLES: { key: keyof BackupShape; label: string; check: (list: unknown[]) => string | null }[] = [
   { key: 'records', label: 'records', check: checkRecords },
@@ -133,6 +151,7 @@ const TABLES: { key: keyof BackupShape; label: string; check: (list: unknown[]) 
   { key: 'extraTargets', label: '拆分目标', check: checkExtraTargets },
   { key: 'hedges', label: '挂钩分配', check: checkHedges },
   { key: 'merges', label: '合并买单', check: checkMerges },
+  { key: 'chainLinks', label: '回本链归属', check: checkChainLinks },
 ]
 
 /** 通过返回 null；不通过返回中文原因，恢复方直接抛错 */

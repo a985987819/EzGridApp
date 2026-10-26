@@ -61,4 +61,23 @@ describe('恢复前的备份内容校验', () => {
     ).toBeNull()
     expect(validateBackup({ merges: 'nope' })).toBe('merges 不是数组')
   })
+
+  it('回本链归属缺 anchorRow/memberRows 拒绝，空成员（仅结束标记）放行（V9.46）', () => {
+    expect(validateBackup({ chainLinks: [{ id: 'chainlink:2', stockName: '柳工' }] })).toContain('anchorRow')
+    expect(
+      validateBackup({ chainLinks: [{ id: 'chainlink:2', anchorRow: 2, memberRows: [3] }] }),
+    ).toContain('stockName')
+    expect(
+      validateBackup({ chainLinks: [{ id: 'chainlink:2', anchorRow: 2, stockName: '柳工', memberRows: ['x'] }] }),
+    ).toContain('整数行号')
+    expect(
+      validateBackup({
+        chainLinks: [{ id: 'chainlink:2', anchorRow: 2, stockName: '柳工', memberRows: [3], closedAt: 'nope' }],
+      }),
+    ).toContain('closedAt')
+    expect(
+      validateBackup({ chainLinks: [{ id: 'chainlink:2', anchorRow: 2, stockName: '柳工', memberRows: [], closedAt: 1 }] }),
+    ).toBeNull()
+    expect(validateBackup({ chainLinks: 'nope' })).toBe('chainLinks 不是数组')
+  })
 })

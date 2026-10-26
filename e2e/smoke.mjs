@@ -147,6 +147,18 @@ try {
       if (!el) return false
       el.click(); return true
     })()`)
+  // V9.46：按行上的回本链身份点开明细行（anchor = 亏着清仓的锚点）；返回命中的行号，没命中返回 null
+  const clickChainRow = async (kind, stock = null) => {
+    const where = stock
+      ? `el.querySelector('.name')?.textContent.trim() === ${JSON.stringify(stock)}`
+      : 'true'
+    return evaluate(`(() => {
+      const items = [...document.querySelectorAll('.trade-item[data-chain="${kind}"]')].filter((el) => ${where})
+      if (items.length === 0) return null
+      items[0].click()
+      return items[0].getAttribute('data-row')
+    })()`)
+  }
   const nav = async (key) => {
     const done = await evaluate(`(() => {
       const b = document.querySelector('button[data-nav="${key}"]')
@@ -725,14 +737,15 @@ try {
   check('复位后 URL 不带筛选', (await evaluate('location.hash')) === '#/trades', await evaluate('location.hash'))
 
   // V9.5：默认隐藏已完成，chip 一键找回，URL 记住 showDone=1
-  check('默认隐藏已完成（62 行里可见 33 行）', allCount === 33, String(allCount))
+  // V9.46：奥佳华第 26/30 笔亏着清仓、当场成了回本链的锚点——还欠着账，不算完成，33 → 35
+  check('默认隐藏已完成（62 行里可见 35 行）', allCount === 35, String(allCount))
   check('点「隐藏已完成」chip 放开', await toggleStatus('隐藏已完成'))
   const withDone = await headCount()
   check('放开后已完成行回来（62 行）', withDone === 62, String(withDone))
   check('URL 记住 showDone=1', (await evaluate('location.hash')).includes('showDone=1'), await evaluate('location.hash'))
   check('已完成行出现（R2 已卖完）', Boolean(await evaluate(`Boolean(document.querySelector('[data-row="2"]'))`)))
   check('再点恢复隐藏', await toggleStatus('隐藏已完成'))
-  check('恢复隐藏后回到 33 行', (await headCount()) === allCount, String(await headCount()))
+  check('恢复隐藏后回到 35 行', (await headCount()) === allCount, String(await headCount()))
   check('明细顶部吸顶', (await stickyOf('trades')) === 'sticky')
   const tradePills = await evaluate(`JSON.stringify([...document.querySelectorAll('.stock-tabs > *')].map(e => e.textContent.trim()))`)
   check('明细也有股票药丸（含「全部」）', JSON.parse(tradePills)[0] === '全部' && JSON.parse(tradePills).length === 5, tradePills)
@@ -1826,8 +1839,9 @@ try {
         '回补后概览出现回本链',
         Boolean(await evaluate(`Boolean(document.querySelector('[data-testid="overview-chains"]'))`)),
       )
-      check('回本链显示「已回血」进度', text.includes('已回血'))
+      check('回本链显示「后续净盈利」', text.includes('后续净盈利'))
       check('回本链给出「还差」金额', text.includes('还差'))
+      check('未卖出时进度只算持仓', text.includes('当前持有'))
       const chainShot = await send('Page.captureScreenshot', { format: 'png' })
       writeFileSync(join(OUT, 'overview-chain.png'), Buffer.from(chainShot.data, 'base64'))
     }
@@ -1838,11 +1852,91 @@ try {
   console.log('\n[11] 删掉这笔手动卖出，恢复原状')
   await nav('trades')
   await sleep(700)
-  // V9.36：被了结的高位批次虽然「卖完了」，但还欠着回本，默认隐藏已成交时也要留在列表里
+  // V9.46：亏着清仓的锚点虽然「卖完了」，但还欠着回本，默认隐藏已成交时也要留在列表里
   text = await bodyText()
-  check('明细里仍能看到「高位已了结」那一行', text.includes('高位已了结'))
+  check('明细里仍能看到「回本链 · 还差」那一行', text.includes('回本链 · 还差'))
   const listChainShot = await send('Page.captureScreenshot', { format: 'png' })
   writeFileSync(join(OUT, 'trades-chain-list.png'), Buffer.from(listChainShot.data, 'base64'))
+
+  // V9.46 归属面板：把一笔独立录入的低位买卖归进这条链，再由用户结束 / 重开
+  const anchorRow = await clickChainRow('anchor', '柳工')
+  check('打开高位批次那笔（回本链锚点）的抽屉', anchorRow !== null, String(anchorRow))
+  if (anchorRow !== null) {
+    await sleep(700)
+    check(
+      '锚点抽屉里有归属面板',
+      Boolean(await evaluate(`Boolean(document.querySelector('[data-testid="chain-binder"]'))`)),
+    )
+    check(
+      '回本卡给出四个数字',
+      await evaluate(`(() => {
+        const c = document.querySelector('[data-testid="chain-section"] .chain-card')
+        if (!c) return false
+        const t = c.textContent
+        return t.includes('原始亏损') && t.includes('后续净盈利') && t.includes('链累计盈亏') && t.includes('还差多少')
+      })()`),
+    )
+    check(
+      '显示当前持仓与计划买回',
+      await evaluate(`(() => {
+        const c = document.querySelector('[data-testid="chain-section"] .chain-card')
+        if (!c) return false
+        return /当前持有\\s*[\\d,]+\\s*股/.test(c.textContent)
+      })()`),
+    )
+    const pickedRow = await evaluate(`(() => {
+      const el = document.querySelector('[data-chain-candidate]')
+      if (!el) return null
+      const inp = el.querySelector('input')
+      if (!inp) return null
+      inp.click()
+      return el.getAttribute('data-chain-candidate')
+    })()`)
+    check('归属面板列出候选买入批次', pickedRow !== null, String(pickedRow))
+    if (pickedRow !== null) {
+      check('点「保存归属」', await clickByText('button', '保存归属'))
+      await sleep(1200)
+      check(
+        '归属后卡片仍在（那笔盈亏进链）',
+        Boolean(await evaluate(`Boolean(document.querySelector('[data-testid="chain-binder"]'))`)),
+      )
+      const memberMark = await evaluate(`document.querySelectorAll('[data-row="${pickedRow}"][data-chain="member"]').length`)
+      check('被归属的那笔标成链成员', memberMark === 1, String(memberMark))
+      // 取消勾选再保存 = 退回独立交易（后面还要按原口径断言，这里恢复原状）
+      await evaluate(`document.querySelector('[data-chain-candidate="${pickedRow}"] input')?.click()`)
+      await sleep(500)
+      check('点「保存归属」撤销', await clickByText('button', '保存归属'))
+      await sleep(1200)
+      check(
+        '撤销后那笔不再是链成员',
+        (await evaluate(`document.querySelectorAll('[data-row="${pickedRow}"][data-chain="member"]').length`)) === 0,
+      )
+    }
+    check('点「结束这条链」', await clickByText('button', '结束这条链'))
+    await sleep(1300)
+    await closeDrawer()
+    await sleep(400)
+    await nav('overview')
+    await sleep(900)
+    await clickByText('.stock-tabs > *', '柳工')
+    await sleep(700)
+    check(
+      '概览把已结束的链折成一行提示',
+      Boolean(await evaluate(`Boolean(document.querySelector('[data-testid="overview-chains-closed"]'))`)),
+    )
+    // 重开，回到后续断言要的默认状态
+    await nav('trades')
+    await sleep(700)
+    const reopened = await clickChainRow('anchor', '柳工')
+    if (reopened !== null) {
+      await sleep(700)
+      check('点「重新打开」', await clickByText('button', '重新打开'))
+      await sleep(1200)
+      await closeDrawer()
+      await sleep(400)
+    }
+  }
+
   await evaluate(`document.querySelector('[data-row="100000"]')?.click()`)
   await sleep(600)
   // V9.36：这笔裸卖自己身上也能看到它牵连的回本链（高位批次已了结、正在被低位回血）

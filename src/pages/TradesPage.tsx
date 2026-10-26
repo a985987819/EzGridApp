@@ -20,6 +20,7 @@ import { TradeItem, buyDateOf, isDone, sellDateOf, type TradeRow } from '../comp
 import { HedgeBinder, HedgeSheet } from '../components/HedgeBinder'
 import { LotMergeBinder } from '../components/LotMergeBinder'
 import { RepairChainCard } from '../components/RepairChainCard'
+import { ChainBinder } from '../components/ChainBinder'
 
 /** 状态筛选可多选（V9 可叠加）：命中的行要满足每一个勾选的状态 */
 const STATUS_KEYS = ['holding', 'soldout', 'pending', 'exposure', 'buyDateMissing', 'sellDateMissing', 'needsPrice'] as const
@@ -151,6 +152,8 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     addExtraTarget,
     removeExtraTarget,
     hedges,
+    chainLinks,
+    setChainMembers,
   } = useApp()
   const [stockFilter, setStockFilter] = useState(urlQuery.stock ?? 'all')
   const [statuses, setStatuses] = useState<StatusKey[]>(() => (urlQuery.status ?? []).filter(isStatusKey))
@@ -193,6 +196,8 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   const [draft, setDraft] = useState<Record<EditableKey, string>>(BLANK_DRAFT)
   const [adding, setAdding] = useState(false)
   const [form, setForm] = useState<ManualInput>(BLANK_FORM)
+  /** V9.46：从回本链点的「＋ 新增一笔」——新行落库后自动归入这条链 */
+  const [pendingChainAnchor, setPendingChainAnchor] = useState<number | null>(null)
 
   const [tpPrice, setTpPrice] = useState('')
   const [tpQty, setTpQty] = useState('')
@@ -262,10 +267,14 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   const { filtered, noDateHidden } = useMemo(() => {
     let hidden = 0
     /**
-     * V9.36 回本链的锚点（被了结的高位批次）：它「卖完了但还没回本」，
+     * V9.46 回本链的锚点（亏着清仓的那笔）与归属成员：它们都还「欠着账」，
      * 不是真的完成——默认 hideDone 也留着，否则用户找不到那笔 10 元买入去哪了。
      */
-    const chainAnchors = new Set(ledger.repairChains.map((c) => c.anchorRow))
+    const chainRows = new Set<number>()
+    for (const c of ledger.repairChains) {
+      chainRows.add(c.anchorRow)
+      for (const b of c.branches) if (b.row !== null) chainRows.add(b.row)
+    }
     const list = rows.filter((r) => {
       // nanoId 深链要能命中已软删的行，showDeleted 的门对目标行放行
       const rId = nano.rowToId.get(r.rec.sourceRow)
@@ -291,7 +300,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       if (statuses.length > 0 && !statuses.every((k) => statusMatch(r, k))) return false
       // V9.5：默认隐藏已完成；勾「已卖完」或深链带该状态时自动放开，避免空列表陷阱
       // V9.36：回本链锚点不算完成（还欠着一笔要补），继续显示
-      if (hideDone && !statuses.includes('soldout') && isDone(r) && !chainAnchors.has(r.rec.sourceRow)) return false
+      if (hideDone && !statuses.includes('soldout') && isDone(r) && !chainRows.has(r.rec.sourceRow)) return false
       // 日期区间：卖出日期优先，其次买入日期；没日期的行在有区间条件时直接排除
       if (fromDate || toDate) {
         const d = tradeDate(r)
@@ -430,19 +439,29 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   /** 点标签打开的「裸卖待挂钩」弹层（null = 关着） */
   const [hedgeRow, setHedgeRow] = useState<number | null>(null)
 
-  /** V9.36 回本链：高位批次行号 → 那条链（用于行上标签 + 抽屉里的进度卡） */
+  /** V9.46 回本链：高位批次行号 → 那条链（用于行上标签 + 抽屉里的进度卡） */
   const repairByAnchor = useMemo(
     () => new Map(ledger.repairChains.map((c) => [c.anchorRow, c])),
     [ledger.repairChains],
   )
+  /** 归属成员行 → 它归进去的那条链 */
+  const repairByMember = useMemo(() => {
+    const m = new Map<number, RepairChain>()
+    for (const c of ledger.repairChains) {
+      for (const b of c.branches) {
+        if (b.row !== null) m.set(b.row, c)
+      }
+    }
+    return m
+  }, [ledger.repairChains])
   /** 回本链的另一个入口：这笔裸卖（先卖后买）自己身上也能看到它牵连的那条链 */
   const repairBySell = useMemo(() => {
     const m = new Map<number, RepairChain[]>()
     for (const c of ledger.repairChains) {
-      for (const cy of c.cycles) {
-        const arr = m.get(cy.sellRow) ?? []
+      for (const sellRow of c.relatedSellRows) {
+        const arr = m.get(sellRow) ?? []
         if (!arr.some((x) => x.id === c.id)) arr.push(c)
-        m.set(cy.sellRow, arr)
+        m.set(sellRow, arr)
       }
     }
     return m
@@ -519,14 +538,38 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     return n !== null ? `第 ${n} 笔` : `第 ${row} 行`
   }
 
+  /** 链上「＋ 新增一笔归入本链」：按锚点股票打开新增表单，记住锚点等落库后自动归属 */
+  function startAddIntoChain(anchorRow: number) {
+    const rec = records.find((r) => r.sourceRow === anchorRow)
+    setPendingChainAnchor(anchorRow)
+    setForm(blankForm(rec?.stockName ?? (stockFilter === 'all' ? stockNames[0] ?? '' : stockFilter)))
+    setOpenRow(null)
+    setAdding(true)
+  }
+
   async function onAdd() {
     try {
       const row = await addManualRecord(form)
       setAdding(false)
+      const anchor = pendingChainAnchor
+      setPendingChainAnchor(null)
       setForm(blankForm(form.stockName))
+      // V9.46：链上「＋ 新增一笔」→ 新行自动继承归属，不用回头再勾一次
+      if (anchor !== null) {
+        const link = chainLinks.find((l) => l.anchorRow === anchor)
+        await setChainMembers(anchor, [...(link?.memberRows ?? []), row])
+      }
       // V9.37：新行弹入 + 微光，承接「弹窗收成一条明细」的观感
       setFlashRow(row)
       window.setTimeout(() => setFlashRow((cur) => (cur === row ? null : cur)), 1800)
+      if (anchor !== null) {
+        notificationOpen({
+          message: `已新增并归入 ${recordNoLabelOf(anchor)} 的回本链`,
+          description: '它的已实现盈亏之后会自动累加到那条链',
+          type: 'success',
+        })
+        return
+      }
       notificationOpen({
         message: `已新增第 ${recordNo.total + 1} 笔`,
         description: form.kind === 'sell' && !form.buyPrice ? '先卖后买：之后可在明细里补买入信息' : undefined,
@@ -722,14 +765,14 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
               )
             }
           } else if (r.sell && r.sell.hedgedFromSellRow !== undefined) {
-            // V9.36：回补过的截 = 高位批次「已了结」，不再是暂记（它会一直挂着等低位冲平）
+            // V9.46：回补过的截 = 高位批次「亏着清仓」，成了回本链的锚点（一直不回本就一直欠着）
             const chain = repairByAnchor.get(r.rec.sourceRow)
             hedgeTag = r.sell.hedgeClosed ? (
               <Tag size="small" variant="soft" color={chain?.done ? 'app-green' : 'app-red'}>
                 {chain?.done
-                  ? '高位已冲平'
+                  ? '回本链 · 已回本'
                   : chain
-                    ? `高位已了结 · 还差 ${money(chain.gapCents)}`
+                    ? `回本链 · 还差 ${money(chain.gapCents)}`
                     : '高位已了结'}
               </Tag>
             ) : (
@@ -738,6 +781,24 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
               </Tag>
             )
           }
+          // V9.46：这笔买入被归进某条回本链 → 行上标出来，点进抽屉能「移出回本链」
+          const anchorChain = repairByAnchor.get(r.rec.sourceRow)
+          const memberChain = repairByMember.get(r.rec.sourceRow)
+          const chainTag: ReactNode = hedgeTag
+            ? null
+            : anchorChain
+              ? (
+                <Tag size="small" variant="soft" color={anchorChain.done ? 'app-green' : 'app-red'}>
+                  {anchorChain.done ? '回本链 · 已回本' : `回本链 · 还差 ${money(anchorChain.gapCents)}`}
+                </Tag>
+              )
+              : memberChain
+                ? (
+                  <Tag size="small" variant="soft" color="app-teal">
+                    归入回本链
+                  </Tag>
+                )
+                : null
           const anim = leaving.has(r.rec.sourceRow)
             ? 'leaving'
             : flashRow === r.rec.sourceRow
@@ -751,8 +812,9 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
               row={r}
               no={recordNo.of(r.rec.sourceRow)}
               onClick={() => open(r)}
-              extraTag={hedgeTag}
+              extraTag={hedgeTag ?? chainTag}
               anim={anim}
+              chain={anchorChain ? 'anchor' : memberChain ? 'member' : undefined}
             />
           )
         })
@@ -1023,15 +1085,26 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                   </div>
                 )}
 
-                {/* V9.36 回本链：高位批次被回补了结后的待回本进度（低位做T逐轮冲平） */}
-                {(repairByAnchor.has(current.rec.sourceRow) || repairBySell.has(current.rec.sourceRow)) && (
+                {/* V9.46 回本链：亏损清仓当场成链，进度只累计归属交易的已实现净盈利 */}
+                {(repairByAnchor.has(current.rec.sourceRow) ||
+                  repairBySell.has(current.rec.sourceRow) ||
+                  repairByMember.has(current.rec.sourceRow)) && (
                   <div className="divider-top" data-testid="chain-section">
-                    {(repairByAnchor.get(current.rec.sourceRow)
-                      ? [repairByAnchor.get(current.rec.sourceRow)!]
-                      : repairBySell.get(current.rec.sourceRow) ?? []
-                    ).map((c) => (
-                      <RepairChainCard key={c.id} chain={c} rowLabel={recordNoLabelOf} />
-                    ))}
+                    {[
+                      repairByAnchor.get(current.rec.sourceRow),
+                      ...(repairBySell.get(current.rec.sourceRow) ?? []),
+                      repairByMember.get(current.rec.sourceRow),
+                    ]
+                      .filter((c): c is RepairChain => Boolean(c))
+                      .filter((c, i, arr) => arr.findIndex((x) => x.id === c.id) === i)
+                      .map((c) => (
+                        <RepairChainCard key={c.id} chain={c} rowLabel={recordNoLabelOf} />
+                      ))}
+                    <ChainBinder
+                      key={`chain-binder-${current.rec.sourceRow}`}
+                      row={current.rec.sourceRow}
+                      onAddToChain={startAddIntoChain}
+                    />
                   </div>
                 )}
 

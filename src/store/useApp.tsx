@@ -38,6 +38,7 @@ import type {
   RawRecord,
   RebuyExecution,
   RebuyOrder,
+  RepairChainLink,
   StockConfig,
   TradePlan,
 } from '../domain/types'
@@ -99,6 +100,8 @@ interface AppContextValue {
   hedges: HedgeLink[]
   /** 合并同价买单（V9.45）：只影响挂单页的合并显示，records 不改 */
   merges: LotMergeLink[]
+  /** 回本链归属（V9.46）：锚点行 + 后续归属的真实买出行；盈亏仍纯派生 */
+  chainLinks: RepairChainLink[]
   ledger: Ledger
   /** 界面行身份（V9.43）：按录入顺序派生的「第 N 笔」，Excel 行号退成追溯信息 */
   recordNo: RecordNoIndex
@@ -126,6 +129,13 @@ interface AppContextValue {
   /** 保存一条同价买单合并（≥2 笔同股同买入价的真实行；自动从旧组里摘出来） */
   setLotMerge: (rows: number[]) => Promise<void>
   clearLotMerge: (row: number) => Promise<void>
+  /** 回本链归属（V9.46）：把若干真实买出行挂到锚点链上（自动从别的链摘出来；空 = 解除） */
+  setChainMembers: (anchorRow: number, memberRows: number[]) => Promise<void>
+  /** 把某一行请出所属链（锚点本身 → 整条归属关系作废） */
+  removeFromChain: (row: number) => Promise<void>
+  /** 人为结束这条链（保留全部历史；之后再开新的独立交易） */
+  closeRepairChain: (anchorRow: number) => Promise<void>
+  reopenRepairChain: (anchorRow: number) => Promise<void>
   addExtraTarget: (lotId: string, priceCents: number, qty: number) => Promise<void>
   removeExtraTarget: (id: string) => Promise<void>
   historyOf: (sourceRow: number) => AuditLog[]
@@ -190,6 +200,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [extraTargets, setExtraTargets] = useState<ExtraTarget[]>([])
   const [hedges, setHedges] = useState<HedgeLink[]>([])
   const [merges, setMerges] = useState<LotMergeLink[]>([])
+  const [chainLinks, setChainLinks] = useState<RepairChainLink[]>([])
   const [batches, setBatches] = useState<ImportBatch[]>([])
   const [deriveSellPrice, setDeriveSellPrice] = useState(false)
   const [preview, setPreview] = useState<ParseResult | null>(null)
@@ -213,7 +224,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [ordersSession])
 
   const reloadRecords = useCallback(async () => {
-    const [r, a, x, pl, et, hd, mg] = await Promise.all([
+    const [r, a, x, pl, et, hd, mg, cl] = await Promise.all([
       db.records.toArray(),
       db.auditLogs.toArray(),
       db.rebuyExecutions.toArray(),
@@ -221,6 +232,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       db.extraTargets.toArray(),
       db.hedges.toArray(),
       db.merges.toArray(),
+      db.chainLinks.toArray(),
     ])
     setRecords(r)
     setAudits(a)
@@ -229,6 +241,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setExtraTargets(et)
     setHedges(hd)
     setMerges(mg)
+    setChainLinks(cl)
   }, [])
 
   useEffect(() => {
@@ -239,7 +252,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         await db.stocks.bulkPut(DEFAULT_STOCKS)
       }
       // 单一账户（V9.32：账户功能已删除）
-      const [sRaw, r, a, b, x, backupMeta, pl, et, fontMeta, hd, mg] = await Promise.all([
+      const [sRaw, r, a, b, x, backupMeta, pl, et, fontMeta, hd, mg, cl] = await Promise.all([
         db.stocks.toArray(),
         db.records.toArray(),
         db.auditLogs.toArray(),
@@ -251,6 +264,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         db.meta.get('useSystemFont'),
         db.hedges.toArray(),
         db.merges.toArray(),
+        db.chainLinks.toArray(),
       ])
       if (!alive) return
       // 老库补齐 order / enabled 并压平序号
@@ -265,6 +279,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setExtraTargets(et)
       setHedges(hd)
       setMerges(mg)
+      setChainLinks(cl)
       setBatches(b)
       setBasename(b[0]?.fileName ?? '—')
       setLastBackupAt(backupMeta ? Number(backupMeta.value) : null)
@@ -279,8 +294,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const ledger = useMemo(
-    () => buildLedger(records, stocks, { deriveSellPrice, executions, plans, extraTargets, hedges }),
-    [records, stocks, deriveSellPrice, executions, plans, extraTargets, hedges],
+    () =>
+      buildLedger(records, stocks, { deriveSellPrice, executions, plans, extraTargets, hedges, chainLinks }),
+    [records, stocks, deriveSellPrice, executions, plans, extraTargets, hedges, chainLinks],
   )
 
   const recordNo = useMemo(() => buildRecordNoIndex(records), [records])
@@ -302,6 +318,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       plans,
       extraTargets,
       hedges: sandbox.hedges.length ? [...hedges, ...sandbox.hedges] : hedges,
+      chainLinks,
     })
   }, [
     ledger,
@@ -314,6 +331,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     plans,
     extraTargets,
     hedges,
+    chainLinks,
   ])
 
   const commitImport = useCallback(
@@ -690,6 +708,101 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setMerges(await db.merges.toArray())
   }, [])
 
+  // V9.46：回本链归属。只写 chainLinks 表，records 一分不动——盈亏仍每次重算、纯派生。
+  const upsertChainLink = useCallback(
+    async (anchorRow: number, memberRows: number[], closedAt: number | null) => {
+      const anchor = await db.records.get(anchorRow)
+      if (!anchor || anchor.deletedAt) throw new Error('锚点行不存在或已删除')
+      const link: RepairChainLink = {
+        id: `chainlink:${anchorRow}`,
+        anchorRow,
+        stockName: anchor.stockName,
+        memberRows,
+        closedAt,
+        at: Date.now(),
+      }
+      await db.chainLinks.put(link)
+      return link
+    },
+    [],
+  )
+
+  const setChainMembers = useCallback(
+    async (anchorRow: number, memberRows: number[]) => {
+      const picked = [...new Set(memberRows.filter((r) => Number.isInteger(r) && r > 0 && r !== anchorRow))].sort(
+        (a, b) => a - b,
+      )
+      await db.transaction('rw', [db.records, db.chainLinks, db.auditLogs], async () => {
+        const prev = await db.chainLinks.get(`chainlink:${anchorRow}`)
+        // 一笔只归一条链：先把选中的行从别的链摘出来，空了且没结束的旧链顺手删掉
+        for (const l of await db.chainLinks.toArray()) {
+          if (l.anchorRow === anchorRow) continue
+          if (!l.memberRows.some((r) => picked.includes(r))) continue
+          const rest = l.memberRows.filter((r) => !picked.includes(r))
+          if (rest.length > 0 || l.closedAt !== null) await db.chainLinks.put({ ...l, memberRows: rest })
+          else await db.chainLinks.delete(l.id)
+        }
+        if (picked.length === 0 && (prev?.closedAt ?? null) === null) {
+          await db.chainLinks.delete(`chainlink:${anchorRow}`)
+        } else {
+          await upsertChainLink(anchorRow, picked, prev?.closedAt ?? null)
+        }
+        const fmt = (rows: number[]) => (rows.length ? rows.map((r) => `record:${r}`).join(',') : '无')
+        await db.auditLogs.add(
+          audit(`chainlink:${anchorRow}`, '回本链归属', fmt(prev?.memberRows ?? []), fmt(picked), 'chain', 'chain'),
+        )
+      })
+      setChainLinks(await db.chainLinks.toArray())
+    },
+    [upsertChainLink],
+  )
+
+  /** 把某一行请出所属链；请的是锚点 → 整条归属关系作废（成员各自回去 own 自己的账） */
+  const removeFromChain = useCallback(
+    async (row: number) => {
+      const hit = (await db.chainLinks.toArray()).find((l) => l.anchorRow === row || l.memberRows.includes(row))
+      if (!hit) return
+      await db.transaction('rw', db.chainLinks, db.auditLogs, async () => {
+        if (hit.anchorRow === row) {
+          await db.chainLinks.delete(hit.id)
+        } else {
+          const rest = hit.memberRows.filter((r) => r !== row)
+          if (rest.length === 0 && hit.closedAt === null) await db.chainLinks.delete(hit.id)
+          else await db.chainLinks.put({ ...hit, memberRows: rest, at: Date.now() })
+        }
+        await db.auditLogs.add(audit(hit.id, '移出回本链', `record:${row}`, '', 'chain', 'chain'))
+      })
+      setChainLinks(await db.chainLinks.toArray())
+    },
+    [],
+  )
+
+  const closeRepairChain = useCallback(
+    async (anchorRow: number) => {
+      await db.transaction('rw', [db.records, db.chainLinks, db.auditLogs], async () => {
+        const prev = await db.chainLinks.get(`chainlink:${anchorRow}`)
+        await upsertChainLink(anchorRow, prev?.memberRows ?? [], Date.now())
+        await db.auditLogs.add(audit(`chainlink:${anchorRow}`, '结束回本链', '进行中', '已结束', 'chain', 'chain'))
+      })
+      setChainLinks(await db.chainLinks.toArray())
+    },
+    [upsertChainLink],
+  )
+
+  const reopenRepairChain = useCallback(
+    async (anchorRow: number) => {
+      await db.transaction('rw', db.chainLinks, db.auditLogs, async () => {
+        const prev = await db.chainLinks.get(`chainlink:${anchorRow}`)
+        if (!prev) return
+        if (prev.memberRows.length === 0) await db.chainLinks.delete(prev.id)
+        else await db.chainLinks.put({ ...prev, closedAt: null, at: Date.now() })
+        await db.auditLogs.add(audit(`chainlink:${prev.id}`, '重开回本链', '已结束', '进行中', 'chain', 'chain'))
+      })
+      setChainLinks(await db.chainLinks.toArray())
+    },
+    [],
+  )
+
   const addSandboxItem = useCallback((draft: SandboxDraft) => {
     setSandbox((s) => {
       const seq = nextSandboxSeq(s.items)
@@ -846,6 +959,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       db.extraTargets.clear(),
       db.hedges.clear(),
       db.merges.clear(),
+      db.chainLinks.clear(),
     ])
     setRecords([])
     setBatches([])
@@ -855,13 +969,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setExtraTargets([])
     setHedges([])
     setMerges([])
+    setChainLinks([])
     setSandbox(EMPTY_SANDBOX)
     setBasename('—')
     setPreview(null)
   }, [])
 
   const exportBackup = useCallback(async () => {
-    const [s, r, b, a, x, pl, et, hd, mg] = await Promise.all([
+    const [s, r, b, a, x, pl, et, hd, mg, cl] = await Promise.all([
       db.stocks.toArray(),
       db.records.toArray(),
       db.batches.toArray(),
@@ -871,14 +986,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
       db.extraTargets.toArray(),
       db.hedges.toArray(),
       db.merges.toArray(),
+      db.chainLinks.toArray(),
     ])
     const stamp = String(Date.now())
     await db.meta.put({ key: 'lastBackupAt', value: stamp })
     setLastBackupAt(Number(stamp))
     return JSON.stringify(
       {
-        // V9.45：加 merges（同价买单合并关联）→ 版本 8
-        schemaVersion: 8,
+        // V9.46：加 chainLinks（回本链归属）→ 版本 9
+        schemaVersion: 9,
         exportedAt: new Date().toISOString(),
         stocks: s,
         records: r,
@@ -889,6 +1005,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         extraTargets: et,
         hedges: hd,
         merges: mg,
+        chainLinks: cl,
       },
       null,
       2,
@@ -908,15 +1025,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
         extraTargets?: ExtraTarget[]
         hedges?: HedgeLink[]
         merges?: LotMergeLink[]
+        chainLinks?: RepairChainLink[]
       }
       const version = data.schemaVersion ?? 1
-      if (version > 8) throw new Error('备份版本高于当前程序，拒绝导入（P11）')
+      if (version > 9) throw new Error('备份版本高于当前程序，拒绝导入（P11）')
       // P11 之外的第二道闸：结构坏掉的备份整包拒绝，不让半截 JSON 污染本地库
       const problem = validateBackup(data)
       if (problem) throw new Error(`备份内容校验失败：${problem}`)
       await db.transaction(
         'rw',
-        [db.stocks, db.records, db.batches, db.auditLogs, db.rebuyExecutions, db.plans, db.extraTargets, db.hedges, db.merges],
+        [db.stocks, db.records, db.batches, db.auditLogs, db.rebuyExecutions, db.plans, db.extraTargets, db.hedges, db.merges, db.chainLinks],
         async () => {
         if (data.stocks) {
           await db.stocks.clear()
@@ -944,6 +1062,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // V9.45：合并关联同样整表替换（老备份没有这段就清空）
         await db.merges.clear()
         if (data.merges) await db.merges.bulkPut(data.merges)
+        // V9.46：回本链归属同样整表替换（老备份没有这段就清空）
+        await db.chainLinks.clear()
+        if (data.chainLinks) await db.chainLinks.bulkPut(data.chainLinks)
         await db.auditLogs.clear()
         if (data.auditLogs) {
           // 去掉自增 id，让 Dexie 重新分配
@@ -999,12 +1120,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
     clearHedgeLink,
     setLotMerge,
     clearLotMerge,
+    setChainMembers,
+    removeFromChain,
+    closeRepairChain,
+    reopenRepairChain,
     addExtraTarget,
     removeExtraTarget,
     plans,
     extraTargets,
     hedges,
     merges,
+    chainLinks,
     historyOf,
     updateStock,
     addStock,

@@ -310,7 +310,7 @@ button { font-family: inherit; }
 /* 弹层里给底部的「已分配 / 保存挂钩」留位置：候选列表矮一点（V9.33 实测列表 42vh 会把按钮顶出可视区） */
 .hedge-modal .data-block { max-height: 30vh; }
 
-/* V9.36 回本链：高位批次被回补了结后的待回本账 + 低位做T的回血进度 */
+/* V9.36~46 回本链：一次亏损清仓 + 后续归属交易的已实现净盈利 */
 .chain-card { border: 1px solid #e8e1d3; border-radius: 10px; padding: 8px 10px; background: #fffdf7; }
 .chain-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .chain-line { margin: 6px 0; line-height: 1.55; }
@@ -318,8 +318,16 @@ button { font-family: inherit; }
 .chain-bar > i { display: block; height: 100%; border-radius: 4px; background: linear-gradient(90deg, #f0b350, #d0453f); transition: width 0.3s; }
 .chain-bar-meta { display: flex; align-items: center; gap: 6px; margin-top: 4px; flex-wrap: wrap; }
 .chain-cycles { margin-top: 8px; max-height: 30vh; overflow-y: auto; }
+.chain-candidates { margin-top: 6px; max-height: 32vh; overflow-y: auto; }
 .chain-cycles .line .t1 { font-size: 13px; }
 .chain-cycles .line .t2 { font-size: 11px; line-height: 1.45; }
+/* 四个主数字：原始亏损 / 后续净盈利 / 链累计 / 还差多少 */
+.chain-nums { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px 10px; margin: 8px 0 4px; }
+.chain-num { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; padding: 2px 0; border-bottom: 1px dashed #efe8da; }
+.chain-num b { font-size: 14px; }
+@media (min-width: 620px) {
+  .chain-nums { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
 
 /* 右侧「剩余 / 已卖」仍加大加粗（扫读重点），但颜色回归默认 */
 .trade-item .right-qty {

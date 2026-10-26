@@ -6,7 +6,8 @@
 import { mulCents } from './money'
 import { deriveBuyQty } from './qty'
 import { serialToIso, stockIdOf } from './defaults'
-import { type Anomaly, type ExtraTarget, type HedgeLink, type RebuyExecution, type TradePlan, type CheckResult, type GroupPool, type Ledger, type Lot, type DayBucket, type MonthlyBucket, type RawRecord, type RebuyOrder, type RepairChain, type RepairCycle, type SellExecution, type SellTarget, type StockConfig, type StockSummary } from './types'
+import { buildRepairChains } from './chain'
+import { type Anomaly, type ExtraTarget, type HedgeLink, type RebuyExecution, type TradePlan, type CheckResult, type GroupPool, type Ledger, type Lot, type DayBucket, type MonthlyBucket, type RawRecord, type RebuyOrder, type RepairChain, type RepairChainLink, type SellExecution, type SellTarget, type StockConfig, type StockSummary } from './types'
 
 export interface BuildOptions {
   /** 基准金额，默认 6000 元 */
@@ -25,6 +26,8 @@ export interface BuildOptions {
   extraTargets?: ExtraTarget[]
   /** 先卖后买挂钩（V9.26）：裸卖 → 高位批次的人工分配 */
   hedges?: HedgeLink[]
+  /** 回本链归属（V9.46）：锚点 + 后续归属的真实买入行 */
+  chainLinks?: RepairChainLink[]
 }
 
 /** 组池分组键：股票|成本分（V9.32 起单一账户，不再带账户维度） */
@@ -234,17 +237,6 @@ export function buildLedger(
   const hedgeAppliedByRow = new Map<number, number>()
   /** V9.36 每张裸卖「已回补所以永久了结」的股数（不再往待卖里灌重复股） */
   const hedgeClosedByRow = new Map<number, number>()
-  /** V9.36 回本链累加器（键 = 被挂掉的高位批次行号） */
-  type ChainAcc = {
-    stockName: string
-    qty: number
-    costSum: number
-    closeSum: number
-    lossCents: number
-    gainCents: number
-    cycles: RepairCycle[]
-  }
-  const chainAcc = new Map<number, ChainAcc>()
   for (const h of hedgeLinks) {
     const rec = byRow.get(h.sellRow)
     const naked =
@@ -356,14 +348,6 @@ export function buildLedger(
           hedgeClosed: true,
         })
         closedByRow.set(it.row, (closedByRow.get(it.row) ?? 0) + closed)
-        const acc =
-          chainAcc.get(it.row) ??
-          ({ stockName: lot.stockName, qty: 0, costSum: 0, closeSum: 0, lossCents: 0, gainCents: 0, cycles: [] } as ChainAcc)
-        acc.qty += closed
-        acc.costSum += lot.buyPriceCents * closed
-        acc.closeSum += price * closed
-        acc.lossCents += mulCents(price - lot.buyPriceCents, closed)
-        chainAcc.set(it.row, acc)
       }
     }
     if (applied > 0) {
@@ -387,70 +371,11 @@ export function buildLedger(
         detail: `挂了 ${applied} 股 ≠ 还没买回 ${unrepaid} 股，差额仍按敞口计（守恒式会亮红灯）`,
       })
     }
-    // V9.36 回血：回补成交的价差（卖价 − 回补价）× 股数，按各锚了结的股数分摊进链
+    // V9.46：回补价差不再进回本链（改由 chain.ts 按「已实现净盈利」算），
+    // 这里只记「了结股数」，守恒式扣双算还要用。
     const closedTotal = [...closedByRow.values()].reduce((a, n) => a + n, 0)
     if (closedTotal > 0) hedgeClosedByRow.set(h.sellRow, (hedgeClosedByRow.get(h.sellRow) ?? 0) + closedTotal)
-    if (execQty > 0 && closedTotal > 0) {
-      const rebuyAmount = execs.reduce((a, e) => a + e.priceCents * e.qty, 0)
-      const gain = price * execQty - rebuyAmount
-      const avgRebuy = Math.round(rebuyAmount / execQty)
-      const rows = [...closedByRow.entries()].sort((a, b) => b[1] - a[1])
-      let handedQty = 0
-      let handedGain = 0
-      rows.forEach(([row, q], idx) => {
-        const last = idx === rows.length - 1
-        const cq = last ? execQty - handedQty : Math.round((execQty * q) / closedTotal)
-        const share = last ? gain - handedGain : Math.round((gain * q) / closedTotal)
-        handedQty += cq
-        handedGain += share
-        const acc = chainAcc.get(row)
-        if (!acc) return
-        acc.gainCents += share
-        acc.cycles.push({
-          sellRow: h.sellRow,
-          sellPriceCents: price,
-          rebuyPriceCents: avgRebuy,
-          qty: cq,
-          recoveredCents: share,
-          soldAt: naked.soldAt,
-          belowEffectiveCost: false,
-          effectiveCostAtCents: 0,
-        })
-      })
-    }
   }
-
-  // V9.36 回本链：把累加器整理成对外的结构（有效成本、还差多少、每轮是否低于成本）
-  const repairChains: RepairChain[] = [...chainAcc.entries()]
-    .filter(([, acc]) => acc.qty > 0)
-    .map(([row, acc]) => {
-      const anchorCostCents = Math.round(acc.costSum / acc.qty)
-      const closedAtCents = Math.round(acc.closeSum / acc.qty)
-      const recoveredCents = acc.gainCents
-      const lossCents = acc.lossCents
-      // 逐轮跑一遍摊薄：每轮的「当时有效成本」= 上一轮有效成本 − 本轮回血/股
-      let eff = anchorCostCents
-      const cycles = acc.cycles.map((c) => {
-        const marked = { ...c, effectiveCostAtCents: eff, belowEffectiveCost: c.sellPriceCents < eff }
-        if (c.qty > 0) eff = Math.round((eff * acc.qty - c.recoveredCents) / acc.qty)
-        return marked
-      })
-      return {
-        id: `chain:${row}`,
-        stockName: acc.stockName,
-        anchorRow: row,
-        anchorQty: acc.qty,
-        anchorCostCents,
-        closedAtCents,
-        lossCents,
-        recoveredCents,
-        effectiveCostCents: eff,
-        gapCents: Math.max(0, Math.abs(lossCents) - recoveredCents),
-        done: recoveredCents >= Math.abs(lossCents),
-        cycles,
-      }
-    })
-    .sort((a, b) => a.anchorRow - b.anchorRow)
 
   // R1 待卖：有剩余持仓的批次 × E；手动拆分的先占额度，剩下的才走自动目标
   const targets: SellTarget[] = []
@@ -604,6 +529,14 @@ export function buildLedger(
     })
   }
   const allLots = [...lots, ...virtualLots]
+
+  // V9.46 回本链：亏着清仓那笔成交即成链；进度只累计归属交易的已实现净盈利
+  const repairChains: RepairChain[] = buildRepairChains({
+    lots: allLots,
+    sells,
+    executions: scopedExecs,
+    links: opts.chainLinks ?? [],
+  })
 
   // R4/R5 组池与奖励
   const groups = computeGroups(sells, orders, scopedExecs)

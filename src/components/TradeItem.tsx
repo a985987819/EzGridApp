@@ -37,6 +37,7 @@ export function TradeItem({
   onClick,
   extraTag,
   anim,
+  chain,
 }: {
   row: TradeRow
   /** 第几笔（V9.43 统一身份：导入与应用内新增一样） */
@@ -49,6 +50,8 @@ export function TradeItem({
    * done = 刚完成洗一层青。样式全在 styles.css 的 `[data-anim=…]` 里。
    */
   anim?: 'new' | 'leaving' | 'done'
+  /** V9.46 回本链身份：anchor = 亏着清仓的那笔（链的锚点），member = 归进别人链里的一笔 */
+  chain?: 'anchor' | 'member'
 }) {
   const { rec, lot, sell } = row
   const deleted = Boolean(rec.deletedAt)
@@ -66,6 +69,7 @@ export function TradeItem({
       className={`trade-item${stateCls}${deleted ? ' deleted' : ''}`}
       data-row={rec.sourceRow}
       data-anim={anim}
+      data-chain={chain}
     >
       <div className="head">
         <Tag size="small" variant="soft">{no == null ? '记录' : `第 ${no} 笔`}</Tag>
