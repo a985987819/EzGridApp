@@ -127,6 +127,9 @@ button { font-family: inherit; }
   /* 聚焦最下面几行的输入框时，自动滚动给页脚留出余量 */
   scroll-padding-bottom: 96px;
 }
+/* V9.57：Modal 的内容区也要 contain（抽屉那条规则只罩住了 Drawer）——
+   弹层内滚到头不再把滚动链交给文档，iOS 上背景就不会被一路拖走 */
+[class*='animal-body'] { overscroll-behavior: contain; }
 
 /* ---------- 底部导航 ---------- */
 .app-nav {

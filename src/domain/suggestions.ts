@@ -143,3 +143,25 @@ export function sellsByRecord(ledger: Ledger) {
   }
   return out
 }
+
+/**
+ * V9.58 挂单页三组：把买入建议切成「应该买入」和「锦上添花」。
+ *
+ * 应该买入 = 先卖后买（卖出拿回来的钱就欠着这些股）**或带空头敞口**（超卖那截是真空头，
+ * 不能因为不是 sellFirst 就躲进锦上添花）；其余 = 已完成批次的下一轮应买 + 先买后卖行里
+ * P 列填了价的待回补（「P 列再买」）——那些是拿这一轮的钱再投一轮，属于锦上添花。
+ * `exposedOrderIds` 由调用方从 `ledger.orders` 里筛 `exposure` 的订单 id 传进来
+ * （suggestions 层看不到订单对象，只认 id）。
+ */
+export function splitBuySuggestions(
+  suggestions: readonly BuySuggestion[],
+  exposedOrderIds: ReadonlySet<string>,
+): { mustBuy: BuySuggestion[]; bonus: BuySuggestion[] } {
+  const mustBuy: BuySuggestion[] = []
+  const bonus: BuySuggestion[] = []
+  for (const r of suggestions) {
+    const exposed = r.sources.some((s) => s.kind === 'order' && exposedOrderIds.has(s.id))
+    ;(r.sellFirst || exposed ? mustBuy : bonus).push(r)
+  }
+  return { mustBuy, bonus }
+}

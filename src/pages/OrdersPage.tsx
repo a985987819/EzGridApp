@@ -12,7 +12,7 @@ import { isoToSerial } from '../domain/edit'
 import { serialToIso } from '../domain/defaults'
 import { sandboxRowOf, type SandboxItem, type SandboxKind } from '../domain/sandbox'
 import { mergeTargetRows, type TargetRow } from '../domain/merge'
-import { buildBuySuggestions, compareSellFirstOnly, consumedNextRounds, type BuySuggestion } from '../domain/suggestions'
+import { buildBuySuggestions, compareSellFirstOnly, consumedNextRounds, splitBuySuggestions, type BuySuggestion } from '../domain/suggestions'
 import { buildNextRoundBuyRows, type NextRoundBuyRow } from '../domain/buyBoard'
 import { buildNanoIdIndex } from '../ui/nanoid'
 import { downloadText, toCsv } from '../ui/csv'
@@ -192,14 +192,9 @@ export function OrdersPage({
 
   const buySplits = view.buySplits
   const orderById = new Map(orders.map((o) => [o.id, o]))
-  // V9.54：沙盒预览的档位也把先卖后买排最前（与推荐挂单同一口径）
-  const buyToday = range
-    ? buySplits.filter((b) => b.qty > 0 && within(b.priceCents)).sort(compareSellFirstOnly)
-    : []
-  const sellToday = range ? targetRows.filter((r) => within(r.priceCents)) : []
-  const buyOut = range ? buySplits.filter((b) => b.qty > 0 && !within(b.priceCents)).length : 0
-  const sellOut = range ? targetRows.filter((r) => !within(r.priceCents)).length : 0
-  const sellTodayAmount = sellToday.reduce((a, r) => a + r.amountCents, 0)
+  const sellShown = range ? targetRows.filter((r) => within(r.priceCents)) : targetRows
+  const sellOutRows = range ? targetRows.filter((r) => !within(r.priceCents)) : []
+  const sellAmount = sellShown.reduce((a, r) => a + r.amountCents, 0)
 
   /**
    * V9.47：卖完的老批次，股价回到买入价那一档也要提醒买一次（网格一轮一轮做）。
@@ -217,9 +212,42 @@ export function OrdersPage({
       }).filter((r) => r.stockName === effectiveStock),
     [view.lots, view.orders, view.sells, merges, sandboxByRow, effectiveStock, records],
   )
-  const buySuggestions=buildBuySuggestions(buySplits,nextRound,plans)
-  const suggestionsToday=range?buySuggestions.filter((r)=>within(r.priceCents)):[]
-  const buyTodayAmount=suggestionsToday.reduce((a,r)=>a+r.amountCents,0)
+  const buySuggestions = buildBuySuggestions(buySplits, nextRound, plans)
+  /**
+   * V9.58 挂单页三组：**应该买入** = 先卖后买（或带敞口）的档——卖出拿回来的钱就欠着这些股；
+   * **锦上添花** = 已完成批次的下一轮应买 + 先买后卖行里 P 列填了价的待回补（「P 列再买」），
+   * 是拿这一轮的钱再投一轮。切分口径在 `domain/suggestions` 的 `splitBuySuggestions`。
+   */
+  const exposedOrderIds = useMemo(() => new Set(orders.filter((o) => o.exposure).map((o) => o.id)), [orders])
+  const { mustBuy, bonus } = splitBuySuggestions(buySuggestions, exposedOrderIds)
+  const mustToday = range ? mustBuy.filter((r) => within(r.priceCents)) : mustBuy
+  const mustOut = range ? mustBuy.filter((r) => !within(r.priceCents)) : []
+  const bonusToday = range ? bonus.filter((r) => within(r.priceCents)) : bonus
+  const bonusOut = range ? bonus.filter((r) => !within(r.priceCents)) : []
+  const mustAmount = mustToday.reduce((a, r) => a + r.amountCents, 0)
+  const bonusAmount = bonusToday.reduce((a, r) => a + r.amountCents, 0)
+  /**
+   * 沙盒预览不走 buildBuySuggestions（模拟行要保留自己的「记为成交/删除」按钮），按同一口径切两组：
+   * 先卖后买单 → 应该买入；其余买单 + 下一轮档 → 锦上添花。
+   */
+  const sbBuyAll = buySplits.filter((b) => b.qty > 0).sort((a, b) => Number(b.sellFirst === true) - Number(a.sellFirst === true))
+  const sbBuyIn = range ? sbBuyAll.filter((b) => within(b.priceCents)) : sbBuyAll
+  const sbBuyOut = range ? sbBuyAll.filter((b) => !within(b.priceCents)) : []
+  const sbMustIn = sbBuyIn.filter((b) => b.sellFirst === true)
+  const sbBonusIn = sbBuyIn.filter((b) => b.sellFirst !== true)
+  const sbMustOut = sbBuyOut.filter((b) => b.sellFirst === true)
+  const sbBonusOut = sbBuyOut.filter((b) => b.sellFirst !== true)
+  const levelIn = range ? nextRound.filter((r) => within(r.priceCents)) : nextRound
+  const levelOut = range ? nextRound.filter((r) => !within(r.priceCents)) : []
+  const sbMustAmount = sbMustIn.reduce((a, b) => a + b.priceCents * b.qty, 0)
+  const sbBonusAmount =
+    sbBonusIn.reduce((a, b) => a + b.priceCents * b.qty, 0) + levelIn.reduce((a, r) => a + r.amountCents, 0)
+  /** V9.58：越界档无法成交，折叠行只报数量与价格界 */
+  const outSummary = (rows: readonly { priceCents: number; qty: number }[]) => {
+    const lo = Math.min(...rows.map((r) => r.priceCents))
+    const hi = Math.max(...rows.map((r) => r.priceCents))
+    return `${rows.length} 档 · ${qty(rows.reduce((a, r) => a + r.qty, 0))} 股（价 ${price(lo)}~${price(hi)}）`
+  }
   const [trade,setTrade]=useState<{side:'buy'|'sell';buy?:BuySuggestion;sell?:TargetRow}|null>(null)
   const [tradePrice,setTradePrice]=useState('')
   const [tradeQty,setTradeQty]=useState('')
@@ -255,20 +283,31 @@ export function OrdersPage({
    */
   const execQtyOf=(b:BuySplit,o?:RebuyOrder|null)=>o?.planQty!=null?Math.min(o.planQty,b.qty):b.qty
   const buySuggestionLine=(r:BuySuggestion)=>(
-    <div key={r.key} className="line wrap-row pending-buy" data-testid="buy-suggestion" data-row={r.sources[0]?.row} data-price={r.priceCents} data-edited={r.edited ? '1' : undefined} data-sell-first={r.sellFirst ? '1' : undefined}>
+    <div key={r.key} className="line wrap-row pending-buy clickable" data-testid="buy-suggestion" data-row={r.sources[0]?.row} data-price={r.priceCents} data-edited={r.edited ? '1' : undefined} data-sell-first={r.sellFirst ? '1' : undefined}
+      // V9.58：锦上添花里全部来源都是「下一轮」的档保留深链身份（点行跳已完成那笔，不被 hideDone 挡）
+      data-buy-level={r.sources.every((v) => v.kind === 'next') ? r.sources[0]?.row : undefined}
+      onClick={(e) => {
+        // 行上按钮（改单/记成交/来源明细跳转）各自有归宿，别整行跳走
+        if ((e.target as HTMLElement).closest('button, summary, a, input, label')) return
+        goTrades({ id: idFor(r.sources[0]?.row), stock: r.stockName })
+      }}>
       <div className="left"><div className="t1 num">买 {price(r.priceCents)} × {qty(r.qty)}</div>
-        {/* V9.54：先卖后买的待买欠的是真股，标出来（排序也排在前面，见 domain/suggestions） */}
-        {(r.sellFirst || r.edited) && (
-          <div className="tag-row" style={{ marginTop: 4 }}>
+        {/* V9.58：三组之后行上仍要能看出这笔的身份——先卖后买 / 下一轮 / P 列再买（每组必有其一） */}
+        <div className="tag-row" style={{ marginTop: 4 }}>
             {r.sellFirst && <Tag size="small" variant="soft" color="app-teal" data-testid="suggestion-sell-first">先卖后买</Tag>}
+            {!r.sellFirst && r.sources.every((v) => v.kind === 'next') && (
+              <Tag size="small" variant="soft" color="app-blue" data-testid="suggestion-next-round">下一轮</Tag>
+            )}
+            {!r.sellFirst && r.sources.some((v) => v.kind === 'order') && (
+              <Tag size="small" variant="soft" color="app-blue" data-testid="suggestion-p-rebuy">P 列再买</Tag>
+            )}
             {r.edited && (
               <>
                 <Tag size="small" variant="soft" color="purple">已改单</Tag>
                 <span className="tiny muted">只改这一条推荐，来源没动</span>
               </>
             )}
-          </div>
-        )}
+        </div>
         {/* V9.54：推荐挂单默认展开来源——点开才知道这档是从哪几笔欠出来的 */}
         <details open><summary className="tiny muted">{r.sources.length} 笔来源 · 查看明细</summary>
           {/* V9.55 修：同一张卖单拆出的两档共用 sourceRow，撞价合并后会并进同一条建议 →
@@ -299,11 +338,7 @@ export function OrdersPage({
       </div>
     </div>
   )
-  const levelToday = range ? nextRound.filter((r) => within(r.priceCents)) : []
-  /** 越界计数把下一轮档也算进来（今日挂单列了它们，口径要一致） */
-  const outCount = sandbox.active ? buyOut + sellOut + nextRound.length - levelToday.length : buySuggestions.filter((r)=>!within(r.priceCents)).length + sellOut
-
-  /** 下一轮应买的一行：没有对应的待买单，所以不给「记成交」，点行跳明细 */
+  /** 下一轮应买的一行：沙盒/区间外展开区里用；正常的锦上添花档走 buySuggestionLine（V9.58） */
   const levelLine = (r: NextRoundBuyRow, inToday: boolean) => {
     const z = zone(r.priceCents)
     return (
@@ -363,6 +398,180 @@ export function OrdersPage({
     for (const c of view.repairChains) for (const row of c.relatedSellRows) m.set(row, c)
     return m
   }, [view])
+
+  /**
+   * V9.58：沙盒买档行（原「今日挂单」内联渲染抽出）。沙盒不走 buildBuySuggestions——
+   * 模拟行要保留「记为成交 / 删除」，且模拟/真实同价不能并成一条。
+   */
+  const sbBuyLine = (b: BuySplit) => {
+    const sim = sandboxByRow.get(b.sourceRow)
+    const o = orderById.get(b.orderId)
+    return (
+      <div
+        key={`t-${b.key}`}
+        // V9.29.1：左侧状态边框（蓝=买 / 红=卖），与明细页 trade-item 同一套语义
+        className={`line wrap-row pending-buy ${sim ? 'sandbox-row' : 'clickable'}`}
+        data-row={b.sourceRow}
+        data-split-key={b.split ? b.key : undefined}
+        data-sandbox-row={sim ? b.sourceRow : undefined}
+        onClick={sim ? undefined : () => goTrades({ id: idFor(b.sourceRow), stock: b.stockName })}
+      >
+        <div className="left">
+          <div className="t1 num">
+            {sim && <span className="sandbox-mark">模拟 · </span>}
+            买 {price(b.priceCents)} × {qty(b.qty)}
+            {b.split && <span className="merge-mark"> · 拆档</span>}
+          </div>
+          <div className="t2">
+            {sim ? `沙盒模拟单 · 计划 ${b.plannedQty} 股` : `${recordNoLabel(b.sourceRow, recordNo)} · 计划 ${b.plannedQty}`}
+            {!b.split && (o?.rewardQty ?? 0) > 0 && ` · 含奖励 ${o!.rewardQty}`}
+            {b.executedQty > 0 && ` · 已回补 ${b.executedQty}`}
+          </div>
+          {!b.split && o?.planPriceCents != null && (
+            <div className="tag-row" style={{ marginTop: 4 }}>
+              <Tag size="small" variant="soft" color="purple">
+                计划 {price(o.planPriceCents)} × {qty(o.planQty ?? o.remainingQty)}
+              </Tag>
+            </div>
+          )}
+          {/* V9.49：这笔待买的身份——回补哪一笔卖出；属于回本链的再标出来 */}
+          <div className="tag-row" style={{ marginTop: 4 }}>
+            <Tag size="small" variant="soft" color="app-teal" data-testid="rebuy-of">
+              回补 {recordNoLabel(b.sourceRow, recordNo)}
+            </Tag>
+            {b.sellFirst && (
+              <Tag size="small" variant="soft" color="app-teal" data-testid="split-sell-first">先卖后买</Tag>
+            )}
+            {chainOfSell.has(b.sourceRow) && (
+              <Tag size="small" variant="soft" color="app-yellow" data-testid="rebuy-chain">
+                回本链 {recordNoLabel(chainOfSell.get(b.sourceRow)!.anchorRow, recordNo)}
+              </Tag>
+            )}
+          </div>
+        </div>
+        <div className="right num" style={{ fontWeight: 600 }}>
+          {money(b.priceCents * b.qty)}
+        </div>
+        <div className="acts">
+          {sim ? (
+            <>
+              <Button
+                size="small"
+                type="primary"
+                data-action="sandbox-commit"
+                disabled={committing === sim.id}
+                onClick={stopWith(() => void commitSandbox(sim))}
+              >
+                记为成交
+              </Button>
+              <Button size="small" onClick={stopWith(() => removeSandbox(sim))}>删除</Button>
+            </>
+          ) : (
+            <>
+              {!b.split && o && (
+                <Button
+                  size="small"
+                  data-action="buy-plan"
+                  onClick={stopWith(() => openPlan('buy', o.id, `买 ${o.stockName}`, o.rebuyPriceCents, o.remainingQty, o.planPriceCents, o.planQty))}
+                >
+                  改单
+                </Button>
+              )}
+              <Button
+                size="small"
+                disabled={!o}
+                onClick={stopWith(() => o && openExec(o, { qty: execQtyOf(b, o), priceCents: b.priceCents }))}
+              >
+                记成交
+              </Button>
+            </>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  /** V9.58：卖出行渲染（原「今日挂单·可挂卖」内联渲染抽出），真实/模拟共用 */
+  const sellLine = (r: TargetRow) => {
+    const sim = sandboxByRow.get(r.anchorRow)
+    return (
+      <div
+        key={`s-${r.key}`}
+        className={`line wrap-row pending-sell ${sim ? 'sandbox-row' : 'clickable'}`}
+        data-row={r.anchorRow}
+        data-merge-group={r.merged ? r.key : undefined}
+        data-sandbox-row={sim ? r.anchorRow : undefined}
+        onClick={
+          sim
+            ? undefined
+            : () =>
+                goTrades({
+                  id: idFor(r.anchorRow),
+                  stock: r.targets[0].stockName,
+                })
+        }
+      >
+        <div className="left">
+          <div className="t1 num">
+            {sim && <span className="sandbox-mark">模拟 · </span>}
+            {r.merged && <span className="merge-mark">合并 · </span>}
+            卖 {price(r.priceCents)} × {qty(r.qty)}
+          </div>
+          <div className="t2">
+            {r.merged
+              ? `${sellRowLabel(r)} · 预期 ${signedMoney(r.expectProfitCents)}`
+              : `${sim ? '沙盒模拟批次' : lotLabel(r.targets[0].lotId, recordNo)} · 预期 ${signedMoney(r.expectProfitCents)}`}
+          </div>
+          {r.planPriceCents != null && (
+            <div className="tag-row" style={{ marginTop: 4 }}>
+              <Tag size="small" variant="soft" color="purple">
+                计划 {price(r.planPriceCents)} × {qty(r.planQty ?? r.qty)}
+              </Tag>
+            </div>
+          )}
+        </div>
+        <div className="right num" style={{ fontWeight: 600 }}>
+          {money(r.amountCents)}
+        </div>
+        <div className="acts">
+          {sim ? (
+            <>
+              <Button
+                size="small"
+                type="primary"
+                data-action="sandbox-commit"
+                disabled={committing === sim.id}
+                onClick={stopWith(() => void commitSandbox(sim))}
+              >
+                记为成交
+              </Button>
+              <Button size="small" onClick={stopWith(() => removeSandbox(sim))}>删除</Button>
+            </>
+          ) : (
+            <><Button size="small" data-action="sell-execution" onClick={stopWith(()=>openTrade('sell',r))}>记卖出</Button><Button
+              size="small"
+              data-action="sell-plan"
+              onClick={stopWith(() =>
+                openPlan(
+                  'sell',
+                  r.key,
+                  `卖 ${r.targets[0].stockName}`,
+                  r.priceCents,
+                  r.qty,
+                  r.planPriceCents,
+                  r.planQty ?? (r.merged ? r.qty : null),
+                  undefined,
+                  r.planRefs,
+                ),
+              )}
+            >
+              改单
+            </Button></>
+          )}
+        </div>
+      </div>
+    )
+  }
 
   const rebuyTotal = buySplits.reduce((a, b) => a + b.priceCents * b.qty, 0)
   const rewardTotal = orders.reduce((a, o) => a + o.rebuyPriceCents * Math.max(0, o.rewardQty - o.doneRewardQty), 0)
@@ -642,33 +851,45 @@ export function OrdersPage({
         `昨收 ${(confirmed.closeCents / 100).toFixed(2)} · 区间 ${(range.downCents / 100).toFixed(2)}~${(range.upCents / 100).toFixed(2)}`,
       )
     }
-    if(suggestionsToday.length){
-      lines.push('【今日可挂买】')
-      for(const r of suggestionsToday)lines.push(`  ${price(r.priceCents)} × ${r.qty} 股（${r.sources.length} 笔来源${r.sellFirst?' · 先卖后买':''}）`)
+    /** V9.58：复制清单按三组顺序（应该买入 → 锦上添花 → 应该卖出），区间外只报数量 */
+    const musts = range ? mustToday : mustBuy
+    const bonuses = range ? bonusToday : bonus
+    if (musts.length) {
+      lines.push('【应该买入】')
+      for (const r of musts) lines.push(`  ${price(r.priceCents)} × ${r.qty} 股（${r.sources.length} 笔来源${r.sellFirst ? ' · 先卖后买' : ''}）`)
     }
-    if (sellToday.length) {
-      lines.push('【今日可挂卖】')
-      for (const r of sellToday) {
+    if (bonuses.length) {
+      lines.push('【锦上添花】')
+      for (const r of bonuses) lines.push(`  ${price(r.priceCents)} × ${r.qty} 股（${r.sources.length} 笔来源）`)
+    }
+    const sells = range ? sellShown : targetRows
+    if (sells.length) {
+      lines.push('【应该卖出】')
+      for (const r of sells) {
         lines.push(`  ${sellRowShort(r)}  ${price(r.planPriceCents ?? r.priceCents)} × ${r.planQty ?? r.qty} 股`)
       }
     }
-    if (!range) {
-      lines.push('（未确认昨收价，以下是全部待买/待卖）')
-      for (const r of buySuggestions) lines.push(`  待买 ${price(r.priceCents)} × ${r.qty}`)
-      for (const r of targetRows) lines.push(`  待卖 ${sellRowShort(r)} ${price(r.priceCents)} × ${r.qty}`)
+    if (range) {
+      const outBuys = [...mustOut, ...bonusOut]
+      if (outBuys.length || sellOutRows.length) {
+        lines.push(`【区间外 · 今日无法成交】买 ${outBuys.length} 档 · 卖 ${sellOutRows.length} 档`)
+      }
+    } else {
+      lines.push('（未确认昨收价，以上是全部待买/待卖）')
     }
     void navigator.clipboard?.writeText(lines.filter(Boolean).join('\n'))
     notificationOpen({ message: '清单已复制', type: 'success' })
   }
 
   function exportCsv() {
+    const mustKeys = new Set(mustBuy.map((r) => r.key))
     const rows: (string | number)[][] = [['类型', '序号', '价格', '股数', '金额', '区间']]
-    for (const r of buySuggestions) rows.push([r.sellFirst?'待买（先卖后买）':'待买',r.sources.map((v)=>recordNoLabel(v.row,recordNo)).join(' + '),price(r.priceCents),r.qty,(r.amountCents/100).toFixed(2),zone(r.priceCents)])
+    for (const r of buySuggestions) rows.push([mustKeys.has(r.key) ? '应该买入' : '锦上添花',r.sources.map((v)=>recordNoLabel(v.row,recordNo)).join(' + '),price(r.priceCents),r.qty,(r.amountCents/100).toFixed(2),zone(r.priceCents)])
     for (const r of targetRows) {
       const p = r.planPriceCents ?? r.priceCents
       const q = r.planQty ?? r.qty
       rows.push([
-        r.sandbox ? '待卖（模拟）' : '待卖',
+        r.sandbox ? '应该卖出（模拟）' : '应该卖出',
         sellRowShort(r),
         price(p),
         q,
@@ -758,6 +979,13 @@ export function OrdersPage({
             <strong>沙盒预览</strong>
             <Tag size="small" variant="soft" color="purple">未写库</Tag>
             <div className="spacer" />
+            {/* V9.58：模拟入口从原待买/待卖卡挪进沙盒面板，三组卡片不再各挂一套 */}
+            <Button size="small" type="text" data-action="sandbox-add-sell" onClick={() => openSandboxForm('sell')}>
+              ＋ 模拟待买
+            </Button>
+            <Button size="small" type="text" data-action="sandbox-add-buy" onClick={() => openSandboxForm('buy')}>
+              ＋ 模拟待卖
+            </Button>
             {goOverview && (
               <Button size="small" onClick={goOverview}>去概览看树</Button>
             )}
@@ -930,478 +1158,128 @@ export function OrdersPage({
       </div>
       </div>
 
-      {/* 2. 今日挂单 */}
-      <Card>
+      {/* 2. 应该买入：先卖后买/带敞口的欠股——卖出拿回来的钱就是留给它们的（V9.58） */}
+      <Card data-testid="must-buy-card">
         <div className="sec-head">
-          <strong>今日挂单</strong>
-          {range && (
-            <>
-              <Tag size="small" variant="soft" color="app-teal">可挂买 {sandbox.active ? buyToday.length+levelToday.length : suggestionsToday.length}</Tag>
-              <Tag size="small" variant="soft" color="app-orange">可挂卖 {sellToday.length}</Tag>
-            </>
-          )}
+          <strong>应该买入</strong>
+          <Tag size="small" variant="soft" color="app-red">
+            {sandbox.active ? sbMustIn.length : mustToday.length} 档
+          </Tag>
           <div className="spacer" />
-          <span className="sec-sub">{effectiveStock}</span>
+          <span className="sec-sub">
+            {effectiveStock}
+            {(sandbox.active ? sbMustAmount : mustAmount) > 0 && ` · ${money(sandbox.active ? sbMustAmount : mustAmount)}`}
+          </span>
         </div>
-
-        {!range ? (
-          <div className="empty-box">填昨收价并点「确认」后，这里列出今天价格区间内能挂的单</div>
+        {sandbox.active ? (
+          sbMustIn.length === 0 ? (
+            <div className="empty-box">区间里没有先卖后买的欠单</div>
+          ) : (
+            <div className="data-block">{sbMustIn.map(sbBuyLine)}</div>
+          )
+        ) : mustToday.length === 0 ? (
+          <div className="empty-box">区间里没有该先买回的欠股</div>
         ) : (
-          <>
-            <div className="grid-4 metric-strip two-col" style={{ marginBottom: 10 }}>
-              <div>
-                <div className="k">可挂买</div>
-                <div className="v">{money(buyTodayAmount)}</div>
-              </div>
-              <div>
-                <div className="k">可挂卖</div>
-                <div className="v">{money(sellTodayAmount)}</div>
-              </div>
-              <div>
-                <div className="k">越界</div>
-                <div className="v" style={{ color: outCount > 0 ? 'var(--up)' : undefined }}>
-                  {outCount}
-                </div>
-              </div>
-              <div>
-                <div className="k">可分配</div>
-                <div className="v">{money(availableProfit)}</div>
-              </div>
-            </div>
-
-            {(sandbox.active ? buyToday.length+levelToday.length : suggestionsToday.length) === 0 && sellToday.length === 0 ? (
-              <div className="empty-box">这个区间里没有可挂的单（{outCount} 条越界）</div>
-            ) : (
-              <>
-                {!sandbox.active ? <>
-                  {suggestionsToday.length>0 && <><div className="group-label">可挂买 · {suggestionsToday.length} 档</div><div className="data-block">{suggestionsToday.map(buySuggestionLine)}</div></>}
-                </> : <>
-                {buyToday.length + levelToday.length > 0 && (
-                  <>
-                    <div className="group-label">
-                      可挂买 · {buyToday.length + levelToday.length} 条
-                      {levelToday.length > 0 && `（含已完成批次 ${levelToday.length} 条）`}
-                    </div>
-                    <div className="data-block">
-                      {buyToday.map((b) => {
-                        const sim = sandboxByRow.get(b.sourceRow)
-                        const o = orderById.get(b.orderId)
-                        return (
-                          <div
-                            key={`t-${b.key}`}
-                            // V9.29.1：左侧状态边框（蓝=买 / 红=卖），与明细页 trade-item 同一套语义
-                            className={`line wrap-row pending-buy ${sim ? 'sandbox-row' : 'clickable'}`}
-                            data-row={b.sourceRow}
-                            data-split-key={b.split ? b.key : undefined}
-                            data-sandbox-row={sim ? b.sourceRow : undefined}
-                            onClick={sim ? undefined : () => goTrades({ id: idFor(b.sourceRow), stock: b.stockName })}
-                          >
-                            <div className="left">
-                              <div className="t1 num">
-                                {sim && <span className="sandbox-mark">模拟 · </span>}
-                                买 {price(b.priceCents)} × {qty(b.qty)}
-                                {b.split && <span className="merge-mark"> · 拆档</span>}
-                              </div>
-                              <div className="t2">
-                                {sim ? `沙盒模拟单 · 计划 ${b.plannedQty} 股` : `${recordNoLabel(b.sourceRow, recordNo)} · 计划 ${b.plannedQty}`}
-                                {!b.split && (o?.rewardQty ?? 0) > 0 && ` · 含奖励 ${o!.rewardQty}`}
-                                {b.executedQty > 0 && ` · 已回补 ${b.executedQty}`}
-                              </div>
-                              {!b.split && o?.planPriceCents != null && (
-                                <div className="tag-row" style={{ marginTop: 4 }}>
-                                  <Tag size="small" variant="soft" color="purple">
-                                    计划 {price(o.planPriceCents)} × {qty(o.planQty ?? o.remainingQty)}
-                                  </Tag>
-                                </div>
-                              )}
-                              {/* V9.49：这笔待买的身份——回补哪一笔卖出；属于回本链的再标出来 */}
-                              <div className="tag-row" style={{ marginTop: 4 }}>
-                                <Tag size="small" variant="soft" color="app-teal" data-testid="rebuy-of">
-                                  回补 {recordNoLabel(b.sourceRow, recordNo)}
-                                </Tag>
-                                {b.sellFirst && (
-                                  <Tag size="small" variant="soft" color="app-teal" data-testid="split-sell-first">先卖后买</Tag>
-                                )}
-                                {chainOfSell.has(b.sourceRow) && (
-                                  <Tag size="small" variant="soft" color="app-yellow" data-testid="rebuy-chain">
-                                    回本链 {recordNoLabel(chainOfSell.get(b.sourceRow)!.anchorRow, recordNo)}
-                                  </Tag>
-                                )}
-                              </div>
-                            </div>
-                            <div className="right num" style={{ fontWeight: 600 }}>
-                              {money(b.priceCents * b.qty)}
-                            </div>
-                            <div className="acts">
-                              {sim ? (
-                                <>
-                                  <Button
-                                    size="small"
-                                    type="primary"
-                                    data-action="sandbox-commit"
-                                    disabled={committing === sim.id}
-                                    onClick={stopWith(() => void commitSandbox(sim))}
-                                  >
-                                    记为成交
-                                  </Button>
-                                  <Button size="small" onClick={stopWith(() => removeSandbox(sim))}>删除</Button>
-                                </>
-                              ) : (
-                                <>
-                                  {!b.split && o && (
-                                    <Button
-                                      size="small"
-                                      data-action="buy-plan"
-                                      onClick={stopWith(() => openPlan('buy', o.id, `买 ${o.stockName}`, o.rebuyPriceCents, o.remainingQty, o.planPriceCents, o.planQty))}
-                                    >
-                                      改单
-                                    </Button>
-                                  )}
-                                  <Button
-                                    size="small"
-                                    disabled={!o}
-                                    onClick={stopWith(() => o && openExec(o, { qty: execQtyOf(b, o), priceCents: b.priceCents }))}
-                                  >
-                                    记成交
-                                  </Button>
-                                </>
-                              )}
-                            </div>
-                          </div>
-                        )
-                      })}
-                      {levelToday.map((r) => levelLine(r, true))}
-                    </div>
-                  </>
-                )}
-                </>}
-
-                {sellToday.length > 0 && (
-                  <>
-                    <div className="group-label">可挂卖 · {sellToday.length} 条</div>
-                    <div className="data-block">
-                      {sellToday.map((r) => {
-                        const sim = sandboxByRow.get(r.anchorRow)
-                        return (
-                          <div
-                            key={`s-${r.key}`}
-                            className={`line wrap-row pending-sell ${sim ? 'sandbox-row' : 'clickable'}`}
-                            data-row={r.anchorRow}
-                            data-merge-group={r.merged ? r.key : undefined}
-                            data-sandbox-row={sim ? r.anchorRow : undefined}
-                            onClick={
-                              sim
-                                ? undefined
-                                : () =>
-                                    goTrades({
-                                      id: idFor(r.anchorRow),
-                                      stock: r.targets[0].stockName,
-                                    })
-                            }
-                          >
-                            <div className="left">
-                              <div className="t1 num">
-                                {sim && <span className="sandbox-mark">模拟 · </span>}
-                                {r.merged && <span className="merge-mark">合并 · </span>}
-                                卖 {price(r.priceCents)} × {qty(r.qty)}
-                              </div>
-                              <div className="t2">
-                                {r.merged
-                                  ? `${sellRowLabel(r)} · 预期 ${signedMoney(r.expectProfitCents)}`
-                                  : `${sim ? '沙盒模拟批次' : lotLabel(r.targets[0].lotId, recordNo)} · 预期 ${signedMoney(r.expectProfitCents)}`}
-                              </div>
-                              {r.planPriceCents != null && (
-                                <div className="tag-row" style={{ marginTop: 4 }}>
-                                  <Tag size="small" variant="soft" color="purple">
-                                    计划 {price(r.planPriceCents)} × {qty(r.planQty ?? r.qty)}
-                                  </Tag>
-                                </div>
-                              )}
-                            </div>
-                            <div className="right num" style={{ fontWeight: 600 }}>
-                              {money(r.amountCents)}
-                            </div>
-                            <div className="acts">
-                              {sim ? (
-                                <>
-                                  <Button
-                                    size="small"
-                                    type="primary"
-                                    data-action="sandbox-commit"
-                                    disabled={committing === sim.id}
-                                    onClick={stopWith(() => void commitSandbox(sim))}
-                                  >
-                                    记为成交
-                                  </Button>
-                                  <Button size="small" onClick={stopWith(() => removeSandbox(sim))}>删除</Button>
-                                </>
-                              ) : (
-                                <><Button size="small" data-action="sell-execution" onClick={stopWith(()=>openTrade('sell',r))}>记卖出</Button><Button
-                                  size="small"
-                                  data-action="sell-plan"
-                                  onClick={stopWith(() =>
-                                    openPlan(
-                                      'sell',
-                                      r.key,
-                                      `卖 ${r.targets[0].stockName}`,
-                                      r.priceCents,
-                                      r.qty,
-                                      r.planPriceCents,
-                                      r.planQty ?? (r.merged ? r.qty : null),
-                                      undefined,
-                                      r.planRefs,
-                                    ),
-                                  )}
-                                >
-                                  改单
-                                </Button></>
-                              )}
-                            </div>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  </>
-                )}
-              </>
-            )}
-          </>
+          <div className="data-block">{mustToday.map(buySuggestionLine)}</div>
+        )}
+        {sandbox.active && sbMustOut.length > 0 && (
+          <details className="divider-top" data-testid="must-out">
+            <summary className="tiny muted">区间外 · {outSummary(sbMustOut)}</summary>
+            <div className="data-block">{sbMustOut.map(sbBuyLine)}</div>
+          </details>
+        )}
+        {!sandbox.active && mustOut.length > 0 && (
+          <details className="divider-top" data-testid="must-out">
+            <summary className="tiny muted">区间外 · {outSummary(mustOut)}</summary>
+            <div className="data-block">{mustOut.map(buySuggestionLine)}</div>
+          </details>
+        )}
+        {availableProfit > 0 && (
+          <p className="tiny muted" style={{ margin: '8px 0 0' }}>
+            组池可分配 {money(availableProfit)}，记成交时可以带奖励股。
+          </p>
+        )}
+        {summary && summary.exposureQty > 0 && (
+          <p className="tiny muted" style={{ margin: '6px 0 0' }}>
+            <b>敞口提示：</b>可卖 {qty(summary.targetQty)} 股、净持仓 {qty(summary.netQty)} 股；待卖全部执行完还有{' '}
+            <b style={{ color: 'var(--up)' }}>{qty(summary.exposureQty)} 股</b> 要靠这里的买单回补——不是持仓，是在加空。
+          </p>
         )}
       </Card>
 
-      {/* 3. 待买（常驻，不藏页签，§04） */}
-      <Card>
+      {/* 3. 锦上添花：已完成批次的下一轮 + P 列再买——拿这一轮的钱再投一轮（V9.58） */}
+      <Card data-testid="bonus-card">
         <div className="sec-head">
-          <strong>待买</strong>
-          <Tag size="small" variant="soft" color="purple">{orders.length} 条</Tag>
-          {nextRound.length > 0 && (
-            <Tag size="small" variant="soft" color="app-blue">下一轮 {nextRound.length} 档</Tag>
-          )}
+          <strong>锦上添花</strong>
+          <Tag size="small" variant="soft" color="app-blue">
+            {sandbox.active ? sbBonusIn.length + levelIn.length : bonusToday.length} 档
+          </Tag>
           <div className="spacer" />
-          {sandbox.active && (
-            <Button size="small" type="text" data-action="sandbox-add-sell" onClick={() => openSandboxForm('sell')}>
-              ＋ 模拟待买
-            </Button>
-          )}
+          <span className="sec-sub">
+            {effectiveStock}
+            {(sandbox.active ? sbBonusAmount : bonusAmount) > 0 && ` · ${money(sandbox.active ? sbBonusAmount : bonusAmount)}`}
+          </span>
         </div>
-        {!sandbox.active && <div className="data-block">{buySuggestions.map(buySuggestionLine)}</div>}
-        <details open><summary className="tiny muted">逐笔回补状态与撤销</summary>
-        {orders.length === 0 ? (
-          <div className="empty-box">
-            {sandbox.active ? '该股没有待买单，点右上「＋ 模拟待买」加一条' : '该股没有待买单'}
-          </div>
+        {sandbox.active ? (
+          sbBonusIn.length + levelIn.length === 0 ? (
+            <div className="empty-box">区间里没有可再买一轮的档</div>
+          ) : (
+            <>
+              {sbBonusIn.length > 0 && <div className="data-block">{sbBonusIn.map(sbBuyLine)}</div>}
+              {levelIn.length > 0 && <div className="data-block">{levelIn.map((r) => levelLine(r, true))}</div>}
+            </>
+          )
+        ) : bonusToday.length === 0 ? (
+          <div className="empty-box">区间里没有可再买一轮的档</div>
         ) : (
-          <div className="data-block">
-            {orderedRebuys.map((o) => {
-              const z = zone(o.rebuyPriceCents)
-              const sim = sandboxByRow.get(o.sourceRow)
-              const link = sim
-                ? sandbox.hedges.find((h) => h.sellRow === o.sourceRow)
-                : hedges.find((h) => h.sellRow === o.sourceRow)
-              return (
-                <div
-                  key={o.id}
-                  className={`line ${sim ? 'sandbox-row' : 'clickable'}`}
-                  data-row={o.sourceRow}
-                  data-sandbox-row={sim ? o.sourceRow : undefined}
-                  data-anim={justRebought.has(o.sourceRow) ? 'done' : undefined}
-                  onClick={sim ? undefined : () => goTrades({ id: idFor(o.sourceRow), stock: o.stockName })}
-                >
-                  <div className="left">
-                    <div className="t1 num">
-                      {sim && <span className="sandbox-mark">模拟 · </span>}
-                      {price(o.rebuyPriceCents)}
-                      <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}>
-                        {' '}× {qty(o.remainingQty)} 股
-                      </span>
-                      {o.remainingQty === 0 && (
-                        <Tag size="small" variant="soft" color="app-green" style={{ marginLeft: 6 }}>已回补完</Tag>
-                      )}
-                    </div>
-                    <div className="t2">
-                      {sim ? `沙盒模拟单 · 计划 ${o.baseQty}` : `${recordNoLabel(o.sourceRow, recordNo)} · 计划 ${o.baseQty}`}
-                      {o.rewardQty > 0 && ` + 奖励 ${o.rewardQty}`}
-                      {o.execQty > 0 && ` · 已回补 ${o.execQty}`}
-                      {/* V9.33：这笔卖已挂到高位买单上，那这张买入单其实可以撤（买了也会自动解挂） */}
-                      {link && !sim && ' · 已挂高位，这张买单可撤'}
-                      {sim ? ' · 只用于沙盒预览' : ` · 组池 ${money(o.grossProfitCents)} / ${o.hands} 手`}
-                    </div>
-                    <div className="tag-row" style={{ marginTop: 4 }}>
-                      {/* V9.54：先卖后买的待买单独标出来（明细页/明细卡同一个标签），敞口照旧提醒 */}
-                      {o.sellFirst ? (
-                        <Tag size="small" variant="soft" color="app-teal" data-testid="rebuys-sell-first">先卖后买</Tag>
-                      ) : (
-                        <Tag size="small" variant="soft" color={o.exposure ? 'app-red' : 'app-teal'}>
-                          {o.exposure ? '空头敞口' : '回补再买入'}
-                        </Tag>
-                      )}
-                      {o.sellFirst && o.exposure && (
-                        <Tag size="small" variant="soft" color="app-red">空头敞口</Tag>
-                      )}
-                      <Tag
-                        size="small"
-                        variant="soft"
-                        color={z === '区间内' ? 'app-green' : z === '无区间' ? 'default' : 'app-red'}
-                      >
-                        {z}
-                      </Tag>
-                      {!sim && o.remainingQty > 0 && <Button size="small" data-action="rebuy-execution" onClick={stopWith(()=>openExec(o))}>记成交</Button>}
-                      {!sim && o.execQty > 0 && (
-                        <Button size="small" type="text" onClick={stopWith(() => void undoExec(o.id))}>撤销最后一笔</Button>
-                      )}
-                      {/* V9.30 裸卖待挂钩：还没回补的裸卖，点一下就能挂到未完成买单上 */}
-                      {sim ? (
-                        <>
-                          <Tag
-                            size="small"
-                            variant="soft"
-                            color={link ? 'app-teal' : 'app-yellow'}
-                            onClick={stopWith(() => setSandboxHedgeRow(o.sourceRow))}
-                            className="hedge-entry"
-                            data-sandbox-hedge={o.sourceRow}
-                          >
-                            {link ? '模拟已挂钩 · 改挂' : '模拟待挂钩'}
-                          </Tag>
-                          <Button
-                            size="small"
-                            type="primary"
-                            data-action="sandbox-commit"
-                            disabled={committing === sim.id}
-                            onClick={stopWith(() => void commitSandbox(sim))}
-                          >
-                            记为成交
-                          </Button>
-                          <Button size="small" type="text" onClick={stopWith(() => removeSandbox(sim))}>删除</Button>
-                        </>
-                      ) : (
-                        nakedOpenRows.has(o.sourceRow) && (
-                          <Tag
-                            size="small"
-                            variant="soft"
-                            color={link ? 'app-teal' : 'app-yellow'}
-                            onClick={stopWith(() => setHedgeRow(o.sourceRow))}
-                            className="hedge-entry"
-                          >
-                            {link ? '已挂钩 · 改挂' : '裸卖待挂钩'}
-                          </Tag>
-                        )
-                      )}
-                    </div>
-                  </div>
-                  <div className="right num" style={{ fontWeight: 600 }}>
-                    {money(o.rebuyPriceCents * o.remainingQty)}
-                  </div>
-                </div>
-              )
-            })}
-          </div>
+          <div className="data-block">{bonusToday.map(buySuggestionLine)}</div>
         )}
-        </details>
-        {/* V9.47：卖完的老批次也排下一轮，价格回到成本档就再提醒买一次 */}
-        {nextRound.length > 0 && (
-          <details className="divider-top" data-testid="next-round-buy"><summary className="tiny muted">下一轮建议来源</summary>
-          <div>
-            <div className="sec-head sm">
-              <strong>下一轮应买</strong>
-              <div className="spacer" />
-              <span className="sec-sub">已完成批次 · {nextRound.length} 档</span>
+        {sandbox.active && sbBonusOut.length + levelOut.length > 0 && (
+          <details className="divider-top" data-testid="bonus-out">
+            <summary className="tiny muted">区间外 · {outSummary([...sbBonusOut, ...levelOut])}</summary>
+            <div className="data-block">
+              {sbBonusOut.map(sbBuyLine)}
+              {levelOut.map((r) => levelLine(r, false))}
             </div>
-            <div className="data-block">{nextRound.map((r) => levelLine(r, false))}</div>
-            <p className="tiny muted" style={{ margin: '6px 0 0' }}>
-              这些批次已经卖完（明细里算「已完成」）。股价回到买入价那一档时同样提醒买一次；
-              可在上方同价汇总中记成交；下一轮建议不参与组池奖励。
-            </p>
-          </div></details>
+          </details>
         )}
-        <p className="tiny muted" style={{ margin: '10px 0 0' }}>
-          待买剩余 {money(rebuyTotal)}（其中奖励 {money(rewardTotal)}） · 待补敞口{' '}
-          {qty(summary?.exposureQty ?? 0)} 股
+        {!sandbox.active && bonusOut.length > 0 && (
+          <details className="divider-top" data-testid="bonus-out">
+            <summary className="tiny muted">区间外 · {outSummary(bonusOut)}</summary>
+            <div className="data-block">{bonusOut.map(buySuggestionLine)}</div>
+          </details>
+        )}
+        <p className="tiny muted" style={{ margin: '8px 0 0' }}>
+          已完成批次回到买入价那一档再买一轮；先买后卖行里 P 列填了价的待回补也归这里。下一轮档不参与组池奖励。
         </p>
       </Card>
 
-      {/* 4. 待卖（常驻） */}
-      <Card>
+      {/* 4. 应该卖出：未完成买单的所有可卖份额（V9.58） */}
+      <Card data-testid="should-sell-card">
         <div className="sec-head">
-          <strong>待卖</strong>
-          <Tag size="small" variant="soft" color="app-teal">{targetRows.length} 条</Tag>
+          <strong>应该卖出</strong>
+          <Tag size="small" variant="soft" color="app-orange">{sellShown.length} 档</Tag>
           <div className="spacer" />
-          {sandbox.active && (
-            <Button size="small" type="text" data-action="sandbox-add-buy" onClick={() => openSandboxForm('buy')}>
-              ＋ 模拟待卖
-            </Button>
-          )}
+          <span className="sec-sub">
+            {effectiveStock}
+            {sellAmount > 0 && ` · ${money(sellAmount)}`}
+          </span>
         </div>
-        {targetRows.length === 0 ? (
+        {sellShown.length === 0 ? (
           <div className="empty-box">
-            {sandbox.active ? '该股批次已全部卖完，点右上「＋ 模拟待卖」加一笔' : '该股批次已全部卖完'}
+            {sandbox.active ? '该股批次已全部卖完，沙盒面板可加模拟待卖' : '该股批次已全部卖完'}
           </div>
         ) : (
+          <div className="data-block">{sellShown.map(sellLine)}</div>
+        )}
+        {sellOutRows.length > 0 && (
+          <details className="divider-top" data-testid="sell-out">
+            <summary className="tiny muted">区间外 · {outSummary(sellOutRows)}</summary>
+            <div className="data-block">{sellOutRows.map(sellLine)}</div>
+          </details>
+        )}
+        {targetRows.length > 0 && (
           <div className="data-block">
-            {targetRows.map((r) => {
-              const z = zone(r.priceCents)
-              const sim = sandboxByRow.get(r.anchorRow)
-              return (
-                <div
-                  key={r.key}
-                  className={`line ${sim ? 'sandbox-row' : 'clickable'}`}
-                  data-row={r.anchorRow}
-                  data-merge-group={r.merged ? r.key : undefined}
-                  data-sandbox-row={sim ? r.anchorRow : undefined}
-                  onClick={
-                    sim
-                      ? undefined
-                      : () =>
-                          goTrades({
-                            id: idFor(r.anchorRow),
-                            stock: r.targets[0].stockName,
-                          })
-                  }
-                >
-                  <div className="left">
-                    <div className="t1 num">
-                      {sim && <span className="sandbox-mark">模拟 · </span>}
-                      {r.merged && <span className="merge-mark">合并 · </span>}
-                      {price(r.priceCents)}
-                      <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}> × {qty(r.qty)} 股</span>
-                    </div>
-                    <div className="t2">
-                      {sim ? '沙盒模拟批次' : sellRowLabel(r)}
-                    </div>
-                    <div className="tag-row" style={{ marginTop: 4 }}>
-                      <Tag
-                        size="small"
-                        variant="soft"
-                        color={z === '区间内' ? 'app-green' : z === '无区间' ? 'default' : 'app-red'}
-                      >
-                        {z}
-                      </Tag>
-                      {r.merged && (
-                        <Tag size="small" variant="soft" color="purple">同价 {r.lotRows.length} 笔</Tag>
-                      )}
-                      {!sim && <Button size="small" data-action="sell-execution" onClick={stopWith(()=>openTrade('sell',r))}>记卖出</Button>}
-                      {sim && (
-                        <>
-                          <Button
-                            size="small"
-                            type="primary"
-                            data-action="sandbox-commit"
-                            disabled={committing === sim.id}
-                            onClick={stopWith(() => void commitSandbox(sim))}
-                          >
-                            记为成交
-                          </Button>
-                          <Button size="small" type="text" onClick={stopWith(() => removeSandbox(sim))}>删除</Button>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                  <div className="right">
-                    <div className="num" style={{ fontWeight: 600 }}>{money(r.amountCents)}</div>
-                    <div className="tiny up num">{signedMoney(r.expectProfitCents)}</div>
-                  </div>
-                </div>
-              )
-            })}
             <div className="line">
               <div className="left t1">合计</div>
               <div className="right num" style={{ fontWeight: 600 }}>
@@ -1413,15 +1291,126 @@ export function OrdersPage({
         )}
       </Card>
 
-      {summary && summary.exposureQty > 0 && (
-        <Card>
-          <p className="hint-block" style={{ margin: 0 }}>
-            <b>敞口提示：</b>{summary.stockName} 可卖 {qty(summary.targetQty)} 股，净持仓 {qty(summary.netQty)} 股。
-            待卖全部执行完，还会有 <b style={{ color: 'var(--up)' }}>{qty(summary.exposureQty)} 股</b> 需要通过待买回补
-            ——这部分不是持仓，是在加空。
+      {/* 5. 台账：逐笔回补的状态、撤销与挂钩入口——审计工具，默认收起（V9.58） */}
+      <Card>
+        <details data-testid="rebuy-ledger">
+          <summary className="tiny muted">台账 · 逐笔回补 {orders.length} 条（状态 / 撤销 / 挂钩）</summary>
+          {orders.length === 0 ? (
+            <div className="empty-box">
+              {sandbox.active ? '该股没有待买单，沙盒面板可加一条模拟待买' : '该股没有待买单'}
+            </div>
+          ) : (
+            <div className="data-block">
+              {orderedRebuys.map((o) => {
+                const z = zone(o.rebuyPriceCents)
+                const sim = sandboxByRow.get(o.sourceRow)
+                const link = sim
+                  ? sandbox.hedges.find((h) => h.sellRow === o.sourceRow)
+                  : hedges.find((h) => h.sellRow === o.sourceRow)
+                return (
+                  <div
+                    key={o.id}
+                    className={`line ${sim ? 'sandbox-row' : 'clickable'}`}
+                    data-row={o.sourceRow}
+                    data-sandbox-row={sim ? o.sourceRow : undefined}
+                    data-anim={justRebought.has(o.sourceRow) ? 'done' : undefined}
+                    onClick={sim ? undefined : () => goTrades({ id: idFor(o.sourceRow), stock: o.stockName })}
+                  >
+                    <div className="left">
+                      <div className="t1 num">
+                        {sim && <span className="sandbox-mark">模拟 · </span>}
+                        {price(o.rebuyPriceCents)}
+                        <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}>
+                          {' '}× {qty(o.remainingQty)} 股
+                        </span>
+                        {o.remainingQty === 0 && (
+                          <Tag size="small" variant="soft" color="app-green" style={{ marginLeft: 6 }}>已回补完</Tag>
+                        )}
+                      </div>
+                      <div className="t2">
+                        {sim ? `沙盒模拟单 · 计划 ${o.baseQty}` : `${recordNoLabel(o.sourceRow, recordNo)} · 计划 ${o.baseQty}`}
+                        {o.rewardQty > 0 && ` + 奖励 ${o.rewardQty}`}
+                        {o.execQty > 0 && ` · 已回补 ${o.execQty}`}
+                        {/* V9.33：这笔卖已挂到高位买单上，那这张买入单其实可以撤（买了也会自动解挂） */}
+                        {link && !sim && ' · 已挂高位，这张买单可撤'}
+                        {sim ? ' · 只用于沙盒预览' : ` · 组池 ${money(o.grossProfitCents)} / ${o.hands} 手`}
+                      </div>
+                      <div className="tag-row" style={{ marginTop: 4 }}>
+                        {/* V9.54：先卖后买的待买单独标出来（明细页/明细卡同一个标签），敞口照旧提醒 */}
+                        {o.sellFirst ? (
+                          <Tag size="small" variant="soft" color="app-teal" data-testid="rebuys-sell-first">先卖后买</Tag>
+                        ) : (
+                          <Tag size="small" variant="soft" color={o.exposure ? 'app-red' : 'app-teal'}>
+                            {o.exposure ? '空头敞口' : '回补再买入'}
+                          </Tag>
+                        )}
+                        {o.sellFirst && o.exposure && (
+                          <Tag size="small" variant="soft" color="app-red">空头敞口</Tag>
+                        )}
+                        <Tag
+                          size="small"
+                          variant="soft"
+                          color={z === '区间内' ? 'app-green' : z === '无区间' ? 'default' : 'app-red'}
+                        >
+                          {z}
+                        </Tag>
+                        {!sim && o.remainingQty > 0 && <Button size="small" data-action="rebuy-execution" onClick={stopWith(()=>openExec(o))}>记成交</Button>}
+                        {!sim && o.execQty > 0 && (
+                          <Button size="small" type="text" onClick={stopWith(() => void undoExec(o.id))}>撤销最后一笔</Button>
+                        )}
+                        {/* V9.30 裸卖待挂钩：还没回补的裸卖，点一下就能挂到未完成买单上 */}
+                        {sim ? (
+                          <>
+                            <Tag
+                              size="small"
+                              variant="soft"
+                              color={link ? 'app-teal' : 'app-yellow'}
+                              onClick={stopWith(() => setSandboxHedgeRow(o.sourceRow))}
+                              className="hedge-entry"
+                              data-sandbox-hedge={o.sourceRow}
+                            >
+                              {link ? '模拟已挂钩 · 改挂' : '模拟待挂钩'}
+                            </Tag>
+                            <Button
+                              size="small"
+                              type="primary"
+                              data-action="sandbox-commit"
+                              disabled={committing === sim.id}
+                              onClick={stopWith(() => void commitSandbox(sim))}
+                            >
+                              记为成交
+                            </Button>
+                            <Button size="small" type="text" onClick={stopWith(() => removeSandbox(sim))}>删除</Button>
+                          </>
+                        ) : (
+                          nakedOpenRows.has(o.sourceRow) && (
+                            <Tag
+                              size="small"
+                              variant="soft"
+                              color={link ? 'app-teal' : 'app-yellow'}
+                              onClick={stopWith(() => setHedgeRow(o.sourceRow))}
+                              className="hedge-entry"
+                            >
+                              {link ? '已挂钩 · 改挂' : '裸卖待挂钩'}
+                            </Tag>
+                          )
+                        )}
+                      </div>
+                    </div>
+                    <div className="right num" style={{ fontWeight: 600 }}>
+                      {money(o.rebuyPriceCents * o.remainingQty)}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+          <p className="tiny muted" style={{ margin: '10px 0 0' }}>
+            待买剩余 {money(rebuyTotal)}（其中奖励 {money(rewardTotal)}） · 待补敞口{' '}
+            {qty(summary?.exposureQty ?? 0)} 股
           </p>
-        </Card>
-      )}
+        </details>
+      </Card>
 
       <Modal open={trade!==null} title={trade?.side==='sell'?'记卖出成交':'记买入成交'} typewriter={false} onClose={()=>!savingTrade&&setTrade(null)}
         footer={<div className="row"><Button type="primary" disabled={savingTrade} onClick={()=>void saveTrade()}>保存成交</Button><Button disabled={savingTrade} onClick={()=>setTrade(null)}>取消</Button></div>}>

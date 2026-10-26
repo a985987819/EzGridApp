@@ -1,7 +1,7 @@
 import { describe,it,expect } from 'vitest'
 import {buildLedger} from './ledger'
 import {buildNextRoundBuyRows} from './buyBoard'
-import {buildBuySuggestions,consumedNextRounds,sellsByRecord} from './suggestions'
+import {buildBuySuggestions,consumedNextRounds,sellsByRecord,splitBuySuggestions} from './suggestions'
 import {mergeTargetRows} from './merge'
 import {validateExecutionInput,activeDependents} from './dependencies'
 import {planImport} from './importPlan'
@@ -101,6 +101,28 @@ describe('成交边界',()=>{
  })
 })
 describe('挂单建议回归',()=>{
+ it('V9.58 三组拆分：先卖后买进应该买入，下一轮与 P 列再买进锦上添花',()=>{
+  const l=buildLedger([
+    buy(2,500,500),
+    sell(9,700,500),
+    {...buy(3,800,300),soldQty:300,earlyBuyPriceCents:800},
+    {...buy(4,600,400),soldQty:400},
+  ],[stock])
+  const board=buildBuySuggestions(l.buySplits,buildNextRoundBuyRows({...l,merges:[]}),[])
+  const exposed=new Set(l.orders.filter((o)=>o.exposure).map((o)=>o.id))
+  const {mustBuy,bonus}=splitBuySuggestions(board,exposed)
+  expect(mustBuy.map((r)=>r.priceCents)).toEqual([500])
+  expect(bonus.map((r)=>r.priceCents)).toEqual([600,800])
+  expect(bonus[1].sources.every((s)=>s.kind==='order')).toBe(true)
+ })
+ it('V9.58 先买后卖超卖行的 P 列再买归锦上添花（域内敞口只认先卖后买，拆分保留敞口判定防御）',()=>{
+  const l=buildLedger([{...buy(5,500,300),soldQty:500,earlyBuyPriceCents:400,sellDateSerial:46020}],[stock])
+  expect(l.orders[0]).toMatchObject({exposure:false,sellFirst:false})
+  const board=buildBuySuggestions(l.buySplits,[],[])
+  const {mustBuy,bonus}=splitBuySuggestions(board,new Set(l.orders.filter((o)=>o.exposure).map((o)=>o.id)))
+  expect(mustBuy).toEqual([])
+  expect(bonus.map((r)=>r.priceCents)).toEqual([400])
+ })
  it('空目标买单按间隔推导，成交价缺失仍不捏造成交',()=>{
   const l=buildLedger([rec(2,{buyPriceCents:500,buyQtyRaw:500}),rec(3,{buyPriceCents:500,buyQtyRaw:500,soldQty:500})],[stock])
   expect(l.targets[0]).toMatchObject({priceCents:700,qty:500});expect(l.sells[0].priceCents).toBeNull()

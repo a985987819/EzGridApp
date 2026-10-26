@@ -1240,23 +1240,24 @@ try {
   console.log('  涨跌停标签:', limitUp, '/', limitDown)
   check('涨停价 8.91', limitUp.includes('8.91'))
   check('跌停价 7.29', limitDown.includes('7.29'))
-  check('出现「今日挂单」', text.includes('今日挂单'))
-  check('今日挂单有可挂买', /可挂买\s*[1-9]/.test(text))
+  // V9.58：挂单页三组——应该买入（先卖后买/敞口）· 锦上添花（下一轮/P列再买）· 应该卖出（未卖份额）
+  check('出现「应该买入 / 锦上添花 / 应该卖出」三组', text.includes('应该买入') && text.includes('锦上添花') && text.includes('应该卖出'))
+  check('应该买入有档位（先卖后买的欠股）', await evaluate(`Boolean(document.querySelector('[data-testid="must-buy-card"] [data-testid="buy-suggestion"]'))`))
 
-  // 今日挂单 / 待买 / 待卖 都要在带边框的数据块里，且块内有分组标签
+  // 三组卡片都在带边框的数据块里
   const blocks = await evaluate(`(() => {
     const list = [...document.querySelectorAll('.data-block')]
     const bordered = list.filter(el => parseFloat(getComputedStyle(el).borderTopWidth) > 0)
     return JSON.stringify({
       total: list.length,
       bordered: bordered.length,
-      labels: [...document.querySelectorAll('.group-label')].map(e => e.textContent.trim()),
+      heads: [...document.querySelectorAll('.sec-head strong')].map(e => e.textContent.trim()),
     })
   })()`)
   console.log('  数据块:', blocks)
   const blk = JSON.parse(blocks)
   check('挂单页有带边框的数据块', blk.bordered >= 2, blocks)
-  check('可挂买/可挂卖 分组标签存在', blk.labels.some((l) => l.includes('可挂买')) && blk.labels.some((l) => l.includes('可挂卖')), blocks)
+  check('三组卡片标题都在', blk.heads.includes('应该买入') && blk.heads.includes('锦上添花') && blk.heads.includes('应该卖出'), blocks)
 
   // V9.29.1：可挂买 / 可挂卖 行加左侧状态边框（与明细页 trade-item 同语义：蓝=买、红=卖）
   const rowEdge = await evaluate(`(() => {
@@ -1274,43 +1275,36 @@ try {
   check('可挂卖行有红色左边框', Boolean(edge.sell && edge.sell.w >= 2.5 && edge.sell.c === 'rgb(208, 69, 63)'), rowEdge)
   check('今日挂单里有「记成交」', text.includes('记成交'))
 
-  // 待买/待卖必须常驻，不能藏在页签后面（§04）
+  // 待买/待卖必须常驻，不能藏在页签后面（§04）；V9.58 起逐笔回补收进底部「台账」折叠区
   const tabCount = await evaluate(`document.querySelectorAll('[role="tab"]').length`)
   check('挂单页不再用页签藏待买', Number(tabCount) === 0, String(tabCount))
-  check('待买清单常驻', /待买\s*\d+\s*条/.test(text))
+  check('台账收着逐笔回补（默认收起）', /逐笔回补\s*\d+\s*条/.test(text))
+  check('逐笔回补默认收起', await evaluate(`document.querySelector('[data-testid="rebuy-ledger"]')?.open === false`))
 
-  // V9.47：卖完的老批次也排「下一轮应买」——价格回到成本档再提醒买一次
+  // V9.47：卖完的老批次也排「下一轮应买」；V9.58 起它作为「锦上添花」档直接可记成交
   const nrRaw = await evaluate(`(() => {
     const rows = [...document.querySelectorAll('[data-buy-level]')]
-    const inToday = rows.some((el) => {
-      const blk = el.closest('.data-block')
-      const lab = blk ? blk.previousElementSibling : null
-      return Boolean(lab && /可挂买/.test(lab.textContent ?? ''))
-    })
     return JSON.stringify({
-      section: Boolean(document.querySelector('[data-testid="next-round-buy"]')),
+      card: Boolean(document.querySelector('[data-testid="bonus-card"]')),
       count: rows.length,
       levels: rows.map((el) => Number(el.getAttribute('data-buy-level'))),
-      tag: [...document.querySelectorAll('.group-label')].map((e) => e.textContent.trim()).find((t) => t.includes('可挂买')) ?? '',
       chip: rows.length > 0 && rows[0].textContent.includes('下一轮'),
       label: rows[0] ? (rows[0].querySelector('.t1')?.textContent.trim() ?? '') : '',
-      noExec: rows.every((el) => ![...el.querySelectorAll('button')].some((b) => b.textContent.trim() === '记成交')),
-      todayHasOne: inToday,
+      exec: rows.some((el) => [...el.querySelectorAll('button')].some((b) => b.textContent.trim() === '记成交')),
     })
   })()`)
   console.log('  下一轮应买:', nrRaw)
   const nr = JSON.parse(nrRaw)
-  check('待买卡有「下一轮应买」小节', nr.section, nrRaw)
+  check('锦上添花卡存在', nr.card, nrRaw)
   check('卖完的老批次排出档位（≥5 档）', nr.count >= 5, String(nr.count))
-  check('今日挂单按同价汇总展示可挂买', /可挂买/.test(nr.tag), nr.tag)
-  check('今日挂单提供同价汇总成交入口', await evaluate(`Boolean(document.querySelector('[data-action="suggestion-buy"]'))`), nrRaw)
+  check('挂单页提供同价汇总成交入口', await evaluate(`Boolean(document.querySelector('[data-action="suggestion-buy"]'))`), nrRaw)
   check('档位行标「下一轮」并给出买价 × 股数', nr.chip && /买\s*[\d.]+\s*×\s*[\d,]+/.test(nr.label), nr.label)
   check('还没回补完的行不重复提示（R60-63 不在其中）', ![60, 61, 62, 63].some((r) => nr.levels.includes(r)), JSON.stringify(nr.levels))
-  check('下一轮行不给「记成交」（它不是一张待买单）', nr.noExec, nrRaw)
+  check('下一轮档可直接记成交（V9.58 起锦上添花档即建议行）', nr.exec, nrRaw)
 
   // 点下一轮行 → 明细要落在那一笔「已完成」的行上（V9.47 修：深链不能被默认隐藏干掉）
   const deepRow = await evaluate(`(() => {
-    const el = document.querySelector('[data-testid="next-round-buy"] [data-buy-level]')
+    const el = document.querySelector('[data-testid="bonus-card"] [data-buy-level]')
     if (!el) return null
     el.click(); return el.getAttribute('data-buy-level')
   })()`)
@@ -1345,7 +1339,7 @@ try {
   const keptUp = await evaluate(`document.querySelector('[data-tag="limit-up"]')?.textContent.trim() ?? ''`)
   check('返回后区间还在（涨停 8.91）', keptUp.includes('8.91'), keptUp)
   check('返回后输入框还留着昨收 8.10', (await evaluate(`document.querySelector('input[aria-label="昨收价"]')?.value ?? ''`)) === '8.10')
-  check('今日挂单不用重新确认就可用', (await bodyText()).includes('可挂买'))
+  check('返回后不用重新确认就可用', (await bodyText()).includes('应该买入'))
 
   console.log('\n[8.1.2] 下滑收成一行摘要，回顶恢复完整设置')
   const fullH = Number(await evaluate(`document.querySelector('[data-sticky="orders"]')?.getBoundingClientRect().height ?? 0`))
@@ -1479,6 +1473,12 @@ try {
   await closeDrawer()
   await nav('orders')
   await sleep(1000)
+  // V9.58：区间外的合并行收进「区间外」折叠区，先展开再读（收起时 innerText 拿不到内容）
+  const openOut = await evaluate(`(() => {
+    const d = document.querySelector('[data-testid="sell-out"]')
+    if (d && !d.open) d.open = true
+    return Boolean(d)
+  })()`)
   const mergedRaw = await evaluate(`(() => {
     const blocks = [...document.querySelectorAll('.data-block')]
     const rows = blocks.flatMap((b) => [...b.querySelectorAll('.line[data-merge-group]')])
@@ -1518,6 +1518,7 @@ try {
   await closeDrawer()
   await nav('orders')
   await sleep(900)
+  await evaluate(`(() => { const d = document.querySelector('[data-testid="sell-out"]'); if (d && !d.open) d.open = true })()`)
   const splitRaw = await evaluate(`(() => {
     const same = [...document.querySelectorAll('.data-block .line')].filter((l) => l.textContent.includes('10.68'))
     return JSON.stringify({
@@ -1912,9 +1913,11 @@ try {
       '未回补时概览已出现回本链',
       (await evaluate(`Boolean(document.querySelector('[data-testid="overview-chains"]'))`)),
     )
-    // V9.30 挂单页待买行也有同一个入口（已挂的显示「已挂钩 · 改挂」）
+    // V9.30 挂单页待买行也有同一个入口（已挂的显示「已挂钩 · 改挂」）；V9.58 起在台账折叠区里，先展开
     await nav('orders')
     await sleep(900)
+    await evaluate(`(() => { const d = document.querySelector('[data-testid="rebuy-ledger"]'); if (d && !d.open) d.open = true })()`)
+    await sleep(200)
     text = await bodyText()
     check('挂单页待买行有「已挂钩 · 改挂」入口', text.includes('已挂钩 · 改挂'))
     check('挂单页标注「已挂高位，这张买单可撤」', text.includes('已挂高位，这张买单可撤'))
@@ -2289,8 +2292,15 @@ try {
     })()`),
   )
   await sleep(800)
+  await evaluate(`(() => {
+    for (const sel of ['[data-testid="rebuy-ledger"]', '[data-testid="must-out"]']) {
+      const d = document.querySelector(sel)
+      if (d && !d.open) d.open = true
+    }
+  })()`)
+  await sleep(150)
   const sbAddRaw = await evaluate(`(() => {
-    const row = document.querySelector('[data-sandbox-row="300001"]')
+    const row = document.querySelector('[data-testid="rebuy-ledger"] [data-sandbox-row="300001"]')
     const q = (s) => document.querySelector(s)?.textContent.trim() ?? ''
     return JSON.stringify({
       count: q('[data-sandbox-metric="count"]'),
@@ -2340,10 +2350,16 @@ try {
 
   check('回挂单页', await clickByText('button', '去挂单页调'))
   await sleep(900)
+  await evaluate(`(() => {
+    for (const sel of ['[data-testid="rebuy-ledger"]', '[data-testid="must-out"]']) {
+      const d = document.querySelector(sel)
+      if (d && !d.open) d.open = true
+    }
+  })()`)
   check(
     '点模拟行的「模拟待挂钩」',
     await evaluate(`(() => {
-      const t = document.querySelector('[data-sandbox-row="300001"] .hedge-entry')
+      const t = document.querySelector('[data-testid="rebuy-ledger"] [data-sandbox-row="300001"] .hedge-entry')
       if (!t) return false
       t.click(); return true
     })()`),
@@ -2372,7 +2388,7 @@ try {
   check('点「保存挂钩」', await clickByText('button', '保存挂钩'))
   await sleep(1000)
   const sbHedgedRaw = await evaluate(`(() => {
-    const row = document.querySelector('[data-sandbox-row="300001"]')
+    const row = document.querySelector('[data-testid="rebuy-ledger"] [data-sandbox-row="300001"]')
     const q = (s) => document.querySelector(s)?.textContent.trim() ?? ''
     return JSON.stringify({
       tag: row?.querySelector('.hedge-entry')?.textContent.trim() ?? '',
@@ -2430,6 +2446,13 @@ try {
     })()`),
   )
   await sleep(1600)
+  await evaluate(`(() => {
+    for (const sel of ['[data-testid="rebuy-ledger"]', '[data-testid="must-out"]']) {
+      const d = document.querySelector(sel)
+      if (d && !d.open) d.open = true
+    }
+  })()`)
+  await sleep(150)
   const sbCommitRaw = await evaluate(`(() => {
     const q = (s) => document.querySelector(s)?.textContent.trim() ?? ''
     return JSON.stringify({
