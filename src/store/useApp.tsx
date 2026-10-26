@@ -76,6 +76,23 @@ export interface OrdersSession {
 const ORDERS_SESSION_KEY = 'grid-trading:orders-session'
 const EMPTY_ORDERS_SESSION: OrdersSession = { stockName: '', closes: {}, confirmedCents: {}, overrides: {} }
 
+/**
+ * 记成交 / 记卖出 / 撤销 / 回滚这类事务的表清单。
+ * 事务体里会调 `currentLedger()` 把整个账本重建一遍（用于额度校验），Dexie 规定
+ * **事务只能访问声明过的表**，少写一张就抛 `NotFoundError: objectStore was not found`
+ * （V9.53 修：加了 buyTargets 表却没同步这三个事务）。以后再加派生输入表，这里必须同步。
+ */
+const LEDGER_TX_TABLES = () => [
+  db.records,
+  db.stocks,
+  db.rebuyExecutions,
+  db.hedges,
+  db.extraTargets,
+  db.chainLinks,
+  db.buyTargets,
+  db.auditLogs,
+]
+
 /** 从 localStorage 恢复（V9.28 起跨会话保留；结构坏掉就当空会话） */
 function loadOrdersSession(): OrdersSession {
   try {
@@ -576,7 +593,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const recordLotSales = async (sources:{lotId:string;qty:number}[], qty:number, priceCents:number, date:string) => {
     if(!Number.isInteger(qty)||qty<=0||!Number.isInteger(priceCents)||priceCents<=0||isoToSerial(date)===null)throw new Error('成交数量、价格或日期不合法')
-    await db.transaction('rw',[db.records,db.stocks,db.rebuyExecutions,db.hedges,db.extraTargets,db.chainLinks,db.auditLogs],async()=>{
+    await db.transaction('rw',LEDGER_TX_TABLES(),async()=>{
       const {records:r,ledger:l}=await currentLedger()
       const seen=new Set<string>()
       let left=qty
@@ -602,7 +619,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const recordBuySuggestion = async (sources:BuySource[],qty:number,priceCents:number,date:string) => {
     const serial=isoToSerial(date)
     if(!Number.isInteger(qty)||qty<=0||!Number.isInteger(priceCents)||priceCents<=0||serial===null)throw new Error('成交数量、价格或日期不合法')
-    await db.transaction('rw',[db.records,db.stocks,db.rebuyExecutions,db.hedges,db.extraTargets,db.chainLinks,db.auditLogs],async()=>{
+    await db.transaction('rw',LEDGER_TX_TABLES(),async()=>{
       const {records:r,ledger:l}=await currentLedger()
       const next=buildNextRoundBuyRows({...l,merges:[],consumed:consumedNextRounds(r)})
       let left=qty
@@ -650,7 +667,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const recordRebuy = useCallback(
     async (order: RebuyOrder, qty: number, priceCents: number, rewardQty: number, note?: string) => {
-      await db.transaction('rw',[db.records,db.stocks,db.rebuyExecutions,db.hedges,db.extraTargets,db.chainLinks,db.auditLogs],async()=>{
+      await db.transaction('rw',LEDGER_TX_TABLES(),async()=>{
         const {ledger:l}=await currentLedger()
         const fresh=l.orders.find((o)=>o.id===order.id)
         if(!fresh)throw new Error('待买单已变化，请刷新后重试')
@@ -1178,7 +1195,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (problem) throw new Error(`备份内容校验失败：${problem}`)
       await db.transaction(
         'rw',
-        [db.stocks, db.records, db.batches, db.auditLogs, db.rebuyExecutions, db.plans, db.extraTargets, db.hedges, db.merges, db.chainLinks],
+        [db.stocks, db.records, db.batches, db.auditLogs, db.rebuyExecutions, db.plans, db.extraTargets, db.hedges, db.merges, db.chainLinks, db.buyTargets],
         async () => {
         if (data.stocks) {
           await db.stocks.clear()

@@ -20,7 +20,7 @@ import { useFlashOnAppear } from '../ui/motion'
 import { todayIso, money, price, qty, signedMoney, tone } from '../ui/format'
 import { DateField } from '../ui/DateField'
 import type { TradesQuery } from '../ui/nav'
-import type { RebuyOrder } from '../domain/types'
+import type { BuySplit, RebuyOrder } from '../domain/types'
 import { HedgeSheet } from '../components/HedgeBinder'
 
 /** 行内按钮不让冒泡到整行的「跳明细」点击上 */
@@ -237,6 +237,11 @@ export function OrdersPage({
     }catch(e){notificationOpen({message:'记录失败',description:e instanceof Error?e.message:String(e),type:'error'})}
     finally{setSavingTrade(false)}
   }
+  /**
+   * V9.53：记成交默认量跟随「改单」——有计划的按计划量，再夹到还没成交的量。
+   * 价格不用管，`buySplits` 的 priceCents 已经是 `计划价 > 回补价`（ledger 里定好）。
+   */
+  const execQtyOf=(b:BuySplit,o?:RebuyOrder|null)=>o?.planQty!=null?Math.min(o.planQty,b.qty):b.qty
   const buySuggestionLine=(r:BuySuggestion)=>(
     <div key={r.key} className="line wrap-row pending-buy" data-testid="buy-suggestion" data-row={r.sources[0]?.row} data-price={r.priceCents} data-edited={r.edited ? '1' : undefined}>
       <div className="left"><div className="t1 num">买 {price(r.priceCents)} × {qty(r.qty)}</div>
@@ -263,7 +268,7 @@ export function OrdersPage({
         >
           改单
         </Button>
-        <Button size="small" data-action="suggestion-buy" onClick={()=>{const source=r.sources[0];const order=source?.kind==='order'?orders.find((o)=>o.id===source.id):null;if(r.sources.length===1&&order)openExec(order,{qty:r.qty,priceCents:r.priceCents});else openTrade('buy',r)}}>记成交</Button>
+        <Button size="small" data-action="suggestion-buy" onClick={()=>{const source=r.sources[0];const order=source?.kind==='order'?orders.find((o)=>o.id===source.id):null;if(!order)return openTrade('buy',r);const split=buySplits.find((b)=>b.orderId===order.id&&(source.kind!=='order'||b.key===source.splitKey))??buySplits.find((b)=>b.orderId===order.id);openExec(order,{qty:split?execQtyOf(split,order):r.qty,priceCents:r.priceCents})}}>记成交</Button>
       </div>
     </div>
   )
@@ -966,7 +971,7 @@ export function OrdersPage({
                                   <Button
                                     size="small"
                                     disabled={!o}
-                                    onClick={stopWith(() => o && openExec(o, { qty: b.qty, priceCents: b.priceCents }))}
+                                    onClick={stopWith(() => o && openExec(o, { qty: execQtyOf(b, o), priceCents: b.priceCents }))}
                                   >
                                     记成交
                                   </Button>
