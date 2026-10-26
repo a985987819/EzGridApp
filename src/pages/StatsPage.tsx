@@ -4,6 +4,7 @@ import { useApp } from '../store/useApp'
 import { activeStocks } from '../domain/stocks'
 import { money, qty, signedMoney, tone } from '../ui/format'
 import { monthRange, type TradesQuery } from '../ui/nav'
+import { recordNoLabel } from '../domain/recordNo'
 import { buildNanoIdIndex } from '../ui/nanoid'
 
 export function StatsPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
@@ -100,7 +101,7 @@ export function StatsPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) 
             <div className="left" style={{ flex: 1 }}>
               <div className="t1">
                 {s.stockName}
-                <span className="t2" style={{ marginLeft: 6, fontWeight: 400 }}>{s.rows} 行 · {s.sellCount} 笔</span>
+                <span className="t2" style={{ marginLeft: 6, fontWeight: 400 }}>{s.rows} 条 · {s.sellCount} 笔卖出</span>
               </div>
               <div className="grid-4" style={{ marginTop: 4, textAlign: 'left' }}>
                 <div>
@@ -187,7 +188,7 @@ function price2(cents: number | null): string {
 
 /** 成交日历：按月看每天卖出了什么、赚了多少（红盈绿亏） */
 function CalendarCard({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
-  const { ledger, records } = useApp()
+  const { ledger, records, recordNo } = useApp()
   const nano = useMemo(() => buildNanoIdIndex(records), [records])
   const today = new Date()
   // 本地时区的今天：toISOString 是 UTC，东八区早上 8 点前会落到昨天
@@ -293,7 +294,7 @@ function CalendarCard({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
                     <span className="side-chip sell">卖出</span>
                     {s.stockName} · {price2(s.priceCents)} × {s.qty}
                   </div>
-                  <div className="t2">行 {s.sourceRow} · 买入成本 {price2(s.costCents)}</div>
+                  <div className="t2">{recordNoLabel(s.sourceRow, recordNo)} · 买入成本 {price2(s.costCents)}</div>
                 </div>
                 <div className={`right num ${tone(s.profitCents)}`} style={{ fontWeight: 700 }}>
                   {signedMoney(s.profitCents)}

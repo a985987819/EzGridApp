@@ -66,7 +66,7 @@ export interface RawRecord {
 /** 编辑审计（P10）：实体 / 字段 / 旧值 / 新值 / 时间 / 来源 */
 export interface AuditLog {
   id?: number
-  entity: 'record' | 'stock' | 'order'
+  entity: 'record' | 'stock' | 'order' | 'merge'
   entityId: string
   field: string
   oldValue: string
@@ -218,6 +218,22 @@ export interface RepairChain {
   /** 回血 ≥ 亏损 → 这笔高位买入已彻底冲平 */
   done: boolean
   cycles: RepairCycle[]
+}
+
+/**
+ * 合并同价买单（V9.45）：几笔同股票、同买入价、还没卖完的批次人工绑成一组。
+ * 只影响挂单页「待卖」提醒的合并显示——数量相加、日期取最早的那笔；
+ * records 本身一分不改（各自的数量 / 买入日期都还在），解除即恢复。
+ */
+export interface LotMergeLink {
+  /** merge:<锚行号>（锚 = 买入日期最早的那笔，同日期取行号小） */
+  id: string
+  stockName: string
+  /** 买入价（分），组内必须一致 */
+  priceCents: number
+  /** 成员行号（真实记录行，按行号升序） */
+  rows: number[]
+  at: number
 }
 
 export interface SellTarget {

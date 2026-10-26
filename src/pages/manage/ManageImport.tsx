@@ -231,7 +231,7 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
                   <div className="left">
                     <div className="t1" style={{ fontWeight: 500 }}>
                       {ANOMALY_LABEL[a.kind] ?? a.kind}
-                      <span className="muted" style={{ fontWeight: 400, fontSize: 11.5 }}> · 行 {a.sourceRow} · {a.stockName}</span>
+                      <span className="muted" style={{ fontWeight: 400, fontSize: 11.5 }}> · Excel 第 {a.sourceRow} 行 · {a.stockName}</span>
                     </div>
                     <div className="t2">{a.detail}</div>
                   </div>
@@ -259,7 +259,7 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
               <div className="line" key={o.id}>
                 <div className="left">
                   <div className="t1 num">回补 {price(o.rebuyPriceCents)} × {qty(o.baseQty + o.rewardQty)}</div>
-                  <div className="t2">行{o.sourceRow} · {o.stockName}{o.rewardQty ? ` · 奖励 ${o.rewardQty}` : ''}</div>
+                  <div className="t2">Excel 第 {o.sourceRow} 行 · {o.stockName}{o.rewardQty ? ` · 奖励 ${o.rewardQty}` : ''}</div>
                 </div>
                 <div className="right num">{money(o.rebuyPriceCents * (o.baseQty + o.rewardQty))}</div>
               </div>
@@ -268,7 +268,7 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
               <div className="line" key={t.id}>
                 <div className="left">
                   <div className="t1 num">目标 {price(t.priceCents)} × {qty(t.qty)}</div>
-                  <div className="t2">批次 {t.lotId.replace('lot:', '')} · {t.stockName}</div>
+                  <div className="t2">Excel 第 {t.lotId.replace('lot:', '')} 行 · {t.stockName}</div>
                 </div>
                 <div className="right num">{money(t.amountCents)}</div>
               </div>

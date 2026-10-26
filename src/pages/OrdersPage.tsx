@@ -3,12 +3,14 @@ import { Button, Card, Input, Modal, Tag, notificationOpen } from 'animal-island
 import { Select } from '../ui/Select'
 import { useApp } from '../store/useApp'
 import { activeStocks } from '../domain/stocks'
+import { recordNoLabel, type RecordNoIndex } from '../domain/recordNo'
 import { isHedgeable } from '../domain/hedge'
 import { limitRange } from '../domain/limit'
 import { toCents } from '../domain/money'
 import { isoToSerial } from '../domain/edit'
 import { serialToIso } from '../domain/defaults'
 import { sandboxRowOf, type SandboxItem, type SandboxKind } from '../domain/sandbox'
+import { mergeTargetRows, type TargetRow } from '../domain/merge'
 import { buildNanoIdIndex } from '../ui/nanoid'
 import { downloadText, toCsv } from '../ui/csv'
 import { useFlashOnAppear } from '../ui/motion'
@@ -33,9 +35,10 @@ function dropStock<T>(rec: Record<string, T>, stock: string): Record<string, T> 
   return next
 }
 
-/** 批次显示名：虚拟回补批次没有 Excel 行号，单独标注 */
-function lotLabel(lotId: string): string {
-  return lotId.startsWith('lot:exec:') ? '回补批次' : `批次 ${lotId.replace('lot:', '')}`
+/** 批次显示名：真实批次用「第 N 笔」；虚拟回补批次单独标注（V9.43） */
+function lotLabel(lotId: string, index: RecordNoIndex): string {
+  if (lotId.startsWith('lot:exec:')) return '回补批次'
+  return recordNoLabel(Number(lotId.replace('lot:', '')), index)
 }
 
 export function OrdersPage({
@@ -47,6 +50,7 @@ export function OrdersPage({
 }) {
   const {
     ledger,
+    recordNo,
     stocks,
     executions,
     records,
@@ -57,6 +61,8 @@ export function OrdersPage({
     setPlan,
     clearPlan,
     hedges,
+    merges,
+    plans,
     sandbox,
     sandboxLedger,
     sandboxPreviewRecords,
@@ -99,15 +105,25 @@ export function OrdersPage({
   const [downText, setDownText] = useState('')
 
   // V9.42：往下滑把吸顶设置收成一行摘要，回顶才展开。阈值留回差，避免在临界点反复收放
+  // V9.44：收放是「文档高度变化」，必须禁用滚动锚定（styles.css）+ 动画过渡，
+  // 否则浏览器补偿滚动会把 scrollY 拉回阈值内，收→放→收 连环触发（表现为顶部抽搐闪烁）
   const [compact, setCompact] = useState(false)
   useEffect(() => {
+    let frame = 0
     const onScroll = () => {
-      const y = window.scrollY
-      setCompact((wasCompact) => (wasCompact ? y > 24 : y > 96))
+      if (frame) return
+      frame = requestAnimationFrame(() => {
+        frame = 0
+        const y = window.scrollY
+        setCompact((wasCompact) => (wasCompact ? y > 24 : y > 96))
+      })
     }
     onScroll()
     window.addEventListener('scroll', onScroll, { passive: true })
-    return () => window.removeEventListener('scroll', onScroll)
+    return () => {
+      window.removeEventListener('scroll', onScroll)
+      if (frame) cancelAnimationFrame(frame)
+    }
   }, [])
 
   const range =
@@ -147,12 +163,36 @@ export function OrdersPage({
   const within = (p: number) => (range ? p >= range.downCents && p <= range.upCents : false)
   const zone = (p: number): '区间内' | '无区间' | '越界' => (range ? (within(p) ? '区间内' : '越界') : '无区间')
 
+  /** V9.45：同价未卖完批次在提醒里合成一条（数量相加、日期取最早）；沙盒模拟行不合并 */
+  const targetRows = useMemo(
+    () =>
+      mergeTargetRows({
+        targets: view.targets.filter((t) => t.stockName === effectiveStock),
+        lots: view.lots,
+        merges,
+        plans,
+        sandboxRows: new Set(sandboxByRow.keys()),
+      }),
+    [view.targets, view.lots, effectiveStock, merges, plans, sandboxByRow],
+  )
+
   const buyToday = range ? orders.filter((o) => within(o.rebuyPriceCents) && o.remainingQty > 0) : []
-  const sellToday = range ? targets.filter((t) => within(t.priceCents)) : []
+  const sellToday = range ? targetRows.filter((r) => within(r.priceCents)) : []
   const buyOut = range ? orders.filter((o) => !within(o.rebuyPriceCents) && o.remainingQty > 0).length : 0
-  const sellOut = range ? targets.filter((t) => !within(t.priceCents)).length : 0
+  const sellOut = range ? targetRows.filter((r) => !within(r.priceCents)).length : 0
   const buyTodayAmount = buyToday.reduce((a, o) => a + o.rebuyPriceCents * o.remainingQty, 0)
-  const sellTodayAmount = sellToday.reduce((a, t) => a + t.amountCents, 0)
+  const sellTodayAmount = sellToday.reduce((a, r) => a + r.amountCents, 0)
+
+  /** 待卖行的身份文案：合并行报「合并 N 笔 + 最早买入日期」，单笔行还是「第 N 笔 · 买入价」 */
+  const sellRowLabel = (r: TargetRow) =>
+    r.merged
+      ? `合并 ${r.lotRows.length} 笔 · 买入 ${price(r.buyPriceCents)}${r.earliestBuyDate ? ` · 最早 ${r.earliestBuyDate}` : ''}`
+      : `${lotLabel(r.targets[0].lotId, recordNo)} · 买入 ${price(r.buyPriceCents)}`
+  /** 复制 / CSV 里的短标签 */
+  const sellRowShort = (r: TargetRow) =>
+    r.merged
+      ? `合并 ${r.lotRows.length} 笔（${r.lotRows.map((row) => recordNoLabel(row, recordNo)).join(' + ')}）`
+      : lotLabel(r.targets[0].lotId, recordNo)
 
   const rebuyTotal = orders.reduce((a, o) => a + o.rebuyPriceCents * o.remainingQty, 0)
   const rewardTotal = orders.reduce((a, o) => a + o.rebuyPriceCents * Math.max(0, o.rewardQty - o.doneRewardQty), 0)
@@ -307,8 +347,8 @@ export function OrdersPage({
       if (res) {
         notificationOpen({
           message: '已记为成交',
-          description: `已写入明细第 ${res.row} 行${
-            res.committed > 1 ? `（连同 ${res.committed - 1} 笔模拟批次一起转正）` : ''
+          description: `已写入明细（第 ${recordNo.total + res.committed} 笔）${
+            res.committed > 1 ? `，连同 ${res.committed - 1} 笔模拟批次一起转正` : ''
           }`,
           type: 'success',
         })
@@ -358,40 +398,45 @@ export function OrdersPage({
     if (buyToday.length) {
       lines.push('【今日可挂买】')
       for (const o of buyToday) {
-        lines.push(`  行${o.sourceRow}  ${price(o.planPriceCents ?? o.rebuyPriceCents)} × ${o.planQty ?? o.remainingQty} 股`)
+        lines.push(`  ${recordNoLabel(o.sourceRow, recordNo)}  ${price(o.planPriceCents ?? o.rebuyPriceCents)} × ${o.planQty ?? o.remainingQty} 股`)
       }
     }
     if (sellToday.length) {
       lines.push('【今日可挂卖】')
-      for (const t of sellToday) {
-        lines.push(`  ${lotLabel(t.lotId)}  ${price(t.planPriceCents ?? t.priceCents)} × ${t.planQty ?? t.qty} 股`)
+      for (const r of sellToday) {
+        lines.push(`  ${sellRowShort(r)}  ${price(r.planPriceCents ?? r.priceCents)} × ${r.planQty ?? r.qty} 股`)
       }
     }
     if (!range) {
       lines.push('（未确认昨收价，以下是全部待买/待卖）')
       for (const o of orders) lines.push(`  待买 ${price(o.rebuyPriceCents)} × ${o.remainingQty}`)
-      for (const t of targets) lines.push(`  待卖 ${price(t.priceCents)} × ${t.qty}`)
+      for (const r of targetRows) lines.push(`  待卖 ${sellRowShort(r)} ${price(r.priceCents)} × ${r.qty}`)
     }
     void navigator.clipboard?.writeText(lines.filter(Boolean).join('\n'))
     notificationOpen({ message: '清单已复制', type: 'success' })
   }
 
   function exportCsv() {
-    const rows: (string | number)[][] = [['类型', '来源行', '价格', '股数', '金额', '区间']]
+    const rows: (string | number)[][] = [['类型', '序号', '价格', '股数', '金额', '区间']]
     for (const o of orders) {
       const p = o.planPriceCents ?? o.rebuyPriceCents
       const q = o.planQty ?? o.remainingQty
       const sim = sandboxByRow.has(o.sourceRow)
-      rows.push([sim ? '待买（模拟）' : '待买', o.sourceRow, price(p), q, ((p * q) / 100).toFixed(2), zone(p)])
-    }
-    for (const t of targets) {
-      const p = t.planPriceCents ?? t.priceCents
-      const q = t.planQty ?? t.qty
-      const lotRow = view.lots.find((l) => l.id === t.lotId)?.sourceRow
-      const sim = lotRow !== undefined && sandboxByRow.has(lotRow)
       rows.push([
-        sim ? '待卖（模拟）' : '待卖',
-        t.lotId.startsWith('lot:exec:') ? '回补批次' : Number(t.lotId.replace('lot:', '')),
+        sim ? '待买（模拟）' : '待买',
+        recordNoLabel(o.sourceRow, recordNo),
+        price(p),
+        q,
+        ((p * q) / 100).toFixed(2),
+        zone(p),
+      ])
+    }
+    for (const r of targetRows) {
+      const p = r.planPriceCents ?? r.priceCents
+      const q = r.planQty ?? r.qty
+      rows.push([
+        r.sandbox ? '待卖（模拟）' : '待卖',
+        sellRowShort(r),
         price(p),
         q,
         ((p * q) / 100).toFixed(2),
@@ -426,29 +471,34 @@ export function OrdersPage({
   return (
     <div className="stack">
       <div className={`page-sticky orders-sticky${compact ? ' is-compact' : ''}`} data-sticky="orders">
-      {compact && (
-        <button
-          type="button"
-          className="orders-compact"
-          data-testid="orders-compact"
-          onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
-          aria-label="回到顶部展开挂单设置"
-        >
-          <span className="oc-stock">{effectiveStock || '未选股'}</span>
-          <span className="oc-piece">昨收 <b>{confirmed ? price(confirmed.closeCents) : lastClose.trim() || '—'}</b></span>
-          {range ? (
-            <>
-              <span className="oc-piece oc-up">涨停 <b>{price(range.upCents)}</b></span>
-              <span className="oc-piece oc-down">跌停 <b>{price(range.downCents)}</b></span>
-            </>
-          ) : (
-            <span className="oc-piece oc-muted">涨跌停未确认</span>
-          )}
-          {sandbox.active && <span className="oc-chip">沙盒</span>}
-          <span className="oc-expand" aria-hidden="true">↑</span>
-        </button>
-      )}
-      <div className="orders-setup" hidden={compact}>
+      <div className="orders-compact-slot" aria-hidden={!compact}>
+        <div className="orders-compact-inner">
+          <button
+            type="button"
+            className="orders-compact"
+            data-testid="orders-compact"
+            tabIndex={compact ? 0 : -1}
+            onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+            aria-label="回到顶部展开挂单设置"
+          >
+            <span className="oc-stock">{effectiveStock || '未选股'}</span>
+            <span className="oc-piece">昨收 <b>{confirmed ? price(confirmed.closeCents) : lastClose.trim() || '—'}</b></span>
+            {range ? (
+              <>
+                <span className="oc-piece oc-up">涨停 <b>{price(range.upCents)}</b></span>
+                <span className="oc-piece oc-down">跌停 <b>{price(range.downCents)}</b></span>
+              </>
+            ) : (
+              <span className="oc-piece oc-muted">涨跌停未确认</span>
+            )}
+            {sandbox.active && <span className="oc-chip">沙盒</span>}
+            <span className="oc-expand" aria-hidden="true">↑</span>
+          </button>
+        </div>
+      </div>
+      <div className="orders-setup-collapse">
+        <div className="orders-setup-collapse-inner">
+      <div className="orders-setup">
       <div className="page-title">
         <h2>挂单</h2>
         <div className="row" style={{ gap: 6 }}>
@@ -549,7 +599,7 @@ export function OrdersPage({
               }}
               aria-label="昨收价"
             />
-            <Button type="primary" onClick={confirmClose}>确认</Button>
+            <Button type="primary" data-action="confirm-close" onClick={confirmClose}>确认</Button>
           </div>
 
           {/* V9.13：涨跌幅档位是配置细节、确认引导是自明的——都不再占界面；有区间才显示这一行 */}
@@ -644,6 +694,8 @@ export function OrdersPage({
       </Card>
       </div>
       </div>
+      </div>
+      </div>
 
       {/* 2. 今日挂单 */}
       <Card>
@@ -699,6 +751,7 @@ export function OrdersPage({
                             key={`t-${o.id}`}
                             // V9.29.1：左侧状态边框（蓝=买 / 红=卖），与明细页 trade-item 同一套语义
                             className={`line wrap-row pending-buy ${sim ? 'sandbox-row' : 'clickable'}`}
+                            data-row={o.sourceRow}
                             data-sandbox-row={sim ? o.sourceRow : undefined}
                             onClick={sim ? undefined : () => goTrades({ id: idFor(o.sourceRow), stock: o.stockName })}
                           >
@@ -708,7 +761,7 @@ export function OrdersPage({
                                 买 {price(o.rebuyPriceCents)} × {qty(o.remainingQty)}
                               </div>
                               <div className="t2">
-                                {sim ? `沙盒模拟单 · 计划 ${o.baseQty} 股` : `行${o.sourceRow} · 计划 ${o.baseQty}`}
+                                {sim ? `沙盒模拟单 · 计划 ${o.baseQty} 股` : `${recordNoLabel(o.sourceRow, recordNo)} · 计划 ${o.baseQty}`}
                                 {o.rewardQty > 0 && ` · 含奖励 ${o.rewardQty}`}
                                 {o.execQty > 0 && ` · 已回补 ${o.execQty}`}
                               </div>
@@ -760,42 +813,46 @@ export function OrdersPage({
                   <>
                     <div className="group-label">可挂卖 · {sellToday.length} 条</div>
                     <div className="data-block">
-                      {sellToday.map((t) => {
-                        const lot = view.lots.find((l) => l.id === t.lotId)
-                        const sim = lot ? sandboxByRow.get(lot.sourceRow) : undefined
+                      {sellToday.map((r) => {
+                        const sim = sandboxByRow.get(r.anchorRow)
                         return (
                           <div
-                            key={`s-${t.id}`}
+                            key={`s-${r.key}`}
                             className={`line wrap-row pending-sell ${sim ? 'sandbox-row' : 'clickable'}`}
-                            data-sandbox-row={sim ? lot?.sourceRow : undefined}
+                            data-row={r.anchorRow}
+                            data-merge-group={r.merged ? r.key : undefined}
+                            data-sandbox-row={sim ? r.anchorRow : undefined}
                             onClick={
                               sim
                                 ? undefined
                                 : () =>
                                     goTrades({
-                                      id: idFor(lot?.sourceRow ?? Number(t.lotId.replace('lot:', ''))),
-                                      stock: t.stockName,
+                                      id: idFor(r.anchorRow),
+                                      stock: r.targets[0].stockName,
                                     })
                             }
                           >
                             <div className="left">
                               <div className="t1 num">
                                 {sim && <span className="sandbox-mark">模拟 · </span>}
-                                卖 {price(t.priceCents)} × {qty(t.qty)}
+                                {r.merged && <span className="merge-mark">合并 · </span>}
+                                卖 {price(r.priceCents)} × {qty(r.qty)}
                               </div>
                               <div className="t2">
-                                {sim ? '沙盒模拟批次' : lotLabel(t.lotId)} · 预期 {signedMoney(t.expectProfitCents)}
+                                {r.merged
+                                  ? `${sellRowLabel(r)} · 预期 ${signedMoney(r.expectProfitCents)}`
+                                  : `${sim ? '沙盒模拟批次' : lotLabel(r.targets[0].lotId, recordNo)} · 预期 ${signedMoney(r.expectProfitCents)}`}
                               </div>
-                              {t.planPriceCents != null && (
+                              {r.planPriceCents != null && (
                                 <div className="tag-row" style={{ marginTop: 4 }}>
                                   <Tag size="small" variant="soft" color="purple">
-                                    计划 {price(t.planPriceCents)} × {qty(t.planQty ?? t.qty)}
+                                    计划 {price(r.planPriceCents)} × {qty(r.planQty ?? r.qty)}
                                   </Tag>
                                 </div>
                               )}
                             </div>
                             <div className="right num" style={{ fontWeight: 600 }}>
-                              {money(t.amountCents)}
+                              {money(r.amountCents)}
                             </div>
                             <div className="acts">
                               {sim ? (
@@ -814,7 +871,16 @@ export function OrdersPage({
                               ) : (
                                 <Button
                                   size="small"
-                                  onClick={stopWith(() => openPlan('sell', t.id, `卖 ${t.stockName}`, t.priceCents, t.planPriceCents, t.planQty))}
+                                  onClick={stopWith(() =>
+                                    openPlan(
+                                      'sell',
+                                      r.key,
+                                      `卖 ${r.targets[0].stockName}`,
+                                      r.priceCents,
+                                      r.planPriceCents,
+                                      r.planQty ?? (r.merged ? r.qty : null),
+                                    ),
+                                  )}
                                 >
                                   计划
                                 </Button>
@@ -860,6 +926,7 @@ export function OrdersPage({
                 <div
                   key={o.id}
                   className={`line ${sim ? 'sandbox-row' : 'clickable'}`}
+                  data-row={o.sourceRow}
                   data-sandbox-row={sim ? o.sourceRow : undefined}
                   data-anim={justRebought.has(o.sourceRow) ? 'done' : undefined}
                   onClick={sim ? undefined : () => goTrades({ id: idFor(o.sourceRow), stock: o.stockName })}
@@ -876,7 +943,7 @@ export function OrdersPage({
                       )}
                     </div>
                     <div className="t2">
-                      {sim ? `沙盒模拟单 · 计划 ${o.baseQty}` : `行${o.sourceRow} · 计划 ${o.baseQty}`}
+                      {sim ? `沙盒模拟单 · 计划 ${o.baseQty}` : `${recordNoLabel(o.sourceRow, recordNo)} · 计划 ${o.baseQty}`}
                       {o.rewardQty > 0 && ` + 奖励 ${o.rewardQty}`}
                       {o.execQty > 0 && ` · 已回补 ${o.execQty}`}
                       {/* V9.33：这笔卖已挂到高位买单上，那这张买入单其实可以撤（买了也会自动解挂） */}
@@ -954,7 +1021,7 @@ export function OrdersPage({
       <Card>
         <div className="sec-head">
           <strong>待卖</strong>
-          <Tag size="small" variant="soft" color="app-teal">{targets.length} 条</Tag>
+          <Tag size="small" variant="soft" color="app-teal">{targetRows.length} 条</Tag>
           <div className="spacer" />
           {sandbox.active && (
             <Button size="small" type="text" data-action="sandbox-add-buy" onClick={() => openSandboxForm('buy')}>
@@ -962,39 +1029,41 @@ export function OrdersPage({
             </Button>
           )}
         </div>
-        {targets.length === 0 ? (
+        {targetRows.length === 0 ? (
           <div className="empty-box">
             {sandbox.active ? '该股批次已全部卖完，点右上「＋ 模拟待卖」加一笔' : '该股批次已全部卖完'}
           </div>
         ) : (
           <div className="data-block">
-            {targets.map((t) => {
-              const z = zone(t.priceCents)
-              const lot = view.lots.find((l) => l.id === t.lotId)
-              const sim = lot ? sandboxByRow.get(lot.sourceRow) : undefined
+            {targetRows.map((r) => {
+              const z = zone(r.priceCents)
+              const sim = sandboxByRow.get(r.anchorRow)
               return (
                 <div
-                  key={t.id}
+                  key={r.key}
                   className={`line ${sim ? 'sandbox-row' : 'clickable'}`}
-                  data-sandbox-row={sim ? lot?.sourceRow : undefined}
+                  data-row={r.anchorRow}
+                  data-merge-group={r.merged ? r.key : undefined}
+                  data-sandbox-row={sim ? r.anchorRow : undefined}
                   onClick={
                     sim
                       ? undefined
                       : () =>
                           goTrades({
-                            id: idFor(lot?.sourceRow ?? Number(t.lotId.replace('lot:', ''))),
-                            stock: t.stockName,
+                            id: idFor(r.anchorRow),
+                            stock: r.targets[0].stockName,
                           })
                   }
                 >
                   <div className="left">
                     <div className="t1 num">
                       {sim && <span className="sandbox-mark">模拟 · </span>}
-                      {price(t.priceCents)}
-                      <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}> × {qty(t.qty)} 股</span>
+                      {r.merged && <span className="merge-mark">合并 · </span>}
+                      {price(r.priceCents)}
+                      <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}> × {qty(r.qty)} 股</span>
                     </div>
                     <div className="t2">
-                      {sim ? '沙盒模拟批次' : `批次 ${t.lotId.replace('lot:', '')}`} · 买入 {price(lot?.buyPriceCents ?? null)}
+                      {sim ? '沙盒模拟批次' : sellRowLabel(r)}
                     </div>
                     <div className="tag-row" style={{ marginTop: 4 }}>
                       <Tag
@@ -1004,6 +1073,9 @@ export function OrdersPage({
                       >
                         {z}
                       </Tag>
+                      {r.merged && (
+                        <Tag size="small" variant="soft" color="purple">同价 {r.lotRows.length} 笔</Tag>
+                      )}
                       {sim && (
                         <>
                           <Button
@@ -1021,8 +1093,8 @@ export function OrdersPage({
                     </div>
                   </div>
                   <div className="right">
-                    <div className="num" style={{ fontWeight: 600 }}>{money(t.amountCents)}</div>
-                    <div className="tiny up num">{signedMoney(t.expectProfitCents)}</div>
+                    <div className="num" style={{ fontWeight: 600 }}>{money(r.amountCents)}</div>
+                    <div className="tiny up num">{signedMoney(r.expectProfitCents)}</div>
                   </div>
                 </div>
               )
@@ -1031,7 +1103,7 @@ export function OrdersPage({
               <div className="left t1">合计</div>
               <div className="right num" style={{ fontWeight: 600 }}>
                 {money(targetTotal)}
-                <div className="tiny up num">{signedMoney(targets.reduce((a, t) => a + t.expectProfitCents, 0))}</div>
+                <div className="tiny up num">{signedMoney(targetRows.reduce((a, r) => a + r.expectProfitCents, 0))}</div>
               </div>
             </div>
           </div>
@@ -1107,7 +1179,7 @@ export function OrdersPage({
         {execOrder && (
           <div className="stack tight">
             <p className="hint-block" style={{ margin: 0 }}>
-              {execOrder.stockName} · 行 {execOrder.sourceRow} · 计划 {execOrder.baseQty}
+              {execOrder.stockName} · {recordNoLabel(execOrder.sourceRow, recordNo)} · 计划 {execOrder.baseQty}
               {execOrder.rewardQty > 0 && ` + 奖励 ${execOrder.rewardQty}`} 股，还能回补 {execOrder.remainingQty} 股。
             </p>
             <div className="form-grid">

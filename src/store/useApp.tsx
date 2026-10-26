@@ -9,6 +9,7 @@ import {
 } from 'react'
 import { db, type ImportBatch } from './db'
 import { buildLedger } from '../domain/ledger'
+import { buildRecordNoIndex, type RecordNoIndex } from '../domain/recordNo'
 import { compareBaseline } from '../domain/baseline'
 import { DEFAULT_STOCKS } from '../domain/defaults'
 import { applyEdits, type EditableKey } from '../domain/edit'
@@ -33,6 +34,7 @@ import type {
   ExtraTarget,
   HedgeLink,
   Ledger,
+  LotMergeLink,
   RawRecord,
   RebuyExecution,
   RebuyOrder,
@@ -95,7 +97,11 @@ interface AppContextValue {
   extraTargets: ExtraTarget[]
   /** 先卖后买挂钩（V9.26）：裸卖 → 高位批次的人工分配 */
   hedges: HedgeLink[]
+  /** 合并同价买单（V9.45）：只影响挂单页的合并显示，records 不改 */
+  merges: LotMergeLink[]
   ledger: Ledger
+  /** 界面行身份（V9.43）：按录入顺序派生的「第 N 笔」，Excel 行号退成追溯信息 */
+  recordNo: RecordNoIndex
   baseline: CheckResult[]
   deriveSellPrice: boolean
   setDeriveSellPrice: (v: boolean) => void
@@ -117,6 +123,9 @@ interface AppContextValue {
   /** 保存/替换一条裸卖的挂钩分配（合计应等于卖单股数，buildLedger 里还会再校验） */
   setHedgeLink: (sellRow: number, items: { row: number; qty: number }[]) => Promise<void>
   clearHedgeLink: (sellRow: number) => Promise<void>
+  /** 保存一条同价买单合并（≥2 笔同股同买入价的真实行；自动从旧组里摘出来） */
+  setLotMerge: (rows: number[]) => Promise<void>
+  clearLotMerge: (row: number) => Promise<void>
   addExtraTarget: (lotId: string, priceCents: number, qty: number) => Promise<void>
   removeExtraTarget: (id: string) => Promise<void>
   historyOf: (sourceRow: number) => AuditLog[]
@@ -160,8 +169,15 @@ export function applySystemFont(on: boolean): void {
   else root.style.removeProperty('--animal-font-family')
 }
 
-function audit(entityId: string, field: string, oldValue: string, newValue: string, source: string): AuditLog {
-  return { entity: 'record', entityId, field, oldValue, newValue, at: Date.now(), source }
+function audit(
+  entityId: string,
+  field: string,
+  oldValue: string,
+  newValue: string,
+  source: string,
+  entity: AuditLog['entity'] = 'record',
+): AuditLog {
+  return { entity, entityId, field, oldValue, newValue, at: Date.now(), source }
 }
 
 export function AppProvider({ children }: { children: ReactNode }) {
@@ -173,6 +189,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [plans, setPlans] = useState<TradePlan[]>([])
   const [extraTargets, setExtraTargets] = useState<ExtraTarget[]>([])
   const [hedges, setHedges] = useState<HedgeLink[]>([])
+  const [merges, setMerges] = useState<LotMergeLink[]>([])
   const [batches, setBatches] = useState<ImportBatch[]>([])
   const [deriveSellPrice, setDeriveSellPrice] = useState(false)
   const [preview, setPreview] = useState<ParseResult | null>(null)
@@ -196,13 +213,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [ordersSession])
 
   const reloadRecords = useCallback(async () => {
-    const [r, a, x, pl, et, hd] = await Promise.all([
+    const [r, a, x, pl, et, hd, mg] = await Promise.all([
       db.records.toArray(),
       db.auditLogs.toArray(),
       db.rebuyExecutions.toArray(),
       db.plans.toArray(),
       db.extraTargets.toArray(),
       db.hedges.toArray(),
+      db.merges.toArray(),
     ])
     setRecords(r)
     setAudits(a)
@@ -210,6 +228,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setPlans(pl)
     setExtraTargets(et)
     setHedges(hd)
+    setMerges(mg)
   }, [])
 
   useEffect(() => {
@@ -220,7 +239,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         await db.stocks.bulkPut(DEFAULT_STOCKS)
       }
       // 单一账户（V9.32：账户功能已删除）
-      const [sRaw, r, a, b, x, backupMeta, pl, et, fontMeta, hd] = await Promise.all([
+      const [sRaw, r, a, b, x, backupMeta, pl, et, fontMeta, hd, mg] = await Promise.all([
         db.stocks.toArray(),
         db.records.toArray(),
         db.auditLogs.toArray(),
@@ -231,6 +250,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         db.extraTargets.toArray(),
         db.meta.get('useSystemFont'),
         db.hedges.toArray(),
+        db.merges.toArray(),
       ])
       if (!alive) return
       // 老库补齐 order / enabled 并压平序号
@@ -244,6 +264,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setPlans(pl)
       setExtraTargets(et)
       setHedges(hd)
+      setMerges(mg)
       setBatches(b)
       setBasename(b[0]?.fileName ?? '—')
       setLastBackupAt(backupMeta ? Number(backupMeta.value) : null)
@@ -261,6 +282,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     () => buildLedger(records, stocks, { deriveSellPrice, executions, plans, extraTargets, hedges }),
     [records, stocks, deriveSellPrice, executions, plans, extraTargets, hedges],
   )
+
+  const recordNo = useMemo(() => buildRecordNoIndex(records), [records])
 
   const baseline = useMemo(() => compareBaseline(ledger), [ledger])
 
@@ -614,6 +637,59 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setSandbox((s) => ({ ...s, active }))
   }, [])
 
+  // V9.45：同价未卖完批次的合并关联。只写 merges 表，records 一分不动。
+  const setLotMerge = useCallback(async (rows: number[]) => {
+    const picked = [...new Set(rows.filter((r) => Number.isInteger(r) && r > 0))]
+    await db.transaction('rw', [db.records, db.merges, db.auditLogs], async () => {
+      const recs = (await db.records.bulkGet(picked)).filter(
+        (r): r is RawRecord => Boolean(r && !r.deletedAt && r.buyPriceCents !== null),
+      )
+      const first = recs[0]
+      if (!first) throw new Error('没有可合并的批次')
+      const members = recs.filter(
+        (r) => r.stockName === first.stockName && r.buyPriceCents === first.buyPriceCents,
+      )
+      if (members.length < 2) throw new Error('至少要两笔同股票、同买入价且未删除的批次')
+      const memberRows = new Set(members.map((r) => r.sourceRow))
+      // 一笔只能在一个组里：先把选中的行从旧组摘出来，剩下不足两笔的旧组顺手删掉
+      for (const m of await db.merges.toArray()) {
+        if (!m.rows.some((r) => memberRows.has(r))) continue
+        const rest = m.rows.filter((r) => !memberRows.has(r))
+        if (rest.length >= 2) await db.merges.put({ ...m, rows: rest })
+        else await db.merges.delete(m.id)
+      }
+      const anchor = [...members].sort(
+        (a, b) =>
+          (a.buyDateSerial ?? Number.POSITIVE_INFINITY) - (b.buyDateSerial ?? Number.POSITIVE_INFINITY) ||
+          a.sourceRow - b.sourceRow,
+      )[0]
+      const link: LotMergeLink = {
+        id: `merge:${anchor.sourceRow}`,
+        stockName: first.stockName,
+        priceCents: first.buyPriceCents as number,
+        rows: [...memberRows].sort((a, b) => a - b),
+        at: Date.now(),
+      }
+      await db.merges.put(link)
+      await db.auditLogs.add(
+        audit(link.id, '合并同价买单', '', link.rows.map((r) => `record:${r}`).join(','), 'merge', 'merge'),
+      )
+    })
+    setMerges(await db.merges.toArray())
+  }, [])
+
+  const clearLotMerge = useCallback(async (row: number) => {
+    const hit = (await db.merges.toArray()).find((m) => m.rows.includes(row))
+    if (!hit) return
+    await db.transaction('rw', db.merges, db.auditLogs, async () => {
+      await db.merges.delete(hit.id)
+      await db.auditLogs.add(
+        audit(hit.id, '解除合并', hit.rows.map((r) => `record:${r}`).join(','), '', 'merge', 'merge'),
+      )
+    })
+    setMerges(await db.merges.toArray())
+  }, [])
+
   const addSandboxItem = useCallback((draft: SandboxDraft) => {
     setSandbox((s) => {
       const seq = nextSandboxSeq(s.items)
@@ -769,6 +845,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       db.plans.clear(),
       db.extraTargets.clear(),
       db.hedges.clear(),
+      db.merges.clear(),
     ])
     setRecords([])
     setBatches([])
@@ -777,13 +854,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setPlans([])
     setExtraTargets([])
     setHedges([])
+    setMerges([])
     setSandbox(EMPTY_SANDBOX)
     setBasename('—')
     setPreview(null)
   }, [])
 
   const exportBackup = useCallback(async () => {
-    const [s, r, b, a, x, pl, et, hd] = await Promise.all([
+    const [s, r, b, a, x, pl, et, hd, mg] = await Promise.all([
       db.stocks.toArray(),
       db.records.toArray(),
       db.batches.toArray(),
@@ -792,14 +870,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
       db.plans.toArray(),
       db.extraTargets.toArray(),
       db.hedges.toArray(),
+      db.merges.toArray(),
     ])
     const stamp = String(Date.now())
     await db.meta.put({ key: 'lastBackupAt', value: stamp })
     setLastBackupAt(Number(stamp))
     return JSON.stringify(
       {
-        // V9.32：删账户功能 → 版本 7（老备份仍可导入，accounts 段直接忽略）
-        schemaVersion: 7,
+        // V9.45：加 merges（同价买单合并关联）→ 版本 8
+        schemaVersion: 8,
         exportedAt: new Date().toISOString(),
         stocks: s,
         records: r,
@@ -809,6 +888,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         plans: pl,
         extraTargets: et,
         hedges: hd,
+        merges: mg,
       },
       null,
       2,
@@ -827,15 +907,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
         plans?: TradePlan[]
         extraTargets?: ExtraTarget[]
         hedges?: HedgeLink[]
+        merges?: LotMergeLink[]
       }
       const version = data.schemaVersion ?? 1
-      if (version > 7) throw new Error('备份版本高于当前程序，拒绝导入（P11）')
+      if (version > 8) throw new Error('备份版本高于当前程序，拒绝导入（P11）')
       // P11 之外的第二道闸：结构坏掉的备份整包拒绝，不让半截 JSON 污染本地库
       const problem = validateBackup(data)
       if (problem) throw new Error(`备份内容校验失败：${problem}`)
       await db.transaction(
         'rw',
-        [db.stocks, db.records, db.batches, db.auditLogs, db.rebuyExecutions, db.plans, db.extraTargets, db.hedges],
+        [db.stocks, db.records, db.batches, db.auditLogs, db.rebuyExecutions, db.plans, db.extraTargets, db.hedges, db.merges],
         async () => {
         if (data.stocks) {
           await db.stocks.clear()
@@ -860,6 +941,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // 挂钩分配同样整表替换（V9.26）
         await db.hedges.clear()
         if (data.hedges) await db.hedges.bulkPut(data.hedges)
+        // V9.45：合并关联同样整表替换（老备份没有这段就清空）
+        await db.merges.clear()
+        if (data.merges) await db.merges.bulkPut(data.merges)
         await db.auditLogs.clear()
         if (data.auditLogs) {
           // 去掉自增 id，让 Dexie 重新分配
@@ -892,6 +976,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     audits,
     executions,
     ledger,
+    recordNo,
     baseline,
     deriveSellPrice,
     setDeriveSellPrice,
@@ -912,11 +997,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     clearPlan,
     setHedgeLink,
     clearHedgeLink,
+    setLotMerge,
+    clearLotMerge,
     addExtraTarget,
     removeExtraTarget,
     plans,
     extraTargets,
     hedges,
+    merges,
     historyOf,
     updateStock,
     addStock,

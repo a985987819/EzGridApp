@@ -26,7 +26,7 @@ export function ManageBackup() {
         <div className="sec-head">
           <strong>备份</strong>
           <div className="spacer" />
-          <Tag size="small" variant="soft">{records.length} 行 · {audits.length} 条审计</Tag>
+          <Tag size="small" variant="soft">{records.length} 条记录 · {audits.length} 条审计</Tag>
         </div>
         <div className="stack tight">
           <Button

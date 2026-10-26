@@ -17,6 +17,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Button, Input, Modal, Tag, notificationOpen } from 'animal-island-ui'
 import { useApp } from '../store/useApp'
 import { isHedgeable } from '../domain/hedge'
+import { recordNoLabel } from '../domain/recordNo'
 import { isSandboxRow } from '../domain/sandbox'
 import { price, qty, signedMoney, tone } from '../ui/format'
 
@@ -31,6 +32,7 @@ export function HedgeBinder({
   mode?: 'real' | 'sandbox'
 }) {
   const app = useApp()
+  const recordNo = app.recordNo
   const sandboxMode = mode === 'sandbox'
   const ledger = sandboxMode ? app.sandboxLedger : app.ledger
   const records = sandboxMode ? app.sandboxPreviewRecords : app.records
@@ -151,7 +153,7 @@ export function HedgeBinder({
     for (const it of items) {
       const c = candidates.find((x) => x.lot.sourceRow === it.row)
       if (!c || it.qty > c.available) {
-        notificationOpen({ message: `第 ${it.row} 行最多挂 ${c?.available ?? 0} 股`, type: 'warning' })
+        notificationOpen({ message: `${recordNoLabel(it.row, recordNo)}最多挂 ${c?.available ?? 0} 股`, type: 'warning' })
         return
       }
     }
@@ -238,7 +240,7 @@ export function HedgeBinder({
               <div className="t2">
                 {isSandboxRow(lot.sourceRow) && <span className="sandbox-mark">模拟批次 · </span>}
                 {sellPrice !== null && lot.buyPriceCents <= sellPrice && <span className="up">低位（挂上去记盈利）· </span>}
-                行 {lot.sourceRow} · 买入 {lot.buyDate ?? '—'} · 目标 {price(lot.targetPriceCents)} · 可挂 {qty(available)}
+                {recordNoLabel(lot.sourceRow, recordNo)} · 买入 {lot.buyDate ?? '—'} · 目标 {price(lot.targetPriceCents)} · 可挂 {qty(available)}
               </div>
             </div>
             <Input
@@ -247,7 +249,7 @@ export function HedgeBinder({
               placeholder="0"
               onChange={(e) => setDraft({ ...draft, [lot.sourceRow]: e.target.value })}
               data-field={`hedge-${lot.sourceRow}`}
-              aria-label={`挂到第${lot.sourceRow}行的股数`}
+              aria-label={`挂到${recordNoLabel(lot.sourceRow, recordNo)}的股数`}
             />
           </div>
         ))}

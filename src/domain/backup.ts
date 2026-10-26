@@ -19,6 +19,7 @@ export interface BackupShape {
   plans?: unknown
   extraTargets?: unknown
   hedges?: unknown
+  merges?: unknown
 }
 
 type Obj = Record<string, unknown>
@@ -107,6 +108,22 @@ function checkHedges(list: unknown[]): string | null {
   return null
 }
 
+/** 合并同价买单（V9.45）：rows 是组内批次行号，缺了会让挂单页合并显示报错 */
+function checkMerges(list: unknown[]): string | null {
+  for (let i = 0; i < list.length; i += 1) {
+    const m = list[i] as Obj | null
+    if (!isObj(m)) return `merges[${i}] 不是对象`
+    if (typeof m.id !== 'string' || m.id === '') return `merges[${i}] 缺 id`
+    if (typeof m.stockName !== 'string' || m.stockName === '') return `merges[${i}] 缺 stockName`
+    if (!isNum(m.priceCents)) return `merges[${i}] 缺 priceCents`
+    if (!Array.isArray(m.rows) || m.rows.length < 2) return `merges[${i}].rows 至少要有两笔行号`
+    for (let j = 0; j < m.rows.length; j += 1) {
+      if (!isRow(m.rows[j])) return `merges[${i}].rows[${j}] 不是整数行号`
+    }
+  }
+  return null
+}
+
 /** 每张表：是数组 + 逐项校验；键不存在就跳过（老备份允许缺表） */
 const TABLES: { key: keyof BackupShape; label: string; check: (list: unknown[]) => string | null }[] = [
   { key: 'records', label: 'records', check: checkRecords },
@@ -115,6 +132,7 @@ const TABLES: { key: keyof BackupShape; label: string; check: (list: unknown[]) 
   { key: 'plans', label: '计划价', check: checkPlans },
   { key: 'extraTargets', label: '拆分目标', check: checkExtraTargets },
   { key: 'hedges', label: '挂钩分配', check: checkHedges },
+  { key: 'merges', label: '合并买单', check: checkMerges },
 ]
 
 /** 通过返回 null；不通过返回中文原因，恢复方直接抛错 */

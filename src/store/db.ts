@@ -1,5 +1,14 @@
 import Dexie, { type Table } from 'dexie'
-import type { AuditLog, ExtraTarget, HedgeLink, RawRecord, RebuyExecution, StockConfig, TradePlan } from '../domain/types'
+import type {
+  AuditLog,
+  ExtraTarget,
+  HedgeLink,
+  LotMergeLink,
+  RawRecord,
+  RebuyExecution,
+  StockConfig,
+  TradePlan,
+} from '../domain/types'
 
 export interface MetaRow {
   key: string
@@ -27,6 +36,7 @@ class GridTradingDB extends Dexie {
   plans!: Table<TradePlan, string>
   extraTargets!: Table<ExtraTarget, string>
   hedges!: Table<HedgeLink, string>
+  merges!: Table<LotMergeLink, string>
 
   constructor() {
     super('grid-trading')
@@ -60,6 +70,10 @@ class GridTradingDB extends Dexie {
     // V9.32：删掉账户功能，只按一个账户做（accounts 表整表丢弃，老数据不用迁移）
     this.version(7).stores({
       accounts: null,
+    })
+    // V9.45：同价未卖完批次的合并关联（只影响挂单提醒的合并显示，不改 records）
+    this.version(8).stores({
+      merges: 'id, stockName',
     })
   }
 }

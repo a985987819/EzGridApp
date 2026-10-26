@@ -33,13 +33,14 @@ export function isDone(r: TradeRow): boolean {
 
 export function TradeItem({
   row,
-  nanoId,
+  no,
   onClick,
   extraTag,
   anim,
 }: {
   row: TradeRow
-  nanoId?: string
+  /** 第几笔（V9.43 统一身份：导入与应用内新增一样） */
+  no?: number | null
   onClick?: () => void
   /** 追加到标签行的页内标签（明细页的挂钩状态等；hover 预览不传） */
   extraTag?: ReactNode
@@ -67,12 +68,7 @@ export function TradeItem({
       data-anim={anim}
     >
       <div className="head">
-        <Tag size="small" variant="soft">{rec.origin === 'manual' ? '手动' : `行 ${rec.sourceRow}`}</Tag>
-        {nanoId && (
-          <span className="tiny muted mono" title={`nanoId ${nanoId}`}>
-            #{nanoId}
-          </span>
-        )}
+        <Tag size="small" variant="soft">{no == null ? '记录' : `第 ${no} 笔`}</Tag>
         <span className="name">{rec.stockName}</span>
         <div className="spacer" />
         <span className={`profit ${tone(sell?.profitCents ?? null)}`}>

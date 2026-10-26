@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Button, Card, Tag } from 'animal-island-ui'
 import { activeStockNames } from '../domain/stocks'
+import { recordNoLabel } from '../domain/recordNo'
 import type { StockSummary } from '../domain/types'
 import { useApp } from '../store/useApp'
 import { TreeTrunk } from '../components/TreeTrunk'
@@ -18,7 +19,7 @@ export function Overview({
   /** 沙盒横幅里回挂单页继续模拟 */
   goOrders?: () => void
 }) {
-  const { ledger, sandbox, sandboxLedger, baseline, records, basename, stocks, lastBackupAt, ordersSession } = useApp()
+  const { ledger, sandbox, sandboxLedger, baseline, records, recordNo, basename, stocks, lastBackupAt, ordersSession } = useApp()
   const [active, setActive] = useState('')
   const [openMetric, setOpenMetric] = useState<'target' | 'exposure' | 'net' | null>(null)
   /** 沙盒开着且有模拟条目：整页指标与树都改用预览账本（真实 + 模拟，纯派生） */
@@ -209,7 +210,7 @@ export function Overview({
           {chainsOfStock.length > 0 && (
             <div className="stack tight" data-testid="overview-chains">
               {chainsOfStock.map((c) => (
-                <RepairChainCard key={c.id} chain={c} dense />
+                <RepairChainCard key={c.id} chain={c} dense rowLabel={(row) => recordNoLabel(row, recordNo)} />
               ))}
             </div>
           )}
@@ -327,7 +328,7 @@ export function Overview({
                           <div className="t1 num">
                             {l.stockName} · 买 {price(l.buyPriceCents)}
                           </div>
-                          <div className="t2">行 {l.sourceRow} · 目标 {price(l.targetPriceCents)}</div>
+                          <div className="t2">{recordNoLabel(l.sourceRow, recordNo)} · 目标 {price(l.targetPriceCents)}</div>
                         </div>
                         <div className="right num" style={{ fontWeight: 600 }}>{qty(l.remainingQty)} 股</div>
                       </div>
@@ -356,7 +357,7 @@ export function Overview({
                         <div className="left">
                           <div className="t1 num">{o.stockName} · 回补价 {price(o.rebuyPriceCents)}</div>
                           <div className="t2">
-                            行 {o.sourceRow}
+                            {recordNoLabel(o.sourceRow, recordNo)}
                             {o.execQty > 0 ? ` · 已回补 ${o.execQty}` : ''}
                           </div>
                         </div>

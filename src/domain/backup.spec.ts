@@ -49,4 +49,16 @@ describe('恢复前的备份内容校验', () => {
     const legacy = { schemaVersion: 6, accounts: [{ name: '2027 年' }] } as unknown as BackupShape
     expect(validateBackup(legacy)).toBeNull()
   })
+
+  it('合并同价买单 rows 至少两笔、必须是整数行号（V9.45）', () => {
+    expect(validateBackup({ merges: [{ id: 'merge:16', stockName: '柳工', priceCents: 961, rows: [16] }] })).toContain('rows')
+    expect(
+      validateBackup({ merges: [{ id: 'merge:16', stockName: '柳工', priceCents: 961, rows: [16, 'x'] }] }),
+    ).toContain('整数行号')
+    expect(validateBackup({ merges: [{ id: 'merge:16', priceCents: 961, rows: [16, 22] }] })).toContain('stockName')
+    expect(
+      validateBackup({ merges: [{ id: 'merge:16', stockName: '柳工', priceCents: 961, rows: [16, 22] }] }),
+    ).toBeNull()
+    expect(validateBackup({ merges: 'nope' })).toBe('merges 不是数组')
+  })
 })

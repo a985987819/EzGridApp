@@ -7,10 +7,10 @@
 
 ```bash
 npm run dev        # 127.0.0.1:5173
-npm test           # vitest，175 条（domain 纯函数 + 真实 xlsx fixture 回归）
+npm test           # vitest，198 条（domain 纯函数 + 真实 xlsx fixture 回归）
 npm run lint       # eslint
 npm run build      # tsc --noEmit && vite build；GITHUB_PAGES=true 时启用 /EzGridApp/ 子路径 base
-node e2e/smoke.mjs http://127.0.0.1:5173   # 无头 Chrome CDP，399 项断言，需先起 dev
+node e2e/smoke.mjs http://127.0.0.1:5173   # 无头 Chrome CDP，422 项断言，需先起 dev
                    # 数据种子 = tests/fixtures 经 CDP DOM.setFileInputFiles 塞进上传框（站点不带示例数据）
 ```
 
@@ -50,6 +50,7 @@ store/useApp（唯一写库入口，全部动作写 auditLogs）
 | --- | --- |
 | 精度 | 一切价格金额整数「分」（`money.ts`），禁浮点判定；`toCents` 非法输入返回 null 绝不 NaN |
 | 行身份 | 主键 `sourceRow`（Excel 行号；手动行从 100000 起）；`importKey` = 内容字段 join（P9 幂等键，**内容一变 key 就变**）；`nanoId` = cyrb53(importKey)，明细/跨页跳转的行级 id，撞哈希按行号序加 -2/-3 |
+| 记录序号 V9.43 | 界面统一叫「第 N 笔」，Excel 行号退成**追溯信息**（只出现在明细抽屉的「Excel 第 N 行」标签、导出 CSV 的「Excel行号」列、导入预览）。序号是**纯派生**（`domain/recordNo.ts`，不落库、不改主键）：按录入时间排序——导入批次取 `batchId = batch:<ts>`、手动行取 `importKey = manual:...:<ts>`，同批/同毫秒按 `sourceRow` 二次排序；老备份没有 `batchId` 的行视为最早。软删除的行仍占号（不重排）；后导入的批次整体追加在已录入数据之后（即使 Excel 行号更小）。`useApp` 暴露 `recordNo: RecordNoIndex`（`of(row)` / `total`），明细卡、抽屉标题、挂单待买/待卖、概览、统计日历、挂钩面板、回本链统一用它；明细排序首项改「录入顺序」，导出第一列「序号」。虚拟行标签：200000 段「回补批次」、300000 段「模拟批次」 |
 | E 列双义 | `targetPriceCents` 既是持仓的待卖目标价、也是已成交行的成交价（D1） |
 | 待卖 R1 | 批次剩余 × E；手动拆分目标（extraTargets）先占额度，超剩余截断并标 anomaly |
 | 待买 R2 | 只认 P 列 `earlyBuyPriceCents`；`rebuyStatus`: pending/repaid；`exposure` = 卖出无买入批次（真空头） |
@@ -60,6 +61,7 @@ store/useApp（唯一写库入口，全部动作写 auditLogs）
 | 守恒式 R7 | `Σ待卖 − 待补敞口 − 空头回补基础股 = 净持仓`；`净持仓 = Σ买入(含回补批次) − Σ卖出`。空头回补基础股 = 空头单成交里 (qty−rewardQty) 部分——既抵了敞口又以批次进了待卖，扣回防双算 |
 | 导入幂等 | v9.20 决策 C：`domain/importPlan.ts` 按行身份（股票+买入日期+买入价+有效份额，D 列派生值折算）匹配——同 key 跳过、身份命中则**更新卖出侧字段**（importKey/nanoId 不变）、身份对不上才新增。审计走 import-update 来源。改这个逻辑先跑 `importPlan.spec.ts` |
 | 账户 | **V9.32 已删除**（只按一个账户做）：没有 accounts 表/账户筛选/顶部选择器，`records` 就是全部数据；`accounts` 表在 Dexie v7 里整表丢弃，老备份带 `accounts` 段直接忽略（schemaVersion 7） |
+| 合并同价买单 V9.45 | **只做关联，不改数据**：明细抽屉里几笔**同股票、同买入价、还没卖完**的批次可以勾选合并（`merges` 表 `merge:<锚行号>`，Dexie v8）；`records` 各自的数量/买入日期一分不动。挂单页「待卖」（今日挂单 + 常驻待卖 + 复制清单 + CSV）按 `domain/merge.ts` 的 `mergeTargetRows` 合并显示：**数量/金额/预期盈利相加，日期取组内最早买入日**，`data-merge-group` 标合并行、点击跳最早那笔。组合并条件是**还有 ≥2 笔在卖**（有剩余、未删除、买入价仍一致）——卖到只剩一笔自动散开，但关联保留（回补/恢复后又能合上）；目标价不同的（手动拆过）不跨价合并。计划价：优先读 `plan:<merge:<组>@<价>>`（合并行自己的计划），没有就尝试把成员原有的同价计划数量相加；不同价则不给计划（一张单装不下两个价）。沙盒模拟行永不合并。合并只影响挂单提醒——价格树/概览汇总照旧按原始 targets 算。e2e `[8.1.3]` 用柳工 9.61 的 16/22 行合并成 10.68 × 800、校验最早 2026-03-20 与解除恢复 |
 | 计划价 P8 | plans 只影响展示/导出，永不参与计算 |
 | 软删除 | `deletedAt` 非空的行不参与一切派生；导入幂等按 importKey，同 key 不覆盖 |
 | 基准 | `defaults.ts` BASELINE 只对「26年网格记录」fixture 成立，金额 ±1 元容差（E 列三位小数取整）；改任何派生逻辑跑 `io/baseline.spec.ts` 是红线 |
@@ -73,7 +75,8 @@ store/useApp（唯一写库入口，全部动作写 auditLogs）
 | 编辑抽屉滚动 / 输入法 V9.40 | **抽屉打开会丢滚动位置**：animal-island-ui `Drawer` 打开时给 body 写 `overflow:hidden`，而页面是普通文档流（`.app` 只有 `min-height:100%`）——文档高度塌成一屏，窗口 `scrollY` 被浏览器清零，关掉后也回不去。`TradesPage` 在 `open()` 里先记 `window.scrollY`，抽屉**真正关闭**（`current === null`，不是 `openRow`——行被筛掉时抽屉也会关）后一帧 `scrollTo` 补回来。**输入法避让**：`ui/viewport.ts` 的 `useKeyboardInset(open)` 监听 `visualViewport`，把键盘高度写进 `--kb-inset`、可见高写进 `--kb-vh`、面板高写进 `--ed-h`；Drawer 的 `height` prop 传 `var(--ed-h, 84vh)`（内联样式支持 CSS 变量），`styles.css` 的 `.trades-edit-drawer` 用 `bottom: var(--kb-inset)` + `max-height: calc(var(--kb-vh) - 8px)`，键盘弹出时面板整体抬到键盘上沿、高度收进可见区；`.animal-body` 的 `scroll-padding-bottom` 保证聚焦最下面几行时输入框不被页脚挡住。e2e `[7.2]` 用 `Object.defineProperty(visualViewport, 'height')` 模拟键盘并断言面板几何与滚动复原 |
 | PWA 更新 V9.40 | `vite.config.ts` 的 `registerType` 从 `autoUpdate` 改成 `prompt`：**新版本只提示、绝不自动 reload**（旧 autoUpdate 在部署后强制刷新页面，编辑到一半会丢弹窗和滚动位置）。`main.tsx` 的 `onNeedRefresh` 只弹「手动刷新页面后生效」，每小时 `reg.update()` 照旧检查。用户手动刷新后新 SW 才接管。**别改回 autoUpdate**——用户明确要求「数据更新后只有在手动刷新时才更新页面数据」 |
 | 布局 V9.41 | **删全局「网格交易」header**（`App.tsx` 不再渲染 `.app-header`，`--header-h` 只剩 `env(safe-area-inset-top)`；`.app-main` 自己让出状态栏安全区）。**概览首屏重排**：股票 tab 置顶（原「选股 · 当前股票汇总」标题行删除）；树上方只留高频四项（已实现盈利 / 理想可卖到 / 理想剩余可赚 / 今年共卖），树用 `height: calc(100dvh − --nav-h − 20px − safe-top)` 铺到导航上沿（390×844 画布实测 568px）；可卖/待补/净持仓/已实现 + 回本链下移到树下方，全局三格/标签等低频内容继续往下，必须滚动才看得到。**统计 · 成交日历**当日明细行首加红框「卖出」chip（`.side-chip.sell`），成本文案改「买入成本」（日历只按卖出日归集） |
-| 挂单吸顶 V9.42 | 下滑超过 96px 把挂单页吸顶块（标题 + 沙盒面板 + 选股/昨收/涨跌停设置）收成**一行摘要**（`[data-testid="orders-compact"]`：股票 · 昨收 · 涨停 · 跌停 · 沙盒标记），回顶 24px 内恢复完整布局。阈值带回差防临界抖动；摘要只读，切股/改价要回顶（点摘要平滑回顶）。完整设置包在 `.orders-setup` 里用 `hidden` 收掉，输入值都在会话状态、展开不丢。e2e `[8.1.2]` 钉了收起高度 44px、摘要内容、仍吸顶、回顶复原与昨收保留 |
+| 挂单吸顶 V9.42 / V9.44 | 下滑超过 96px 把挂单页吸顶块（标题 + 沙盒面板 + 选股/昨收/涨跌停设置）收成**一行摘要**（`[data-testid="orders-compact"]`：股票 · 昨收 · 涨停 · 跌停 · 沙盒标记），回顶 24px 内恢复完整布局。阈值带回差 + rAF 节流；摘要只读，切股/改价要回顶（点摘要平滑回顶）。**V9.44 修「顶部抽搐闪烁」**：根因是收放直接 `display:none` 改文档高度，浏览器滚动锚定把 `scrollY` 补偿回阈值内 → 收→放→收 连环触发。现在 ①`html, body { overflow-anchor: none }` 关掉锚定；②摘要常驻 DOM、设置块不再 `hidden`，用 `.orders-compact-slot` / `.orders-setup-collapse` 的 `grid-template-rows: 0fr↔1fr`（`--dur-3`）连续收放，摘要淡入 + 上移 4px，`visibility` 过渡隐藏不可点；③滚动监听走 rAF，收放期间不会被打断。e2e `[8.1.2]` 钉了收起高度 44px、摘要可见性/内容、仍吸顶、回顶复原与昨收保留，并新增抖动检查（0→300→0 小步滚动时 `is-compact` 翻转 ≤3 次、`landed === 300`） |
+| 管理页入口 V9.44 | 管理页从「一排 tab」改成**按钮入口**：`ManagePage` 先渲染 4 个 `.manage-item`（`[data-manage-entry]` = stocks / import / checks / backup，带图标 + 名称 + 一句说明），点进去才渲染对应分区，顶部 `.manage-bar` 有「‹ 管理」返回按钮（`[data-testid="manage-back"]`）。不再用 `Tabs`；离开管理 tab 再回来会回到入口列表（组件卸载，不记忆上次分区）。e2e 里进分区要先点入口、换分区要先点返回——`nav('manage')` 在同 tab 时不会重挂载，别指望它重置 |
 | 明细吸顶 V9.42 | **删除明细页搜索框**（原「搜股票名 / 行号」）：连带 `TradesPage` 的 keyword 过滤、搜索条件 chip、URL `q` 参数一起删（`TradesQuery` 不再有 `q`）。下滑超过 96px 把股票 tab / 状态筛选 / 条件 chips 整块用 `.trades-filters[hidden]` 收掉，只留「明细 x / y 行」标题（吸顶高 42px）；回到 24px 内恢复。排序 / 导出 / 新增仍在那张卡里，随页面自然滚走，回顶一起回来。e2e `[6.1]` 钉了搜索框不存在、收起与恢复、排序离开视野、标题仍吸顶 |
 | 动效 V9.37 | 统一缓动 `--ease-soft / --ease-back` + 三档时长（`--dur-1/2/3`）；只动 transform / opacity / 色彩，不动 layout（唯一例外是删除那一行用 max-height 收高度）。**切页带方向**：`.app-main[data-dir=forward\|back]` → `page-in-forward / page-in-back`，方向由 App.tsx 比较 tab 序号得出。**明细行三态**用 `data-anim` 属性驱动（样式在 styles.css）：`new` = 新增落位 + 微光（承接「弹窗收成一条明细」）、`leaving` = 删除向右滑出并收高度（**先播 300ms 动画再真删**，别直接消失）、`done` = 刚完成洗一层青。通用 hook：`ui/motion.ts` 的 `useFlashOnAppear(keys)`（首帧不闪、依赖用 key 签名避免每帧重跑）。底部导航短横线常驻 + scaleX 过渡、图标弹跳；挂单页回补成交的那行同样会闪。`prefers-reduced-motion: reduce` 时全部退化为瞬切。 |
 
@@ -81,8 +84,9 @@ store/useApp（唯一写库入口，全部动作写 auditLogs）
 
 `stock:` `lot:<row>` `sell:<row>` `target:<lot|extraId>` `rb:sell:<row>` `exec:<orderId>:<ts>`
 `et:<lotId>:<ts>` `plan:<refId>` `batch:<ts>` `hedge:<sellRow>`（V9.26）
+`merge:<锚行号>`（V9.45 同价买单合并组；`merge:<组 id>@<目标价分>` 是合并行的计划 ref）
 `sandbox:<seq>:<ts>`（V9.39 仅预览；预览行号 = 300000 + seq，绝不落库）。备份
-schemaVersion 7（V9.32 去掉 accounts；含 hedges）。`validateBackup` 现在逐表校验 records / stocks / 回补成交 / 计划 / 拆分目标 / **挂钩**（V9.32 起；之前只查前两张，`hedges: [{}]` 能过校验、恢复后 `for..of h.items` 直接白屏）。Dexie schema 改动必须递增 `db.ts` 里的 version()（老库
+schemaVersion 8（V9.45 加 merges；V9.32 去掉 accounts）。`validateBackup` 现在逐表校验 records / stocks / 回补成交 / 计划 / 拆分目标 / **挂钩** / **合并组**（V9.32 起；之前只查前两张，`hedges: [{}]` 能过校验、恢复后 `for..of h.items` 直接白屏）。Dexie schema 改动必须递增 `db.ts` 里的 version()（老库
 自动升级，不写迁移）。
 
 ## 已知取舍 / 已知坑（设计如此，别当 bug 修）

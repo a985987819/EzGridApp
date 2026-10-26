@@ -28,6 +28,9 @@
 /* 全屏宽度下的横向滚动条修复：内容比视口宽时只裁切、不产生滚动容器，
    position: sticky 不受影响。 */
 html, body { overflow-x: clip; }
+/* V9.44：吸顶块收放会改变文档高度，滚动锚定会补偿 scrollY 导致临界点反复收放，
+   顶部表现为抽搐闪烁——整站禁用锚定，让 scrollY 只跟用户手势走 */
+html, body { overflow-anchor: none; }
 
 html, body, #root { height: 100%; }
 
@@ -659,10 +662,36 @@ button { font-family: inherit; }
   opacity: 0.9;
 }
 
-/* ---------- 挂单页吸顶设置：下滑收成一行，回顶展开（V9.42） ---------- */
-.orders-sticky { transition: padding 0.18s var(--ease-soft); }
+/* ---------- 挂单页吸顶设置：下滑收成一行，回顶展开（V9.42 / V9.44 动画化） ----------
+   用 grid-template-rows 0fr↔1fr 过渡高度：两个块同时收/放，吸顶块总高度连续变化，
+   不再瞬间 display:none 造成内容跳变。滚动锚定已在 html 上禁用，scrollY 不被打回。 */
+.orders-sticky { transition: padding var(--dur-2) var(--ease-soft); }
 .orders-sticky.is-compact { padding: 4px 2px 6px; }
-.orders-setup[hidden] { display: none; }
+
+.orders-compact-slot {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--dur-3) var(--ease-soft);
+}
+.orders-sticky.is-compact .orders-compact-slot { grid-template-rows: 1fr; }
+.orders-compact-inner { overflow: hidden; min-height: 0; display: flex; }
+
+.orders-setup-collapse {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows var(--dur-3) var(--ease-soft);
+}
+.orders-sticky.is-compact .orders-setup-collapse { grid-template-rows: 0fr; }
+.orders-setup-collapse-inner { overflow: hidden; min-height: 0; }
+
+.orders-setup {
+  transition: opacity var(--dur-2) var(--ease-soft), visibility var(--dur-2) var(--ease-soft);
+}
+.orders-sticky.is-compact .orders-setup {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
 .orders-compact {
   display: flex;
   align-items: center;
@@ -680,6 +709,13 @@ button { font-family: inherit; }
   text-align: left;
   white-space: nowrap;
   cursor: pointer;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity var(--dur-2) var(--ease-soft), transform var(--dur-2) var(--ease-soft);
+}
+.orders-sticky.is-compact .orders-compact {
+  opacity: 1;
+  transform: none;
 }
 .orders-compact:active { opacity: 0.72; }
 .orders-compact .oc-stock {
@@ -711,6 +747,70 @@ button { font-family: inherit; }
 .trades-sticky.is-condensed { padding: 4px 2px 6px; }
 .trades-sticky.is-condensed .page-title { margin-bottom: 0; }
 .trades-filters[hidden] { display: none; }
+
+/* ---------- 明细抽屉：合并同价买单（V9.45，只做关联不改数据） ---------- */
+.merge-row { gap: 8px; cursor: pointer; }
+.merge-row input[type='checkbox'] {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: #b08c5a;
+}
+.merge-row .left { flex: 1; }
+
+/* ---------- 管理页：按钮入口（V9.44 从 tab 改成按钮，点进去再看内容） ---------- */
+.manage-menu { display: flex; flex-direction: column; }
+.manage-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 4px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease-soft);
+}
+.manage-item:last-child { border-bottom: none; }
+.manage-item:active { background: rgba(121, 79, 39, 0.06); }
+.manage-ico {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--head-bg);
+  color: #8a7c68;
+}
+.manage-ico svg { width: 18px; height: 18px; }
+.manage-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.manage-label { font-size: 14px; font-weight: 600; color: #40382c; }
+.manage-desc { font-size: 11.5px; color: #9f927d; }
+.manage-arrow { flex: none; color: #bcae97; }
+.manage-bar { display: flex; align-items: center; gap: 8px; }
+.manage-bar strong { font-size: 15px; }
+.manage-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 10px 4px 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: rgba(255, 253, 247, 0.9);
+  color: #8a7c68;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease-soft);
+}
+.manage-back:active { background: rgba(121, 79, 39, 0.08); }
 
 /* 抽屉/小卡片里的小节标题 */
 .sec-head.sm { margin-bottom: 8px; padding-bottom: 6px; }
@@ -1210,6 +1310,8 @@ button:not(:disabled):active {
 
 /* ---------- 沙盒模式（V9.39）：模拟条目不写库，用紫色虚线把它和真实台账分开 ---------- */
 .sandbox-mark { color: #8a5bd6; font-weight: 600; }
+/* V9.45：合并同价买单的提醒行前缀（与沙盒紫区分开，用暖棕） */
+.merge-mark { color: #b07a3a; font-weight: 600; }
 .line.sandbox-row {
   cursor: default;
   padding-left: 8px;

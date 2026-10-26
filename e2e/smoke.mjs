@@ -160,6 +160,13 @@ try {
     await evaluate(`document.querySelector('[aria-label="关闭"]')?.click()`)
     await sleep(500)
   }
+  // 管理页 V9.44 改成按钮入口：从某个子页回菜单（已在菜单时返回 false）
+  const backToManageMenu = () =>
+    evaluate(`(() => {
+      const b = document.querySelector('[data-testid="manage-back"]')
+      if (!b) return false
+      b.click(); return true
+    })()`)
   const stickyOf = (key) =>
     evaluate(`(() => {
       const el = document.querySelector('[data-sticky="${key}"]')
@@ -197,10 +204,21 @@ try {
   const pageAnim = await evaluate(`getComputedStyle(document.querySelector('.app-main > *')).animationName`)
   check('页面进场动画生效', ['page-in', 'page-in-forward', 'page-in-back'].includes(pageAnim), pageAnim)
 
-  console.log('\n[2] 管理 · 股票（第一个 tab）+ 拖动排序')
+  console.log('\n[2] 管理 · 股票（按钮入口）+ 拖动排序')
   check('切到管理页', await nav('manage'))
+  check(
+    '管理页是按钮入口',
+    (await evaluate(`document.querySelectorAll('[data-manage-entry]').length`)) === 4,
+  )
   text = await bodyText()
-  check('股票 tab 默认展示', text.includes('默认间隔') && text.includes('涨跌幅规则'))
+  check('入口列表不展开内容', !text.includes('默认间隔') && text.includes('股票设置'))
+  check(
+    '点「股票设置」进入',
+    await clickByText('[data-manage-entry="stocks"]', '股票设置'),
+  )
+  await sleep(500)
+  text = await bodyText()
+  check('股票设置展示', text.includes('默认间隔') && text.includes('涨跌幅规则'))
   const order0 = JSON.parse(await stockOrder())
   console.log('  初始顺序:', order0)
   check('初始顺序 柳工→三一重工→奥佳华→安道麦', order0.join('>') === '柳工>三一重工>奥佳华>安道麦')
@@ -239,7 +257,16 @@ try {
   check('拖动后三一重工排第一', orderAfter[0] === '三一重工')
 
   console.log('\n[3] 管理 · 导入 → 本地 fixture → 写入本地')
-  check('切到导入 tab', await clickByText('[role="tab"]', '导入'))
+  check(
+    '返回管理菜单',
+    await evaluate(`(() => {
+      const b = document.querySelector('[data-testid="manage-back"]')
+      if (!b) return false
+      b.click(); return true
+    })()`),
+  )
+  await sleep(350)
+  check('切到导入入口', await clickByText('[data-manage-entry="import"]', '导入数据'))
   await sleep(400)
   check(
     '选本地 fixture 文件',
@@ -623,10 +650,10 @@ try {
   }
   const firstRows = async () =>
     JSON.parse(await evaluate(`JSON.stringify([...document.querySelectorAll('[data-row]')].slice(0,3).map(e => Number(e.getAttribute('data-row'))))`))
-  check('排序切到「行号 低→高」（单击反序）', await sortPick('行号'))
+  check('排序切到「录入顺序 早→晚」（单击反序）', await sortPick('录入顺序'))
   const asc = await firstRows()
   check('升序生效', asc[0] < asc[1] && asc[1] < asc[2], JSON.stringify(asc))
-  check('再点回「行号 高→低」默认', await sortPick('行号'))
+  check('再点回「录入顺序 晚→早」默认', await sortPick('录入顺序'))
   const desc = await firstRows()
   check('降序恢复', desc[0] > desc[1] && desc[1] > desc[2], JSON.stringify(desc))
 
@@ -641,7 +668,7 @@ try {
   check('买入日期降序生效', dates.length >= 2 && dates.every((d, i) => i === 0 || dates[i - 1] >= d), JSON.stringify(buyDesc))
   const datesShot = await send('Page.captureScreenshot', { format: 'png' })
   writeFileSync(join(OUT, 'mobile-trades-dates.png'), Buffer.from(datesShot.data, 'base64'))
-  check('点行号回默认排序', await sortPick('行号'))
+  check('点录入顺序回默认排序', await sortPick('录入顺序'))
 
   // 卡片上买入/卖出日期都要显示（空就显示 —）
   const cardText = await evaluate(`document.querySelector('[data-row="63"] .dates')?.textContent.trim() ?? ''`)
@@ -752,7 +779,7 @@ try {
   console.log('  收起后:', condensedRaw)
   check('下滑后筛选项隐藏', condensed.filtersHidden === true && condensed.y > 96, condensedRaw)
   check('下滑后排序方式离开视野', condensed.sortOut === true, condensedRaw)
-  check('收起后标题与计数仍在吸顶', condensed.position === 'sticky' && condensed.title.includes('明细') && condensed.title.includes('行'), condensedRaw)
+  check('收起后标题与计数仍在吸顶', condensed.position === 'sticky' && condensed.title.includes('明细') && condensed.title.includes('笔'), condensedRaw)
   check('收起后吸顶高度变小', condensed.h > 0 && condensed.h < tradesFullH / 2, `full=${tradesFullH} condensed=${condensed.h}`)
   const condensedShot = await send('Page.captureScreenshot', { format: 'png' })
   writeFileSync(join(OUT, 'mobile-trades-condensed.png'), Buffer.from(condensedShot.data, 'base64'))
@@ -1087,7 +1114,7 @@ try {
   // 选中日后，下方恢复当日成交明细（每笔可点）
   check(
     '当日明细恢复（三一重工 · 17.99 × 200）',
-    text.includes('17.99 × 200') && text.includes('行 56'),
+    text.includes('17.99 × 200') && /第 \d+ 笔/.test(text),
     '',
   )
   // V9.41：日历只按卖出日归集，当日明细行首必须标明「卖出」，成本写明是买入成本
@@ -1128,7 +1155,7 @@ try {
   check(
     '点待卖清单行',
     await evaluate(`(() => {
-      const line = [...document.querySelectorAll('.data-block .line')].find(l => l.textContent.includes('批次'))
+      const line = [...document.querySelectorAll('.data-block .line')].find(l => l.textContent.includes('· 买入'))
       if (!line) return false
       line.click(); return true
     })()`),
@@ -1139,7 +1166,7 @@ try {
   check('落在明细并带 nanoId', Boolean(nanoId), idHash)
   check('nanoId 定位 1 行', (await headCount()) === 1, String(await headCount()))
   const idChip = await evaluate(`[...document.querySelectorAll('[data-testid="active-chips"] .filter-chip')].map(e => e.textContent.trim()).join('|')`)
-  check('行号条件 chip 显示', /行 \d+/.test(idChip), idChip)
+  check('记录序号条件 chip 显示', /第 \d+ 笔/.test(idChip), idChip)
 
   // 收尾清掉筛选，让后面的章节拿到干净的明细页（V9.2 起导航会恢复上次筛选）
   check('清空筛选收尾', await clickByText('[data-testid="active-chips"] .filter-chip', '清空筛选'))
@@ -1160,7 +1187,14 @@ try {
   await sleep(500)
   check('读入昨收 8.10', await setInput('input[aria-label="昨收价"]', '8.10'))
   await sleep(300)
-  check('点「确认」', await clickByText('button', '确认'))
+  check(
+    '点「确认」',
+    await evaluate(`(() => {
+      const b = document.querySelector('[data-action="confirm-close"]')
+      if (!b) return false
+      b.click(); return true
+    })()`),
+  )
   await sleep(700)
   text = await bodyText()
   const limitUp = await evaluate(`document.querySelector('[data-tag="limit-up"]')?.textContent.trim() ?? ''`)
@@ -1236,7 +1270,10 @@ try {
   const fullH = Number(await evaluate(`document.querySelector('[data-sticky="orders"]')?.getBoundingClientRect().height ?? 0`))
   check(
     '顶部时显示完整设置',
-    await evaluate(`Boolean(document.querySelector('input[aria-label="昨收价"]')) && !document.querySelector('[data-testid="orders-compact"]')`),
+    await evaluate(
+      `Boolean(document.querySelector('input[aria-label="昨收价"]')) &&
+       !document.querySelector('[data-sticky="orders"]').classList.contains('is-compact')`,
+    ),
   )
   await evaluate(`window.scrollTo(0, 900)`)
   await sleep(700)
@@ -1244,10 +1281,13 @@ try {
     const bar = document.querySelector('[data-testid="orders-compact"]')
     const sticky = document.querySelector('[data-sticky="orders"]')
     const setup = document.querySelector('.orders-setup')
+    const barStyle = bar ? getComputedStyle(bar) : null
     return JSON.stringify({
       exists: Boolean(bar),
       text: bar?.textContent.replace(/\\s+/g, ' ').trim() ?? '',
-      setupHidden: setup ? getComputedStyle(setup).display === 'none' : null,
+      compact: sticky ? sticky.classList.contains('is-compact') : null,
+      barVisible: barStyle ? Number(barStyle.opacity) > 0.9 && barStyle.visibility !== 'hidden' : false,
+      setupHidden: setup ? getComputedStyle(setup).visibility === 'hidden' : null,
       position: sticky ? getComputedStyle(sticky).position : 'missing',
       h: Math.round(sticky?.getBoundingClientRect().height ?? 0),
       y: Math.round(window.scrollY),
@@ -1255,7 +1295,8 @@ try {
   })()`)
   const compactBar = JSON.parse(compactRaw)
   console.log('  收起后:', compactRaw)
-  check('下滑后出现单行摘要', compactBar.exists && compactBar.y > 96, compactRaw)
+  check('下滑后出现单行摘要', compactBar.exists && compactBar.compact === true && compactBar.y > 96, compactRaw)
+  check('摘要可见（不是零高度占位）', compactBar.barVisible === true, compactRaw)
   check(
     '摘要含股票/昨收/涨停/跌停',
     ['柳工', '8.10', '8.91', '7.29'].every((s) => compactBar.text.includes(s)),
@@ -1272,8 +1313,8 @@ try {
     const setup = document.querySelector('.orders-setup')
     return JSON.stringify({
       y: Math.round(window.scrollY),
-      compact: Boolean(document.querySelector('[data-testid="orders-compact"]')),
-      setupShown: setup ? getComputedStyle(setup).display !== 'none' : false,
+      compact: document.querySelector('[data-sticky="orders"]').classList.contains('is-compact'),
+      setupShown: setup ? getComputedStyle(setup).visibility !== 'hidden' : false,
       input: document.querySelector('input[aria-label="昨收价"]')?.value ?? '',
     })
   })()`)
@@ -1281,6 +1322,133 @@ try {
   console.log('  回顶后:', restoredRaw)
   check('回到顶部恢复完整设置', restoredTop.y === 0 && !restoredTop.compact && restoredTop.setupShown, restoredRaw)
   check('恢复后昨收仍是 8.10', restoredTop.input === '8.10', restoredRaw)
+
+  // V9.44：顶部收放不能来回抽搐——临界点附近小步滚动，最多收/放各一次，scrollY 不被浏览器补偿拉走
+  const jitterRaw = await evaluate(`(async () => {
+    const sticky = document.querySelector('[data-sticky="orders"]')
+    let flips = 0
+    let last = sticky.classList.contains('is-compact')
+    const mo = new MutationObserver(() => {
+      const cur = sticky.classList.contains('is-compact')
+      if (cur !== last) { flips += 1; last = cur }
+    })
+    mo.observe(sticky, { attributes: true, attributeFilter: ['class'] })
+    const at = (y) => new Promise((r) => setTimeout(r, y))
+    for (let y = 0; y <= 300; y += 12) {
+      window.scrollTo(0, y)
+      await at(30)
+    }
+    await at(700)
+    const landed = Math.round(window.scrollY)
+    for (let y = 300; y >= 0; y -= 12) {
+      window.scrollTo(0, y)
+      await at(30)
+    }
+    await at(700)
+    mo.disconnect()
+    return JSON.stringify({ flips, landed, end: Math.round(window.scrollY), compact: sticky.classList.contains('is-compact') })
+  })()`)
+  const jitter = JSON.parse(jitterRaw)
+  console.log('  收放抖动:', jitterRaw)
+  check('临界点附近不反复收放（flips ≤ 3）', jitter.flips <= 3, jitterRaw)
+  check('滚动位置没被补偿拉回（停在 300）', jitter.landed === 300, jitterRaw)
+  check('回到顶部完全展开', jitter.end === 0 && !jitter.compact, jitterRaw)
+
+  console.log('\n[8.1.3] 合并同价未卖完批次 → 挂单提醒合并显示（V9.45）')
+  await nav('trades')
+  await sleep(700)
+  check(
+    '打开柳工 9.61 的第一笔',
+    await evaluate(`(() => {
+      const el = document.querySelector('[data-row="16"]')
+      if (!el) return false
+      el.scrollIntoView({ block: 'center' })
+      el.click(); return true
+    })()`),
+  )
+  await sleep(800)
+  text = await bodyText()
+  check('抽屉里有「合并同价买单」', text.includes('合并同价买单'))
+  const candRaw = await evaluate(
+    `JSON.stringify([...document.querySelectorAll('[data-merge-candidate]')].map(e => e.getAttribute('data-merge-candidate')))`,
+  )
+  const cand = JSON.parse(candRaw)
+  check('候选列出两笔 9.61 批次', cand.includes('16') && cand.includes('22'), candRaw)
+  check(
+    '勾上第 22 笔',
+    await evaluate(`(() => {
+      const cb = document.querySelector('[data-merge-candidate="22"] input[type="checkbox"]')
+      if (!cb) return false
+      cb.click(); return true
+    })()`),
+  )
+  await sleep(300)
+  check(
+    '保存合并',
+    await evaluate(`(() => {
+      const b = document.querySelector('[data-action="merge-save"]')
+      if (!b) return false
+      b.click(); return true
+    })()`),
+  )
+  await sleep(1000)
+  check('合并后出现「解除」', Boolean(await evaluate(`Boolean(document.querySelector('[data-action="merge-clear"]'))`)))
+  const mergeShot = await send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync(join(OUT, 'mobile-merge-binder.png'), Buffer.from(mergeShot.data, 'base64'))
+  await closeDrawer()
+  await nav('orders')
+  await sleep(1000)
+  const mergedRaw = await evaluate(`(() => {
+    const blocks = [...document.querySelectorAll('.data-block')]
+    const rows = blocks.flatMap((b) => [...b.querySelectorAll('.line[data-merge-group]')])
+    const row = rows.find((l) => l.textContent.includes('10.68'))
+    const same = [...document.querySelectorAll('.data-block .line')].filter((l) => l.textContent.includes('10.68'))
+    return JSON.stringify({
+      exists: Boolean(row),
+      text: row?.innerText.replace(/\\s+/g, ' ').trim() ?? '',
+      sameRows: same.length,
+      stale: same.map((l) => l.getAttribute('data-merge-group') ?? ''),
+    })
+  })()`)
+  const mergedRow = JSON.parse(mergedRaw)
+  console.log('  合并后的待卖行:', mergedRaw)
+  check('待卖里 10.68 只剩「合并行 + 另一笔买入价不同的」', mergedRow.exists && mergedRow.sameRows === 2, mergedRaw)
+  check('合并行数量 = 200 + 600', mergedRow.text.includes('800'), mergedRaw)
+  check('合并行标「合并 2 笔」', mergedRow.text.includes('合并 2 笔'), mergedRaw)
+  check('合并行日期取更早的 2026-03-20', mergedRow.text.includes('2026-03-20'), mergedRaw)
+  check('合并行带 data-merge-group', mergedRow.stale.includes('merge:16@1068'), mergedRaw)
+  const mergedShot = await send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync(join(OUT, 'mobile-orders-merged.png'), Buffer.from(mergedShot.data, 'base64'))
+
+  // 解除合并 → 挂单页恢复逐笔
+  await nav('trades')
+  await sleep(700)
+  await evaluate(`document.querySelector('[data-row="16"]')?.click()`)
+  await sleep(800)
+  check(
+    '解除合并',
+    await evaluate(`(() => {
+      const b = document.querySelector('[data-action="merge-clear"]')
+      if (!b) return false
+      b.click(); return true
+    })()`),
+  )
+  await sleep(900)
+  await closeDrawer()
+  await nav('orders')
+  await sleep(900)
+  const splitRaw = await evaluate(`(() => {
+    const same = [...document.querySelectorAll('.data-block .line')].filter((l) => l.textContent.includes('10.68'))
+    return JSON.stringify({
+      n: same.length,
+      merged: same.filter((l) => l.getAttribute('data-merge-group')).length,
+      texts: same.map((l) => l.innerText.replace(/\\s+/g, ' ').trim()),
+    })
+  })()`)
+  const split = JSON.parse(splitRaw)
+  console.log('  解除后:', splitRaw)
+  check('解除后恢复逐笔（10.68 共三条，无合并标记）', split.n === 3 && split.merged === 0, splitRaw)
+  check('解除后数量回到 200 / 600', split.texts.some((t) => t.includes('200')) && split.texts.some((t) => t.includes('600')), splitRaw)
 
   console.log('\n[8.2] 挂单计划价')
   check('点第一个「计划」', await clickByText('button', '计划'))
@@ -1322,6 +1490,8 @@ try {
 
   console.log('\n[9] 停用开关：其他页面不再出现该股')
   await nav('manage')
+  check('进入股票设置', await clickByText('[data-manage-entry="stocks"]', '股票设置'))
+  await sleep(400)
   check(
     '关掉奥佳华',
     await evaluate(`(() => {
@@ -1340,6 +1510,8 @@ try {
   await nav('stats')
   check('统计不再有奥佳华', !(await bodyText()).includes('奥佳华'))
   await nav('manage')
+  await clickByText('[data-manage-entry="stocks"]', '股票设置')
+  await sleep(400)
   await evaluate(`document.querySelector('[aria-label="启用 奥佳华"]')?.click()`)
   await sleep(700)
   await nav('overview')
@@ -1632,7 +1804,7 @@ try {
 
     // V9.36 回补 → 高位批次永久了结（不再复活），概览出现「回本链」
     const opened = await evaluate(`(() => {
-      const line = [...document.querySelectorAll('.data-block .line')].find((l) => l.textContent.includes('行100000'))
+      const line = [...document.querySelectorAll('.data-block .line')].find((l) => l.getAttribute('data-row') === '100000')
       const btn = line && [...line.querySelectorAll('button')].find((b) => b.textContent.trim() === '记成交')
       if (!btn) return false
       btn.click()
@@ -1697,16 +1869,18 @@ try {
 
   console.log('\n[11.1.1] 管理页 · 校验（V9.10 从概览挪来）')
   await nav('manage')
-  check('切到校验 tab', await clickByText('[role="tab"]', '校验'))
+  check('切到校验入口', await clickByText('[data-manage-entry="checks"]', '校验'))
   await sleep(500)
   text = await bodyText()
   check('基准快照在管理页且全中', text.includes('基准快照') && text.includes('全中'))
   check('数量守恒在管理页', text.includes('数量守恒'))
 
   console.log('\n[11.2] 账户功能已删除（V9.32 单账户）')
+  await backToManageMenu()
+  await sleep(300)
   await nav('manage')
   text = await bodyText()
-  check('管理页没有账户 tab', !text.includes('账户'))
+  check('管理页没有账户入口', !text.includes('账户'))
   check('顶部没有账户选择器', (await evaluate(`Boolean(document.querySelector('[aria-label="切换账户"]'))`)) === false)
 
   console.log('\n[11.5] 下拉浮层不出屏 / 不被卡片裁掉')
@@ -1733,7 +1907,9 @@ try {
     })()`)
 
   await nav('manage')
-  await clickByText('[role="tab"]', '股票')
+  await backToManageMenu()
+  await sleep(300)
+  await clickByText('[data-manage-entry="stocks"]', '股票设置')
   await sleep(500)
   check('打开涨跌幅下拉', await evaluate(`(() => {
     const box = document.querySelector('.app-main [role="combobox"]')
@@ -1833,11 +2009,11 @@ try {
   await nav('manage')
   await sleep(500)
   const manageShot = await send('Page.captureScreenshot', { format: 'png' })
-  writeFileSync(join(OUT, 'mobile-stocks.png'), Buffer.from(manageShot.data, 'base64'))
-  await clickByText('[role="tab"]', '导入')
+  writeFileSync(join(OUT, 'mobile-manage-menu.png'), Buffer.from(manageShot.data, 'base64'))
+  await clickByText('[data-manage-entry="import"]', '导入数据')
   await sleep(500)
   const importShot = await send('Page.captureScreenshot', { format: 'png' })
-  writeFileSync(join(OUT, 'mobile-manage.png'), Buffer.from(importShot.data, 'base64'))
+  writeFileSync(join(OUT, 'mobile-manage-import.png'), Buffer.from(importShot.data, 'base64'))
   await nav('trades')
   await evaluate(`document.querySelector('[data-row="63"]')?.click()`)
   await sleep(700)
@@ -1982,7 +2158,7 @@ try {
   const sbc = JSON.parse(sbCandsRaw)
   check('打开沙盒挂钩预演弹层', sbc.title && sbc.intro, sbCandsRaw)
   check(
-    '候选按买价从高到低（首项 = 第9行 10.89 可挂 500）',
+    '候选按买价从高到低（首项 = Excel 第 9 行 / 10.89 可挂 500）',
     sbc.first === 'hedge-9' && sbc.firstLine.includes('10.89') && sbc.firstLine.includes('可挂 500'),
     sbCandsRaw,
   )

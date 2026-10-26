@@ -10,7 +10,16 @@ import { money, price, qty, signedMoney, tone } from '../ui/format'
  *   回补的 500 股成为唯一实盘批次；之后每做一轮「卖高 → 回补低」，
  *   价差就累加到这条链上，够 1,500 就把这笔 10 元买入彻底冲平。
  */
-export function RepairChainCard({ chain, dense = false }: { chain: RepairChain; dense?: boolean }) {
+export function RepairChainCard({
+  chain,
+  dense = false,
+  rowLabel,
+}: {
+  chain: RepairChain
+  dense?: boolean
+  /** 行身份（V9.43）：明细/概览传「第 N 笔」，不再露出 Excel 行号 */
+  rowLabel: (row: number) => string
+}) {
   const need = Math.abs(chain.lossCents)
   const pct = need <= 0 ? 100 : Math.min(100, Math.round((chain.recoveredCents / need) * 100))
   return (
@@ -63,7 +72,7 @@ export function RepairChainCard({ chain, dense = false }: { chain: RepairChain; 
                   )}
                 </div>
                 <div className="t2">
-                  行 {c.sellRow}
+                  {rowLabel(c.sellRow)}
                   {c.soldAt ? ` · ${c.soldAt}` : ''} · 当时有效成本 {price(c.effectiveCostAtCents)}
                 </div>
               </div>

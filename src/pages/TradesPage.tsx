@@ -18,6 +18,7 @@ import { useKeyboardInset } from '../ui/viewport'
 import { DateField } from '../ui/DateField'
 import { TradeItem, buyDateOf, isDone, sellDateOf, type TradeRow } from '../components/TradeItem'
 import { HedgeBinder, HedgeSheet } from '../components/HedgeBinder'
+import { LotMergeBinder } from '../components/LotMergeBinder'
 import { RepairChainCard } from '../components/RepairChainCard'
 
 /** 状态筛选可多选（V9 可叠加）：命中的行要满足每一个勾选的状态 */
@@ -55,10 +56,10 @@ const SORT_KEYS: readonly string[] = ['rowDesc', 'rowAsc', 'buyDateDesc', 'buyDa
 
 /**
  * 排序平铺（V9.4）：4 个维度像表头一样直接可见。
- * 点击循环：默认（行号 高→低）→ 该维度主方向 → 反序 → 回默认。
+ * 点击循环：默认（录入顺序 新→旧）→ 该维度主方向 → 反序 → 回默认。
  */
 const SORT_CHIPS: { key: string; label: string; desc: SortBy; asc: SortBy }[] = [
-  { key: 'row', label: '行号', desc: 'rowDesc', asc: 'rowAsc' },
+  { key: 'row', label: '录入顺序', desc: 'rowDesc', asc: 'rowAsc' },
   { key: 'buyDate', label: '买入日期', desc: 'buyDateDesc', asc: 'buyDateAsc' },
   { key: 'sellDate', label: '卖出日期', desc: 'sellDateDesc', asc: 'sellDateAsc' },
   { key: 'profit', label: '盈利', desc: 'profitDesc', asc: 'profitAsc' },
@@ -140,6 +141,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   const {
     ledger,
     records,
+    recordNo,
     stocks,
     editRecord,
     softDelete,
@@ -334,10 +336,15 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       })
     if (idFilter !== null) {
       const rec = nano.byId.get(idFilter)
-      chips.push({ key: 'id', label: rec ? `行 ${rec.sourceRow}` : `#${idFilter}`, clear: () => setIdFilter(null) })
+      const n = rec ? recordNo.of(rec.sourceRow) : null
+      chips.push({
+        key: 'id',
+        label: n !== null ? `第 ${n} 笔` : `#${idFilter}`,
+        clear: () => setIdFilter(null),
+      })
     }
     return chips
-  }, [stockFilter, statuses, priceFilter, priceLo, priceHi, fromDate, toDate, idFilter, nano])
+  }, [stockFilter, statuses, priceFilter, priceLo, priceHi, fromDate, toDate, idFilter, nano, recordNo])
 
   /** 一键复位：股票 / 状态 / 日期 / 价格（含区间）/ nanoId 全清（排序与已删除开关不动），已完成恢复默认隐藏 */
   function resetFilters() {
@@ -352,13 +359,14 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     setHideDone(true)
   }
 
-  /** 排序后的可见列表（S3：行号 / 买入日期 / 卖出日期 / 盈利，各升降一档） */
+  /** 排序后的可见列表（S3：录入顺序 / 买入日期 / 卖出日期 / 盈利，各升降一档） */
   const visible = useMemo(() => {
     const arr = [...filtered]
     const profitOf = (r: Row) => r.sell?.profitCents ?? 0
+    const noOf = (r: Row) => recordNo.of(r.rec.sourceRow) ?? 0
     switch (sortBy) {
       case 'rowAsc':
-        return arr.sort((a, b) => a.rec.sourceRow - b.rec.sourceRow)
+        return arr.sort((a, b) => noOf(a) - noOf(b))
       case 'buyDateDesc':
         return arr.sort((a, b) => cmpDate(buyDateOf(a), buyDateOf(b), -1))
       case 'buyDateAsc':
@@ -372,9 +380,9 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       case 'profitAsc':
         return arr.sort((a, b) => profitOf(a) - profitOf(b))
       default:
-        return arr.sort((a, b) => b.rec.sourceRow - a.rec.sourceRow)
+        return arr.sort((a, b) => noOf(b) - noOf(a))
     }
-  }, [filtered, sortBy])
+  }, [filtered, sortBy, recordNo])
 
   const current = visible.find((r) => r.rec.sourceRow === openRow) ?? null
   const drawerOpen = current !== null
@@ -482,7 +490,8 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   }
 
   async function onDelete(row: number) {
-    if (!window.confirm(`把第 ${row} 行标记为删除？软删除，可恢复。`)) return
+    const n = recordNo.of(row)
+    if (!window.confirm(`把${n !== null ? `第 ${n} 笔` : `第 ${row} 行`}标记为删除？软删除，可恢复。`)) return
     setOpenRow(null)
     // V9.37：先让这一行滑出、高度收掉，再真删——否则列表会「啪」地跳一下
     setLeaving((s) => new Set(s).add(row))
@@ -493,12 +502,21 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       n.delete(row)
       return n
     })
-    notificationOpen({ message: `第 ${row} 行已删除`, description: '勾「显示已删除」可以恢复', type: 'info' })
+    notificationOpen({
+      message: `${recordNoLabelOf(row)}已删除`,
+      description: '勾「显示已删除」可以恢复',
+      type: 'info',
+    })
   }
 
   async function onRestore(row: number) {
     await restore(row)
-    notificationOpen({ message: `第 ${row} 行已恢复`, type: 'success' })
+    notificationOpen({ message: `${recordNoLabelOf(row)}已恢复`, type: 'success' })
+  }
+
+  function recordNoLabelOf(row: number): string {
+    const n = recordNo.of(row)
+    return n !== null ? `第 ${n} 笔` : `第 ${row} 行`
   }
 
   async function onAdd() {
@@ -510,7 +528,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       setFlashRow(row)
       window.setTimeout(() => setFlashRow((cur) => (cur === row ? null : cur)), 1800)
       notificationOpen({
-        message: `已新增第 ${row} 行`,
+        message: `已新增第 ${recordNo.total + 1} 笔`,
         description: form.kind === 'sell' && !form.buyPrice ? '先卖后买：之后可在明细里补买入信息' : undefined,
         type: 'success',
       })
@@ -520,10 +538,10 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   }
 
   function exportCsv() {
-    const head = ['行号', '来源', '股票', '买入日期', '买入价', '买入份额', '已卖', '剩余', '目标售价', '回补价', '卖出日期', '成交价', '实现盈利', '标记']
+    const head = ['序号', 'Excel行号', '股票', '买入日期', '买入价', '买入份额', '已卖', '剩余', '目标售价', '回补价', '卖出日期', '成交价', '实现盈利', '标记']
     const body = visible.map((r) => [
-      r.rec.sourceRow,
-      r.rec.origin === 'manual' ? '手动' : 'Excel',
+      recordNo.of(r.rec.sourceRow) ?? '',
+      r.rec.origin === 'excel' ? r.rec.sourceRow : '',
       r.rec.stockName,
       r.lot ? isoDate(r.lot.buyDate) : serialToIso(r.rec.buyDateSerial) ?? '',
       r.rec.buyPriceCents === null ? '' : (r.rec.buyPriceCents / 100).toFixed(2),
@@ -547,7 +565,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       <div className={`page-sticky trades-sticky${filtersHidden ? ' is-condensed' : ''}`} data-sticky="trades">
         <div className="page-title">
           <h2>明细</h2>
-          <p>{filtered.length} / {rows.length} 行</p>
+          <p>{filtered.length} / {rows.length} 笔</p>
         </div>
 
         <div className="trades-filters" hidden={filtersHidden}>
@@ -632,7 +650,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
           <div className="spacer" />
           <Button size="small" onClick={exportCsv}>导出 CSV</Button>
         </div>
-        {/* 排序平铺（V9.4）：像表头一样直接可见；同项单击反序，再点回默认「行号 高→低」 */}
+        {/* 排序平铺（V9.4）：像表头一样直接可见；同项单击反序，再点回默认「录入顺序 新→旧」 */}
         <div className="filter-chips sort-chips" role="group" aria-label="排序">
           {SORT_CHIPS.map((c) => {
             const active = sortBy === c.desc || sortBy === c.asc
@@ -731,7 +749,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
             <TradeItem
               key={r.rec.sourceRow}
               row={r}
-              nanoId={nano.rowToId.get(r.rec.sourceRow)}
+              no={recordNo.of(r.rec.sourceRow)}
               onClick={() => open(r)}
               extraTag={hedgeTag}
               anim={anim}
@@ -741,7 +759,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       )}
 
       <p className="tiny muted" style={{ textAlign: 'center' }}>
-        共 {visible.length} 行 · 合计盈利 {money(visible.reduce((a, r) => a + (r.sell?.profitCents ?? 0), 0))}
+        共 {visible.length} 笔 · 合计盈利 {money(visible.reduce((a, r) => a + (r.sell?.profitCents ?? 0), 0))}
         {hiddenStockCount > 0 && stockFilter === 'all' && ` · 已隐藏 ${hiddenStockCount} 只停用股票`}
       </p>
 
@@ -753,7 +771,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
         className="trades-edit-drawer"
         title={
           current
-            ? `${current.rec.stockName} · ${current.rec.origin === 'manual' ? '手动' : `第 ${current.rec.sourceRow} 行`} · #${nano.rowToId.get(current.rec.sourceRow)}`
+            ? `${current.rec.stockName} · ${recordNoLabelOf(current.rec.sourceRow)}`
             : ''
         }
         onClose={() => setOpenRow(null)}
@@ -786,6 +804,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
         {current && (
           <div className="stack">
             {editing ? (
+              <>
               <div className="form-grid">
                 {EDITABLE.map((f) => (
                   <label key={f.key}>
@@ -829,6 +848,8 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                   </p>
                 )}
               </div>
+              <LotMergeBinder key={`merge-edit-${current.rec.sourceRow}`} row={current.rec.sourceRow} />
+              </>
             ) : (
               <>
                 <div className="detail-kv">
@@ -881,8 +902,8 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                 {current.sell?.hedgedFromSellRow !== undefined && (
                   <p className="tiny muted" style={{ margin: '0 0 4px' }}>
                     {current.sell.hedgeClosed
-                      ? `已了结：本批次有 ${qty(current.sell.qty)} 股按第 ${current.sell.hedgedFromSellRow} 行裸卖的卖出价兑现了，份额不再回到待卖——亏损挂在「回本链」上等低位回血。`
-                      : `挂钩暂记：这是第 ${current.sell.hedgedFromSellRow} 行裸卖暂挂到本批次的份额；买回后这批份额按卖出价永久了结，不再复活。`}
+                      ? `已了结：本批次有 ${qty(current.sell.qty)} 股按${recordNoLabelOf(current.sell.hedgedFromSellRow)}裸卖的卖出价兑现了，份额不再回到待卖——亏损挂在「回本链」上等低位回血。`
+                      : `挂钩暂记：这是${recordNoLabelOf(current.sell.hedgedFromSellRow)}裸卖暂挂到本批次的份额；买回后这批份额按卖出价永久了结，不再复活。`}
                   </p>
                 )}
 
@@ -898,6 +919,9 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                     <Tag size="small" variant="soft">已回补</Tag>
                   )}
                   {current.sell?.sellBeforeBuy && <Tag size="small" variant="soft" color="app-teal">先卖后买</Tag>}
+                  {current.rec.origin === 'excel' && (
+                    <Tag size="small" variant="soft">Excel 第 {current.rec.sourceRow} 行</Tag>
+                  )}
                   {current.sell?.dateMissing && <Tag size="small" variant="soft" color="app-yellow">缺日期</Tag>}
                   {current.sell && current.sell.priceCents === null && <Tag size="small" variant="soft" color="app-red">缺价格</Tag>}
                   {current.rec.deletedAt && <Tag size="small" variant="soft" color="app-red">已删除</Tag>}
@@ -984,6 +1008,9 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                   </div>
                 )}
 
+                {/* V9.45：同股同买入价、还没卖完的批次可以合并——只影响挂单提醒的显示 */}
+                <LotMergeBinder key={`merge-${current.rec.sourceRow}`} row={current.rec.sourceRow} />
+
                 {/* V9.26 先卖后买挂钩：裸卖未回补时人工指定未完成买单（V9.30 面板抽成 HedgeBinder） */}
                 {current.rec.buyPriceCents === null && (current.rec.soldQty ?? 0) > 0 && (
                   <div className="divider-top" data-testid="hedge-section">
@@ -1003,7 +1030,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                       ? [repairByAnchor.get(current.rec.sourceRow)!]
                       : repairBySell.get(current.rec.sourceRow) ?? []
                     ).map((c) => (
-                      <RepairChainCard key={c.id} chain={c} />
+                      <RepairChainCard key={c.id} chain={c} rowLabel={recordNoLabelOf} />
                     ))}
                   </div>
                 )}
@@ -1187,7 +1214,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
               </>
             )}
             <p className="tiny muted" style={{ margin: 0 }}>
-              手动新增的行号从 100000 起，不打乱 Excel 行号回溯。
+              新增后和导入的数据完全同构，按录入顺序编号；Excel 行号只在抽屉里做追溯。
             </p>
           </div>
         </div>
