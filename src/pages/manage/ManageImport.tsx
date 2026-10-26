@@ -115,8 +115,9 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
         {/*
          * V9.52 移动端修复：原来用组件库的 Upload（隐藏 input + 程序 click + 只认扩展名的 accept），
          * iOS / 微信 WebView 里点开选择器后文件全被过滤成灰的，等于「无法选择文件」。
-         * 改成原生 <label> + <input type="file">（label 激活最可靠），accept 补上 MIME 与 octet-stream，
-         * 桌面端的拖拽仍然保留。
+         * V9.52.1：label htmlFor + display:none 的 input 在部分手机 WebView 里点击无反应，
+         * 改成透明 input 直接铺满整个区域（opacity:0 + absolute inset:0），手指点的就是原生 input，
+         * 不依赖 label 转发，也不依赖任何 JS click()。桌面端拖拽保留（事件冒泡到 label）。
          */}
         <label
           htmlFor="import-file-input"
@@ -129,7 +130,7 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
             const f = e.dataTransfer?.files?.[0]
             if (f) void handleFile(f)
           }}
-          style={{ display: 'block', cursor: 'pointer' }}
+          style={{ display: 'block', cursor: 'pointer', position: 'relative' }}
         >
           <input
             id="import-file-input"
@@ -137,7 +138,16 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
             type="file"
             accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv,application/octet-stream"
             disabled={busy}
-            style={{ display: 'none' }}
+            style={{
+              position: 'absolute',
+              inset: 0,
+              width: '100%',
+              height: '100%',
+              opacity: 0,
+              cursor: 'pointer',
+              // busy 时让整个区域不可点；正常时必须吃满整块区域接住 tap
+              pointerEvents: busy ? 'none' : 'auto',
+            }}
             onChange={(e) => {
               const f = e.target.files?.[0]
               // 同一个文件连选两次也要触发 change
@@ -145,7 +155,8 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
               if (f) void handleFile(f)
             }}
           />
-          <div className="empty-box" style={{ padding: '10px 0' }}>
+          {/* 内容层不抢事件，tap/drop 都落在铺满的 input 上 */}
+          <div className="empty-box" style={{ padding: '10px 0', pointerEvents: 'none' }}>
             <strong>
               <IconUpload /> 选一个 Excel / CSV
             </strong>

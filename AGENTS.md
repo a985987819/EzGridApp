@@ -138,9 +138,12 @@ schemaVersion 11（V9.50 加 buyTargets；V9.49 加行级成交来源；V9.46 �
   `[data-sandbox-row]` 不受影响。
 - **导入不要用组件库的 `Upload`（V9.52）**：它内部是隐藏 input + 程序 `click()` + 只写扩展名的
   `accept`，iOS / 微信 WebView 里点开选择器后文件会被全部过滤成灰的，表现就是「无法选择文件」。
-  改用原生 `<label htmlFor>` + `<input type="file" id="import-file-input">`（label 激活最可靠），
-  `accept` 同时写上 MIME 与 `application/octet-stream`，并在 onChange 里清空 value 以便重复选同一文件；
-  桌面端的拖拽（`onDrop`）保留。e2e 仍用 `input[type="file"]` 塞 fixture。
+  **V9.52.1 进一步**：`<label htmlFor>` + `display:none` 的 input 在部分手机 WebView 里点击仍无反应，
+  最终形态是**透明 input 直接铺满整个触发区域**（`position:absolute; inset:0; opacity:0`，label 只作
+  `position:relative` 容器、内容层 `pointer-events:none`）——手指点的就是原生 input 本身，不依赖
+  label 转发、不依赖任何 JS `click()`。`accept` 同时写上 MIME 与 `application/octet-stream`，onChange
+  里清空 value 以便重复选同一文件；桌面端拖拽（`onDrop` 冒泡到 label）保留。e2e 仍用
+  `input[type="file"]` 塞 fixture（透明铺满不影响 `DOM.setFileInputFiles`）。
 
 ## 设计决定记录（2026-10-24 用户拍板，接手 agent 不要擅自推翻）
 
