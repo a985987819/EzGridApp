@@ -238,14 +238,33 @@ export function OrdersPage({
     finally{setSavingTrade(false)}
   }
   const buySuggestionLine=(r:BuySuggestion)=>(
-    <div key={r.key} className="line wrap-row pending-buy" data-testid="buy-suggestion" data-row={r.sources[0]?.row} data-price={r.priceCents}>
+    <div key={r.key} className="line wrap-row pending-buy" data-testid="buy-suggestion" data-row={r.sources[0]?.row} data-price={r.priceCents} data-edited={r.edited ? '1' : undefined}>
       <div className="left"><div className="t1 num">买 {price(r.priceCents)} × {qty(r.qty)}</div>
+        {r.edited && (
+          <div className="tag-row" style={{ marginTop: 4 }}>
+            <Tag size="small" variant="soft" color="purple">已改单</Tag>
+            <span className="tiny muted">只改这一条推荐，来源没动</span>
+          </div>
+        )}
         <details><summary className="tiny muted">{r.sources.length} 笔来源 · 查看明细</summary>
           {r.sources.map((v)=><div key={v.kind+v.row} className="tiny"><Button type="text" size="small" onClick={()=>goTrades({id:idFor(v.row),stock:r.stockName})}>{recordNoLabel(v.row,recordNo)}</Button> · {v.kind==='next'?'下一轮':'待回补'} {qty(v.qty)} 股</div>)}
         </details>
       </div>
       <div className="right num">{money(r.amountCents)}</div>
-      <Button size="small" data-action="suggestion-buy" onClick={()=>{const source=r.sources[0];const order=source?.kind==='order'?orders.find((o)=>o.id===source.id):null;if(r.sources.length===1&&order)openExec(order,{qty:r.qty,priceCents:r.priceCents});else openTrade('buy',r)}}>记成交</Button>
+      <div className="acts">
+        {/* V9.53：改这一条推荐挂单（价格/数量），保存后行与记成交默认值都按改后的走，但不成交 */}
+        <Button
+          size="small"
+          data-action="suggestion-plan"
+          onClick={stopWith(() => {
+            const plan = plans.find((p) => p.kind === 'buy' && p.refId === r.key)
+            openPlan('buy', r.key, `买 ${r.stockName}`, r.priceCents, r.qty, plan?.priceCents, plan?.qty)
+          })}
+        >
+          改单
+        </Button>
+        <Button size="small" data-action="suggestion-buy" onClick={()=>{const source=r.sources[0];const order=source?.kind==='order'?orders.find((o)=>o.id===source.id):null;if(r.sources.length===1&&order)openExec(order,{qty:r.qty,priceCents:r.priceCents});else openTrade('buy',r)}}>记成交</Button>
+      </div>
     </div>
   )
   const levelToday = range ? nextRound.filter((r) => within(r.priceCents)) : []
@@ -371,7 +390,7 @@ export function OrdersPage({
       if (!Number.isInteger(q) || q <= 0) throw new Error('计划量要填正整数')
       await setPlan(planRef.kind, planRef.refId, p, q)
       setPlanRef(null)
-      notificationOpen({ message: '计划已保存', description: '只影响显示与导出，不动真实成交', type: 'success' })
+      notificationOpen({ message: '已改单', description: '只改这一条推荐的显示与记成交默认值，来源没动', type: 'success' })
     } catch (e) {
       notificationOpen({ message: '保存失败', description: e instanceof Error ? e.message : String(e), type: 'error' })
     }
@@ -938,9 +957,10 @@ export function OrdersPage({
                                   {!b.split && o && (
                                     <Button
                                       size="small"
+                                      data-action="buy-plan"
                                       onClick={stopWith(() => openPlan('buy', o.id, `买 ${o.stockName}`, o.rebuyPriceCents, o.remainingQty, o.planPriceCents, o.planQty))}
                                     >
-                                      计划
+                                      改单
                                     </Button>
                                   )}
                                   <Button
@@ -1024,6 +1044,7 @@ export function OrdersPage({
                               ) : (
                                 <><Button size="small" data-action="sell-execution" onClick={stopWith(()=>openTrade('sell',r))}>记卖出</Button><Button
                                   size="small"
+                                  data-action="sell-plan"
                                   onClick={stopWith(() =>
                                     openPlan(
                                       'sell',
@@ -1036,7 +1057,7 @@ export function OrdersPage({
                                     ),
                                   )}
                                 >
-                                  计划
+                                  改单
                                 </Button></>
                               )}
                             </div>
@@ -1305,12 +1326,20 @@ export function OrdersPage({
           <label><span>实际成交量</span><Input value={tradeQty} onChange={(e)=>setTradeQty(e.target.value)} data-field="tradeQty" /></label>
           <label><span>成交日期</span><DateField value={tradeDate} onChange={setTradeDate} /></label>
         </div>
-        <p className="tiny muted">同价来源按列表顺序分配，部分成交仅扣减本次成交的数量。</p>
+        <p className="tiny muted">
+          {trade && (
+            <>
+              这条挂单 {qty(trade.buy ? trade.buy.qty : trade.sell!.qty)} 股：成交量填小一点就是部分成交，剩下的继续挂着。
+              <br />
+            </>
+          )}
+          同价来源按列表顺序分配，部分成交仅扣减本次成交的数量。
+        </p>
       </Modal>
 
       <Modal
         open={planRef !== null}
-        title="挂单计划"
+        title="改这一笔挂单"
         typewriter={false}
         onClose={() => setPlanRef(null)}
         footer={
@@ -1323,8 +1352,10 @@ export function OrdersPage({
         {planRef && (
           <div className="stack tight">
             <p className="hint-block" style={{ margin: 0 }}>
-              {planRef.title} · 建议 {price(planRef.suggestPrice)}。计划价只用于显示和导出，
-              <b>不改真实盈亏与守恒式；今日挂单按计划价校验区间</b>。
+              {planRef.title} · 建议 {price(planRef.suggestPrice)}。改单只硬改这一条推荐：
+              <b>计划价只用于显示和导出</b>，不回写明细、不改待买/待卖来源，也不动真实盈亏与守恒式；
+              今日挂单按计划价校验区间。改完点「记成交 / 记卖出」会默认用改后的价和量，
+              数量还能再往下改——那就是部分成交。
             </p>
             <div className="form-grid">
               <label>
@@ -1343,11 +1374,11 @@ export function OrdersPage({
                 if (!planRef) return
                 void clearPlan(planRef.refId).then(() => {
                   setPlanRef(null)
-                  notificationOpen({ message: '已清除计划', type: 'info' })
+                  notificationOpen({ message: '已恢复建议价量', type: 'info' })
                 })
               }}
             >
-              清除这个计划
+              清除改单（恢复建议）
             </Button>
           </div>
         )}

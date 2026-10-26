@@ -1531,8 +1531,8 @@ try {
   check('解除手工关联后仍按卖价自动汇总', split.n === 1 && split.merged === 1, splitRaw)
   check('解除手工关联不会改变1600股汇总量', split.texts.some((t)=>t.includes('1,600')), splitRaw)
 
-  console.log('\n[8.2] 挂单计划价')
-  check('点第一个「计划」', await clickByText('button', '计划'))
+  console.log('\n[8.2] 挂单改单（计划价量）')
+  check('点第一个「改单」', await clickByText('[data-action="sell-plan"]', '改单'))
   await sleep(500)
   check('计划弹窗出现', (await bodyText()).includes('计划价只用于显示和导出'))
   const planDefaults = await evaluate(`({
@@ -1545,7 +1545,7 @@ try {
   await sleep(700)
   const defaultPlan = (await readTable('plans')).find((p) => p.priceCents === Math.round(Number(planDefaults.price) * 100) && p.qty === Number(planDefaults.qty))
   check('计划实际采用默认价量', Boolean(defaultPlan), JSON.stringify(planDefaults))
-  await clickByText('button', '计划')
+  await clickByText('[data-action="sell-plan"]', '改单')
   await sleep(400)
   await setInput('input[data-field="planPrice"]', '7.95')
   await setInput('input[data-field="planQty"]', '300')

@@ -11,6 +11,8 @@ export interface BuySuggestion {
   qty: number
   amountCents: number
   sources: BuySource[]
+  /** V9.53：这一条推荐被人工「改单」过（计划价/计划量只改显示，不动来源） */
+  edited?: boolean
 }
 export function consumedNextRounds(records: readonly RawRecord[]): Map<number,number> {
   const out=new Map<number,number>()
@@ -37,7 +39,22 @@ export function buildBuySuggestions(splits: readonly BuySplit[], next: readonly 
     // next 单行通常是一笔；合并来源的额度由 store 根据最新账本再次分配。
     for(const row of n.rows){if(left<=0)break;const qty=Math.min(left,n.sourceQty?.[row]??n.qty);add(n.stockName,plan?.priceCents??n.priceCents,{kind:'next',id:n.key,row,qty});left-=qty}
   }
-  return [...rows.values()].sort((a,b)=>a.priceCents-b.priceCents)
+  const out=[...rows.values()]
+  /**
+   * V9.53 硬改推荐行：用户直接改「这一条推荐挂单」的价格/数量，但不许改推荐来源。
+   * 计划挂在建议行身份 `buy:股票:派生价`（行 key 本身）上，只影响这一行的显示、
+   * 区间判断、复制/CSV 与记成交默认值——不写 records、不改 orders，也不进任何账务计算。
+   * 数量只能往下夹，避免显示一个记不进去的量。
+   */
+  for(const r of out) {
+    const plan=plans.find((p)=>p.kind==='buy'&&p.refId===r.key)
+    if(!plan)continue
+    r.qty=Math.min(r.qty,plan.qty)
+    r.priceCents=plan.priceCents
+    r.amountCents=plan.priceCents*r.qty
+    r.edited=true
+  }
+  return out.filter((r)=>r.qty>0).sort((a,b)=>a.priceCents-b.priceCents)
 }
 /** 明细是按行聚合的视图，必须累计全部成交，不能 Map 覆盖上一笔。 */
 export function sellsByRecord(ledger: Ledger) {

@@ -158,6 +158,16 @@ describe('挂单建议回归',()=>{
   const rows=mergeTargetRows({...l,merges:[]})
   expect(rows).toHaveLength(2);expect(new Set(rows.map((r)=>r.key)).size).toBe(2)
  })
+ it('V9.53 推荐买单可以硬改价量，来源不变且数量不放大',()=>{
+  const l=buildLedger([sell(9,700,500)],[stock])
+  const base=buildBuySuggestions(l.buySplits,[],[])
+  expect(base[0]).toMatchObject({priceCents:500,qty:700})
+  const edited=buildBuySuggestions(l.buySplits,[],[{id:'p',refId:base[0].key,kind:'buy',priceCents:450,qty:200,at:1}])
+  expect(edited[0]).toMatchObject({priceCents:450,qty:200,amountCents:90000,edited:true})
+  expect(edited[0].sources).toEqual(base[0].sources)
+  const bigger=buildBuySuggestions(l.buySplits,[],[{id:'p',refId:base[0].key,kind:'buy',priceCents:450,qty:900,at:1}])
+  expect(bigger[0].qty).toBe(700)
+ })
 })
 
 describe('V9.50 卖单拆买',()=>{
