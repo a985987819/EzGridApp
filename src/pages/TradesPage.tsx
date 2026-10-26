@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Button, Card, Drawer, Input, Modal, Switch, Tag, notificationOpen } from 'animal-island-ui'
 import { Select } from '../ui/Select'
 import { useApp } from '../store/useApp'
@@ -17,6 +17,7 @@ import { centsToYuan, toCents } from '../domain/money'
 import { downloadText, toCsv } from '../ui/csv'
 import { useFlashOnAppear } from '../ui/motion'
 import { useKeyboardInset } from '../ui/viewport'
+import { useScrollHold } from '../ui/scrollHold'
 import { DateField } from '../ui/DateField'
 import { TradeItem, buyDateOf, isDone, sellDateOf, type TradeRow } from '../components/TradeItem'
 import { HedgeBinder, HedgeSheet } from '../components/HedgeBinder'
@@ -205,10 +206,8 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     return () => window.removeEventListener('scroll', onScroll)
   }, [])
   const [openRow, setOpenRow] = useState<number | null>(null)
-  // V9.40：Drawer 打开时库会把 body 锁成 overflow:hidden，文档高度塌回一屏、scrollY 被清零；
-  // 打开前记下位置，关掉后补回去——否则编辑完一笔要从头往下划才能找回这一行。
-  const drawerScrollY = useRef(0)
-  const drawerWasOpen = useRef(false)
+  // V9.40/V9.55：弹层打开时库会把 body 锁成 overflow:hidden，文档高度塌回一屏、scrollY 被清零；
+  // 打开前记下位置、全关掉后补回去——否则编辑完一笔要从头往下划才能找回这一行。
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState<Record<EditableKey, string>>(BLANK_DRAFT)
   const [adding, setAdding] = useState(false)
@@ -447,18 +446,6 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
 
   // V9.40 输入法避让：抽屉打开期间把键盘高度写进 CSS 变量（面板挂 body 上，不会自己缩）
   useKeyboardInset(drawerOpen)
-  useEffect(() => {
-    if (drawerOpen) {
-      drawerWasOpen.current = true
-      return
-    }
-    if (!drawerWasOpen.current) return
-    drawerWasOpen.current = false
-    const y = drawerScrollY.current
-    // 等 Drawer 的 overflow 清理跑完、文档高度恢复后再滚，否则滚了也会被夹回 0
-    const raf = requestAnimationFrame(() => window.scrollTo(0, y))
-    return () => cancelAnimationFrame(raf)
-  }, [drawerOpen])
 
   // ---------- V9.37 动效状态：新增落位 / 删除滑出 / 刚完成洗色 ----------
   /** 刚新增的那一行：弹入 + 微光，1.8s 后自动摘掉（「弹窗收成一行」的观感由它承担） */
@@ -487,6 +474,8 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   }, [ledger.orders, records])
   /** 点标签打开的「裸卖待挂钩」弹层（null = 关着） */
   const [hedgeRow, setHedgeRow] = useState<number | null>(null)
+  // V9.55：抽屉 / 新增弹窗 / 挂钩弹层统一保滚动位置（原来只护了抽屉）
+  useScrollHold(drawerOpen || adding || hedgeRow !== null)
 
   /** V9.46 回本链：高位批次行号 → 那条链（用于行上标签 + 抽屉里的进度卡） */
   const repairByAnchor = useMemo(
@@ -525,7 +514,6 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   }, [ledger.repairChains])
 
   function open(r: Row) {
-    drawerScrollY.current = window.scrollY
     const next = { ...BLANK_DRAFT }
     for (const f of EDITABLE) next[f.key] = fieldText(r.rec, f.key)
     setDraft(next)

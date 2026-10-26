@@ -561,6 +561,10 @@ export function buildLedger(
         !fullyHedgedRows.has(rec.sourceRow),
       planPriceCents: planByRef.get(orderId)?.priceCents ?? null,
       planQty: planByRef.get(orderId)?.qty ?? null,
+      // V9.54：先卖后买（卖出日早于/等于买入日，或压根没有买入批次的裸卖）——这笔待买
+      // 欠的股是真欠，挂单页把它排最前并标出来。ownLotCoverQty > 0 说明这行的买入批次
+      // 是在卖出之后（同日也只能是先卖），同样算先卖后买。
+      sellFirst: sell.sellBeforeBuy || (sell.ownLotCoverQty ?? 0) > 0,
       rewardSourceOrderIds: [],
     })
   }
@@ -785,6 +789,7 @@ function buildBuySplits(
         executedQty: o.execQty,
         split: false,
         targetId: null,
+        sellFirst: o.sellFirst === true,
       })
       continue
     }
@@ -853,6 +858,7 @@ function buildBuySplits(
         executedQty: r.exec,
         split: true,
         targetId: r.t.id,
+        sellFirst: o.sellFirst === true,
       })
     }
   }

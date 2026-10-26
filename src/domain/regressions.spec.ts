@@ -170,6 +170,85 @@ describe('挂单建议回归',()=>{
  })
 })
 
+describe('V9.54 先卖后买的待买排最前',()=>{
+ it('裸卖 → 待买标先卖后买（批次、订单、推荐三层都带标记）',()=>{
+  const l=buildLedger([sell(9,700,500)],[stock])
+  expect(l.sells[0].sellBeforeBuy).toBe(true)
+  expect(l.orders[0].sellFirst).toBe(true)
+  expect(l.buySplits[0].sellFirst).toBe(true)
+  expect(buildBuySuggestions(l.buySplits,[],[])[0].sellFirst).toBe(true)
+ })
+ it('先买后卖（卖出日晚于买入日）走 P 列，不算先卖后买',()=>{
+  const l=buildLedger([rec(3,{buyPriceCents:500,buyQtyRaw:500,targetPriceCents:700,soldQty:500,earlyBuyPriceCents:450})],[stock])
+  expect(l.orders).toHaveLength(1)
+  expect(l.orders[0].sellFirst).toBe(false)
+ })
+ it('卖出日早于买入日的同一行，没盖满的那截也算先卖后买',()=>{
+  // 10-21 卖 500、10-22 买回 300：盖住 300，剩下 200 才挂单（V9.47.1 口径）
+  const l=buildLedger([rec(2,{buyPriceCents:500,buyDateSerial:46022,buyQtyRaw:300,targetPriceCents:700,soldQty:500,sellDateSerial:46021,earlyBuyPriceCents:450})],[stock])
+  expect(l.orders).toHaveLength(1)
+  expect(l.orders[0]).toMatchObject({baseQty:200,rebuyPriceCents:450,sellFirst:true})
+ })
+ it('排序优先于价格：先卖后买那档排最前，其余仍按价升序',()=>{
+  // 先买后卖 450（普通回补） vs 裸卖 500（先卖后买）：500 要排在 450 前面
+  const normal=rec(3,{buyPriceCents:500,buyQtyRaw:500,targetPriceCents:700,soldQty:500,earlyBuyPriceCents:450})
+  const l=buildLedger([buy(2,1000,500),normal,sell(9,700,500)],[stock])
+  expect(l.orders.map((o)=>[o.rebuyPriceCents,o.sellFirst===true])).toEqual([[450,false],[500,true]])
+  const board=buildBuySuggestions(l.buySplits,[],[])
+  expect(board.map((r)=>[r.priceCents,r.sellFirst])).toEqual([[500,true],[450,false]])
+ })
+ it('同价合并里有先卖后买来源 → 整条按先卖后买排/标',()=>{
+  // 裸卖 9（P 500）+ 先买后卖 3 的 P 也是 500 → 合成一条，带先卖后买标记
+  const samePrice=rec(3,{buyPriceCents:1000,buyQtyRaw:500,targetPriceCents:1000,soldQty:500,earlyBuyPriceCents:500})
+  const l=buildLedger([samePrice,sell(9,700,500)],[stock])
+  const board=buildBuySuggestions(l.buySplits,[],[])
+  expect(board).toHaveLength(1)
+  expect(board[0]).toMatchObject({priceCents:500,sellFirst:true})
+  expect(board[0].sources.map((s)=>s.kind==='order'&&s.sellFirst===true)).toEqual([false,true])
+ })
+})
+
+describe('V9.55 改单撞价后重新合并',()=>{
+ /** 两个不同派生价的待买：450（先买后卖走 P 列）+ 500（裸卖）；卖出都不赚钱 → 没有组池奖励干扰数量 */
+ const twoRows=()=>buildLedger(
+   [
+     rec(3,{buyPriceCents:1000,buyQtyRaw:500,targetPriceCents:1000,soldQty:500,earlyBuyPriceCents:450}),
+     rec(9,{buyDateSerial:null,targetPriceCents:500,soldQty:500,earlyBuyPriceCents:500}),
+   ],
+   [stock],
+ )
+ it('两条待买改到同一个价 → 合成一条，数量相加、来源分开留着',()=>{
+  const l=twoRows()
+  expect(buildBuySuggestions(l.buySplits,[],[])).toHaveLength(2)
+  const plans=[{id:'p1',refId:'buy:T:450',kind:'buy' as const,priceCents:500,qty:500,at:1}]
+  const board=buildBuySuggestions(l.buySplits,[],plans)
+  expect(board).toHaveLength(1)
+  expect(board[0]).toMatchObject({priceCents:500,qty:1000,edited:true})
+  expect(board[0].sources).toHaveLength(2)
+  expect(board[0].members?.map((m)=>m.key)).toEqual(['buy:T:450','buy:T:500'])
+ })
+ it('合并行再改单：两份各挂一份计划，合计正好是填的量（不再拆回两行）',()=>{
+  const l=twoRows()
+  /**
+   * 页面里的写回就是「每条原来的身份一份计划、同一个价、数量按份额分」，
+   * 计划表本身就是每个 refId 一条（`plan:${refId}` 覆盖写），所以这里就是终态。
+   */
+  const plans=[
+   {id:'p2',refId:'buy:T:450',kind:'buy' as const,priceCents:450,qty:250,at:2},
+   {id:'p3',refId:'buy:T:500',kind:'buy' as const,priceCents:450,qty:250,at:3},
+  ]
+  const board=buildBuySuggestions(l.buySplits,[],plans)
+  expect(board).toHaveLength(1)
+  expect(board[0]).toMatchObject({priceCents:450,qty:500})
+  expect(board[0].sources).toHaveLength(2)
+ })
+ it('清除改单（两份计划都删掉）→ 又回到两条各自的价格',()=>{
+  const l=twoRows()
+  const board=buildBuySuggestions(l.buySplits,[],[])
+  expect(board.map((r)=>[r.priceCents,r.qty])).toEqual([[500,500],[450,500]])
+ })
+})
+
 describe('V9.50 卖单拆买',()=>{
  it('拆几档就挂几档，成交按档位顺序冲抵',()=>{
   const targets=[{id:'bt1',sellRow:9,priceCents:600,qty:400,at:1},{id:'bt2',sellRow:9,priceCents:500,qty:600,at:2}]

@@ -1558,6 +1558,21 @@ try {
   const orderShot = await send('Page.captureScreenshot', { format: 'png' })
   writeFileSync(join(OUT, 'mobile-orders-confirmed.png'), Buffer.from(orderShot.data, 'base64'))
 
+  // V9.55：所有编辑弹层都不许改变页面滚动位置（库把 body 锁成 overflow:hidden 会把 scrollY 清零）
+  await evaluate(`window.scrollTo(0, 600)`)
+  await sleep(350)
+  const planScrollBefore = await evaluate('window.scrollY')
+  await clickByText('[data-action="sell-plan"]', '改单')
+  await sleep(450)
+  const planScrollOpen = await evaluate('window.scrollY')
+  await clickByText('button', '取消')
+  await sleep(900)
+  const planScrollAfter = await evaluate('window.scrollY')
+  console.log('  滚动:', { planScrollBefore, planScrollOpen, planScrollAfter })
+  check('改单弹窗关掉后回到原来的滚动位置', planScrollBefore > 100 && Math.abs(planScrollAfter - planScrollBefore) <= 4, `${planScrollBefore} → ${planScrollAfter}`)
+  await evaluate(`window.scrollTo(0, 0)`)
+  await sleep(300)
+
   console.log('\n[8.5] 记回补成交 → 敞口减少 → 撤销')
   check('点第一笔回补的「记成交」', await clickByText('[data-action="rebuy-execution"]', '记成交'))
   await sleep(600)

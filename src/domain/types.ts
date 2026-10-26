@@ -207,6 +207,8 @@ export interface BuySplit {
   split: boolean
   /** 手动拆分段对应的 buyTargets id（可删）；整单为 null */
   targetId: string | null
+  /** V9.54：这一档来自「先卖后买」的卖单（卖出日 ≤ 买入日 / 裸卖），挂单页排最前 */
+  sellFirst?: boolean
 }
 
 /**
@@ -401,6 +403,11 @@ export interface RebuyOrder {
   /** planPrice/planQty 只在挂单页改，不动真实成交（P8） */
   planPriceCents?: number | null
   planQty?: number | null
+  /**
+   * V9.54：这笔待买属于「先卖后买」——卖出日在买入日之前（同日按 T+1 也只能是先卖后买），
+   * 或者这行根本没有买入批次（裸卖）。挂单页把它排在最前并标出来（欠的股是真欠）。
+   */
+  sellFirst?: boolean
 }
 
 export interface GroupPool {

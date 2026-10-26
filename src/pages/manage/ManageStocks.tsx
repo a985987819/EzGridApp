@@ -9,6 +9,7 @@ import { inputOrDefault } from '../../domain/formDefaults'
 import type { PriceLimitType } from '../../domain/limit'
 import type { StockConfig } from '../../domain/types'
 import { IconGrip } from '../../ui/icons'
+import { useScrollHold } from '../../ui/scrollHold'
 
 const LIMITS: { key: PriceLimitType; label: string }[] = [
   { key: 'main_10', label: '主板 10%' },
@@ -32,6 +33,8 @@ export function ManageStocks() {
   const list = ids.map((id) => byId.get(id)).filter((s): s is StockConfig => Boolean(s))
 
   const [adding, setAdding] = useState(false)
+  // V9.55：新增股票弹窗关掉后回到原来的滚动位置（别把整页滚回顶部）
+  useScrollHold(adding)
   const [newName, setNewName] = useState('')
   const [newInterval, setNewInterval] = useState('0.57')
 

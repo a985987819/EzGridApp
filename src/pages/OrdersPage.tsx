@@ -19,6 +19,7 @@ import { downloadText, toCsv } from '../ui/csv'
 import { useFlashOnAppear } from '../ui/motion'
 import { todayIso, money, price, qty, signedMoney, tone } from '../ui/format'
 import { DateField } from '../ui/DateField'
+import { useScrollHold } from '../ui/scrollHold'
 import type { TradesQuery } from '../ui/nav'
 import type { BuySplit, RebuyOrder } from '../domain/types'
 import { HedgeSheet } from '../components/HedgeBinder'
@@ -145,6 +146,14 @@ export function OrdersPage({
   const justRebought = useFlashOnAppear(
     useMemo(() => orders.filter((o) => o.execQty > 0).map((o) => o.sourceRow), [orders]),
   )
+  /**
+   * V9.54：待买逐笔列表也把先卖后买排最前（欠的股是真欠，先看它）。
+   * sort 是稳定的，同组内保持账本原来的顺序，不用另设排序。
+   */
+  const orderedRebuys = useMemo(
+    () => [...orders].sort((a, b) => Number(b.sellFirst === true) - Number(a.sellFirst === true)),
+    [orders],
+  )
   const summary = view.byStock.find((s) => s.stockName === effectiveStock)
   /** 模拟条目按预览行号索引（300000 段），用来标记「这是沙盒里的，不是真台账」 */
   const sandboxByRow = useMemo(() => {
@@ -183,7 +192,10 @@ export function OrdersPage({
 
   const buySplits = view.buySplits
   const orderById = new Map(orders.map((o) => [o.id, o]))
-  const buyToday = range ? buySplits.filter((b) => b.qty > 0 && within(b.priceCents)) : []
+  // V9.54：沙盒预览的档位也把先卖后买排最前（与推荐挂单同一口径）
+  const buyToday = range
+    ? buySplits.filter((b) => b.qty > 0 && within(b.priceCents)).sort((a, b) => Number(b.sellFirst === true) - Number(a.sellFirst === true))
+    : []
   const sellToday = range ? targetRows.filter((r) => within(r.priceCents)) : []
   const buyOut = range ? buySplits.filter((b) => b.qty > 0 && !within(b.priceCents)).length : 0
   const sellOut = range ? targetRows.filter((r) => !within(r.priceCents)).length : 0
@@ -243,16 +255,23 @@ export function OrdersPage({
    */
   const execQtyOf=(b:BuySplit,o?:RebuyOrder|null)=>o?.planQty!=null?Math.min(o.planQty,b.qty):b.qty
   const buySuggestionLine=(r:BuySuggestion)=>(
-    <div key={r.key} className="line wrap-row pending-buy" data-testid="buy-suggestion" data-row={r.sources[0]?.row} data-price={r.priceCents} data-edited={r.edited ? '1' : undefined}>
+    <div key={r.key} className="line wrap-row pending-buy" data-testid="buy-suggestion" data-row={r.sources[0]?.row} data-price={r.priceCents} data-edited={r.edited ? '1' : undefined} data-sell-first={r.sellFirst ? '1' : undefined}>
       <div className="left"><div className="t1 num">买 {price(r.priceCents)} × {qty(r.qty)}</div>
-        {r.edited && (
+        {/* V9.54：先卖后买的待买欠的是真股，标出来（排序也排在前面，见 domain/suggestions） */}
+        {(r.sellFirst || r.edited) && (
           <div className="tag-row" style={{ marginTop: 4 }}>
-            <Tag size="small" variant="soft" color="purple">已改单</Tag>
-            <span className="tiny muted">只改这一条推荐，来源没动</span>
+            {r.sellFirst && <Tag size="small" variant="soft" color="app-teal" data-testid="suggestion-sell-first">先卖后买</Tag>}
+            {r.edited && (
+              <>
+                <Tag size="small" variant="soft" color="purple">已改单</Tag>
+                <span className="tiny muted">只改这一条推荐，来源没动</span>
+              </>
+            )}
           </div>
         )}
-        <details><summary className="tiny muted">{r.sources.length} 笔来源 · 查看明细</summary>
-          {r.sources.map((v)=><div key={v.kind+v.row} className="tiny"><Button type="text" size="small" onClick={()=>goTrades({id:idFor(v.row),stock:r.stockName})}>{recordNoLabel(v.row,recordNo)}</Button> · {v.kind==='next'?'下一轮':'待回补'} {qty(v.qty)} 股</div>)}
+        {/* V9.54：推荐挂单默认展开来源——点开才知道这档是从哪几笔欠出来的 */}
+        <details open><summary className="tiny muted">{r.sources.length} 笔来源 · 查看明细</summary>
+          {r.sources.map((v)=><div key={v.kind+v.row} className="tiny"><Button type="text" size="small" onClick={()=>goTrades({id:idFor(v.row),stock:r.stockName})}>{recordNoLabel(v.row,recordNo)}</Button> · {v.kind==='next'?'下一轮':(v.sellFirst?'先卖后买':'待回补')} {qty(v.qty)} 股</div>)}
         </details>
       </div>
       <div className="right num">{money(r.amountCents)}</div>
@@ -263,7 +282,7 @@ export function OrdersPage({
           data-action="suggestion-plan"
           onClick={stopWith(() => {
             const plan = plans.find((p) => p.kind === 'buy' && p.refId === r.key)
-            openPlan('buy', r.key, `买 ${r.stockName}`, r.priceCents, r.qty, plan?.priceCents, plan?.qty)
+            openPlan('buy', r.key, `买 ${r.stockName}`, r.priceCents, r.qty, plan?.priceCents, plan?.qty, r.members)
           })}
         >
           改单
@@ -351,6 +370,8 @@ export function OrdersPage({
     title: string
     suggestPrice: number
     suggestQty: number
+    /** V9.55：这条推荐是改单撞价合并出来的，改单/清除要按份写回（见 savePlan） */
+    members?: { key: string; qty: number }[]
   } | null>(null)
   const [planPrice, setPlanPrice] = useState('')
   const [planQty, setPlanQty] = useState('')
@@ -369,6 +390,13 @@ export function OrdersPage({
   const [sbQty, setSbQty] = useState('100')
   const [sbExtra, setSbExtra] = useState('')
   const [committing, setCommitting] = useState<string | null>(null)
+  /**
+   * V9.55：这一页所有编辑弹层（记成交 / 改单 / 记回补 / 沙盒 / 挂钩）合并成一个开关，
+   * 关掉后把页面滚回原处——不然改完一笔要从顶上重新往下找。
+   */
+  useScrollHold(
+    trade !== null || planRef !== null || execOrder !== null || sbKind !== null || hedgeRow !== null || sandboxHedgeRow !== null,
+  )
 
   const sbDefaults = {
     date: todayIso(),
@@ -380,8 +408,17 @@ export function OrdersPage({
   const sbDerivedExtra = sbEffectivePrice === null || sbStep <= 0 ? null : sbEffectivePrice + (sbKind === 'sell' ? -sbStep : sbStep)
   const sbDefaultExtra = sbDerivedExtra !== null && sbDerivedExtra > 0 ? centsToYuan(sbDerivedExtra) : ''
 
-  function openPlan(kind: 'buy' | 'sell', refId: string, title: string, suggestPrice: number, suggestQty: number, planPriceCents?: number | null, planQtyValue?: number | null) {
-    setPlanRef({ kind, refId, title, suggestPrice, suggestQty })
+  function openPlan(
+    kind: 'buy' | 'sell',
+    refId: string,
+    title: string,
+    suggestPrice: number,
+    suggestQty: number,
+    planPriceCents?: number | null,
+    planQtyValue?: number | null,
+    members?: { key: string; qty: number }[],
+  ) {
+    setPlanRef({ kind, refId, title, suggestPrice, suggestQty, members })
     setPlanPrice((planPriceCents ?? suggestPrice) === 0 ? '' : ((planPriceCents ?? suggestPrice) / 100).toFixed(2))
     setPlanQty(planQtyValue ? String(planQtyValue) : '')
   }
@@ -393,9 +430,34 @@ export function OrdersPage({
       const q = Number(inputOrDefault(planQty, String(planRef.suggestQty)))
       if (p === null || p <= 0) throw new Error('计划价不合法')
       if (!Number.isInteger(q) || q <= 0) throw new Error('计划量要填正整数')
-      await setPlan(planRef.kind, planRef.refId, p, q)
+      const members = planRef.members && planRef.members.length > 1 ? planRef.members : null
+      if (!members) {
+        await setPlan(planRef.kind, planRef.refId, p, q)
+      } else {
+        /**
+         * V9.55：合并行要**按份写回**——每条原来的身份各挂一份计划价（同价），数量按各自份额
+         * 分配、合计正好等于填的计划量。否则只有半边动：改完价合并行又会被拆回两行。
+         * 每份至少 1 股（`setPlan` 不收 0），所以计划量比来源条数还小时按条数兜底。
+         */
+        const total = members.reduce((a, m) => a + m.qty, 0)
+        const target = Math.min(q, total)
+        let remain = target
+        for (let i = 0; i < members.length; i += 1) {
+          const m = members[i]
+          const rest = members.length - i - 1
+          // 比例分配；给后面每条至少留 1 股（setPlan 不收 0），最后一条吃掉余数
+          const even = i === members.length - 1 ? remain : Math.round((target * m.qty) / total)
+          const take = Math.max(1, Math.min(m.qty, even, Math.max(1, remain - rest)))
+          remain = Math.max(0, remain - take)
+          await setPlan(planRef.kind, m.key, p, take)
+        }
+      }
       setPlanRef(null)
-      notificationOpen({ message: '已改单', description: '只改这一条推荐的显示与记成交默认值，来源没动', type: 'success' })
+      notificationOpen({
+        message: '已改单',
+        description: members ? `合并的 ${members.length} 条来源一起改，合计 ${q} 股` : '只改这一条推荐的显示与记成交默认值，来源没动',
+        type: 'success',
+      })
     } catch (e) {
       notificationOpen({ message: '保存失败', description: e instanceof Error ? e.message : String(e), type: 'error' })
     }
@@ -558,7 +620,7 @@ export function OrdersPage({
     }
     if(suggestionsToday.length){
       lines.push('【今日可挂买】')
-      for(const r of suggestionsToday)lines.push(`  ${price(r.priceCents)} × ${r.qty} 股（${r.sources.length} 笔来源）`)
+      for(const r of suggestionsToday)lines.push(`  ${price(r.priceCents)} × ${r.qty} 股（${r.sources.length} 笔来源${r.sellFirst?' · 先卖后买':''}）`)
     }
     if (sellToday.length) {
       lines.push('【今日可挂卖】')
@@ -577,7 +639,7 @@ export function OrdersPage({
 
   function exportCsv() {
     const rows: (string | number)[][] = [['类型', '序号', '价格', '股数', '金额', '区间']]
-    for (const r of buySuggestions) rows.push(['待买',r.sources.map((v)=>recordNoLabel(v.row,recordNo)).join(' + '),price(r.priceCents),r.qty,(r.amountCents/100).toFixed(2),zone(r.priceCents)])
+    for (const r of buySuggestions) rows.push([r.sellFirst?'待买（先卖后买）':'待买',r.sources.map((v)=>recordNoLabel(v.row,recordNo)).join(' + '),price(r.priceCents),r.qty,(r.amountCents/100).toFixed(2),zone(r.priceCents)])
     for (const r of targetRows) {
       const p = r.planPriceCents ?? r.priceCents
       const q = r.planQty ?? r.qty
@@ -933,6 +995,9 @@ export function OrdersPage({
                                 <Tag size="small" variant="soft" color="app-teal" data-testid="rebuy-of">
                                   回补 {recordNoLabel(b.sourceRow, recordNo)}
                                 </Tag>
+                                {b.sellFirst && (
+                                  <Tag size="small" variant="soft" color="app-teal" data-testid="split-sell-first">先卖后买</Tag>
+                                )}
                                 {chainOfSell.has(b.sourceRow) && (
                                   <Tag size="small" variant="soft" color="app-yellow" data-testid="rebuy-chain">
                                     回本链 {recordNoLabel(chainOfSell.get(b.sourceRow)!.anchorRow, recordNo)}
@@ -1101,7 +1166,7 @@ export function OrdersPage({
           </div>
         ) : (
           <div className="data-block">
-            {orders.map((o) => {
+            {orderedRebuys.map((o) => {
               const z = zone(o.rebuyPriceCents)
               const sim = sandboxByRow.get(o.sourceRow)
               const link = sim
@@ -1136,9 +1201,17 @@ export function OrdersPage({
                       {sim ? ' · 只用于沙盒预览' : ` · 组池 ${money(o.grossProfitCents)} / ${o.hands} 手`}
                     </div>
                     <div className="tag-row" style={{ marginTop: 4 }}>
-                      <Tag size="small" variant="soft" color={o.exposure ? 'app-red' : 'app-teal'}>
-                        {o.exposure ? '空头敞口' : '回补再买入'}
-                      </Tag>
+                      {/* V9.54：先卖后买的待买单独标出来（明细页/明细卡同一个标签），敞口照旧提醒 */}
+                      {o.sellFirst ? (
+                        <Tag size="small" variant="soft" color="app-teal" data-testid="rebuys-sell-first">先卖后买</Tag>
+                      ) : (
+                        <Tag size="small" variant="soft" color={o.exposure ? 'app-red' : 'app-teal'}>
+                          {o.exposure ? '空头敞口' : '回补再买入'}
+                        </Tag>
+                      )}
+                      {o.sellFirst && o.exposure && (
+                        <Tag size="small" variant="soft" color="app-red">空头敞口</Tag>
+                      )}
                       <Tag
                         size="small"
                         variant="soft"
@@ -1361,6 +1434,13 @@ export function OrdersPage({
               <b>计划价只用于显示和导出</b>，不回写明细、不改待买/待卖来源，也不动真实盈亏与守恒式；
               今日挂单按计划价校验区间。改完点「记成交 / 记卖出」会默认用改后的价和量，
               数量还能再往下改——那就是部分成交。
+              {planRef.members && planRef.members.length > 1 && (
+                <>
+                  <br />
+                  这一条是<b>改单撞价合并</b>出来的 {planRef.members.length} 条：改价/改量会
+                  <b>一起作用到每一条来源</b>（数量按各自份额分，合计等于填的量），来源不动。
+                </>
+              )}
             </p>
             <div className="form-grid">
               <label>
@@ -1377,7 +1457,9 @@ export function OrdersPage({
               size="small"
               onClick={() => {
                 if (!planRef) return
-                void clearPlan(planRef.refId).then(() => {
+                // V9.55：合并行要把每一条成员的计划一起清掉，否则只有半边回到建议价
+                const refs = planRef.members && planRef.members.length > 1 ? planRef.members.map((m) => m.key) : [planRef.refId]
+                void Promise.all(refs.map((ref) => clearPlan(ref))).then(() => {
                   setPlanRef(null)
                   notificationOpen({ message: '已恢复建议价量', type: 'info' })
                 })
