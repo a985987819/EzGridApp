@@ -264,6 +264,34 @@ function collectPriceSlots(opts: {
     slot.date = earliestDate(slot.roots.map((s) => s.soldAt))
   }
 
+  /**
+   * V9.63：**锚点自己 P 列的回补价位也是一档**。原来档只能由「链之后的同价裸卖」创建——
+   * 用户高买低卖后如果直接记成交买回（或明细新增 / 下一轮买入）、中间没有再出现同价裸卖，
+   * P 档就永远不存在，之后买在这个价位的批次和它们的多次卖出全部不归链，
+   * 表现为「亏损固定显示、低位盈利不与亏损相抵」。现在把锚点卖单的回补价（P 列）
+   * 直接立为无根槽：日期边界 = 锚点最后一笔卖出日（fail-closed），用户结束的链不收。
+   * 有根槽已存在的价位跳过（合并，避免同一档出现两条）。
+   */
+  for (const seed of seeds.values()) {
+    const ended = endedIsoByAnchor.get(seed.anchorRow) ?? null
+    const prices = [
+      ...new Set(seed.sells.map((s) => s.rebuyPriceCents).filter((p): p is number => p != null && p > 0)),
+    ]
+    for (const price of prices) {
+      if (slots.some((x) => x.chainAnchor === seed.anchorRow && x.priceCents === price)) continue
+      if (seed.closeDate === null) continue
+      slots.push({
+        chainAnchor: seed.anchorRow,
+        stockName: seed.stockName,
+        priceCents: price,
+        roots: [],
+        lots: [],
+        date: seed.closeDate,
+        endedIso: ended,
+      })
+    }
+  }
+
   // 买入批次自动归槽：同股 + 买入价正好等于槽价 + 买入日期不早于根卖出
   const slotsByDate = [...slots].sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''))
   for (const lot of lots) {
@@ -319,6 +347,7 @@ function slotBranch(slot: PriceSlot, sellsByLot: Map<string, SellExecution[]>): 
   const rootQty = sum(slot.roots, (s) => s.qty)
   const rootAmount = sum(slot.roots, (s) => (s.priceCents ?? 0) * s.qty)
   const rootProfit = sum(slot.roots, (s) => s.profitCents ?? 0)
+  const lotsQty = sum(slot.lots, (l) => l.qty)
   const sells = slot.lots.flatMap((l) => plainSellsOf(l.id, sellsByLot))
   return {
     key: `branch:${slot.chainAnchor}:${slot.priceCents}`,
@@ -326,7 +355,8 @@ function slotBranch(slot: PriceSlot, sellsByLot: Map<string, SellExecution[]>): 
     kind: 'sell',
     buyDate: earliestDate(slot.lots.map((l) => l.buyDate)),
     buyPriceCents: slot.priceCents,
-    qty: rootQty,
+    // 有根槽按根的欠量分摊亏损；无根的 P 档（V9.63）没有根，按归进来的买入股数分摊
+    qty: rootQty > 0 ? rootQty : lotsQty,
     remainingQty: sum(slot.lots, (l) => l.remainingQty),
     sellPriceCents: rootQty > 0 ? weighted(rootAmount, rootQty) : null,
     sellQty: rootQty + sum(sells, (s) => s.qty),
@@ -533,7 +563,18 @@ export function buildRepairChains(opts: {
     }
     // V9.49：价位槽分支（同价再卖 + 之后所有同价买入），全自动归属
     const slots = auto.slots.filter((s) => s.chainAnchor === seed.anchorRow)
-    for (const slot of slots) branches.push(slotBranch(slot, sellsByLot))
+    for (const slot of slots) {
+      const b = slotBranch(slot, sellsByLot)
+      /**
+       * V9.63：无根的 P 档（锚点自己的回补价位）没有根裸卖的空头收益可展示，
+       * 节省 = 锚点清算价 − 本档买价 × 归进来的买入股数——只展示、不进进度（决策 F）。
+       * 有根槽不补：根的空头收益本身就是节省，再补会双算。
+       */
+      if (slot.roots.length === 0 && closePrice !== null) {
+        b.savingCents = mulCents(closePrice - slot.priceCents, sum(slot.lots, (l) => l.qty))
+      }
+      branches.push(b)
+    }
 
     // 3) 原始亏损按买入份额分摊（分母是锚点股数：只买回一半就只分摊一半）
     let allocated = 0
@@ -558,6 +599,14 @@ export function buildRepairChains(opts: {
     }, 0)
     // 价位槽里还没买回来的卖出量 = 这一轮还要买回的股数（已成交的不算欠）
     const slotPending = auto.pending.get(seed.anchorRow) ?? 0
+    /**
+     * V9.63：「有槽」指**有根槽**（出现过同价再卖）。只有无根的 P 档时仍走
+     * 「锚点股数 − 已归属买入」的旧口径——但已归属买入要算上 P 档里归进来的批次
+     * （记成交 / 明细新增 / 下一轮），否则「已经 5 块买回 500 股」还提示计划再买 500。
+     * 空日期裸卖那种「槽没形成」的欠量不在这里（它自己的待买单还在，V9.56）。
+     */
+    const hasRootedSlot = slots.some((s) => s.roots.length > 0)
+    const slottedQty = sum(slots.flatMap((s) => s.lots), (l) => l.qty)
     const netCents = seed.lossCents + profitCents
     const need = Math.abs(seed.lossCents)
     chains.push({
@@ -575,9 +624,13 @@ export function buildRepairChains(opts: {
       covered: need <= 0 ? 1 : Math.max(0, Math.min(1, profitCents / need)),
       savingCents,
       holdingQty,
-      // V9.49：锚点这一轮已经完成（A/B 视为已完成）——有价位槽时只看槽里还欠多少；
-      // 没有槽时沿用 V9.46「锚点股数 − 已归属买入」的提示。用户结束链后不再提示计划买回。
-      plannedQty: link?.closedAt ? 0 : slots.length > 0 ? pendingQty + slotPending : Math.max(pendingQty, Math.max(0, seed.qty - firstBoughtQty)),
+      // V9.49：锚点这一轮已经完成（A/B 视为已完成）——有根槽时只看槽里还欠多少；
+      // 只有无根 P 档时沿用「锚点股数 − 已归属买入」并计入 P 档批次。用户结束链后不再提示计划买回。
+      plannedQty: link?.closedAt
+        ? 0
+        : hasRootedSlot
+          ? pendingQty + slotPending
+          : Math.max(pendingQty, Math.max(0, seed.qty - firstBoughtQty - slottedQty)),
       unallocatedLossCents: seed.lossCents - allocated,
       closedByUserAt: link?.closedAt ?? null,
       relatedSellRows: [...new Set([...seed.relatedSellRows, ...slots.flatMap((s) => s.roots.map((r) => r.sourceRow))])],

@@ -557,3 +557,62 @@ describe('归属、结束与部分成交', () => {
     expect(chains).toEqual([])
   })
 })
+
+
+describe('V9.63 锚点 P 档：无同价再卖也自动归链', () => {
+  it('高买低卖后直接记成交买回、低位多次卖出——盈利逐笔累加进链（修复「亏损固定不动」）', () => {
+    // 10 买 1000 → 7 卖 1000（−3000，P=5.00）；5.00 记成交买回 1000（之后没有同价裸卖）
+    // → 该批次分两次卖：7.00×400、6.50×300。修复前：P 档不存在，这两笔盈利不归链。
+    const led = buildLedger(
+      [
+        rec(2, { buy: 1000, qty: 1000, sell: 700, soldQty: 1000, sellDate: 46010, p: 500 }),
+        rec(3, { lotId: 'lot:exec:e1', sell: 700, soldQty: 400, sellDate: 46020 }),
+        rec(4, { lotId: 'lot:exec:e1', sell: 650, soldQty: 300, sellDate: 46030 }),
+      ],
+      [STOCK],
+      { executions: [execAt('e1', 2, 1000, 500, '2026-03-12')] },
+    )
+    expect(led.repairChains).toHaveLength(1)
+    const c = led.repairChains[0]
+    expect(c).toMatchObject({
+      lossCents: -300000,
+      // (7.00−5.00)×400 + (6.50−5.00)×300 = 80000 + 45000
+      profitCents: 125000,
+      netCents: -175000,
+      gapCents: 175000,
+      holdingQty: 300,
+      plannedQty: 0, // P 档已经全部买回，不再提示计划买回
+    })
+    const slot = c.branches.find((b) => b.kind === 'sell')
+    expect(slot).toMatchObject({
+      rootSellRow: null,
+      buyPriceCents: 500,
+      qty: 1000,
+      remainingQty: 300,
+      cycles: 2,
+      profitCents: 125000,
+    })
+    // 展示口径：无根 P 档的回补节省 = 清算价 − 档价 × 买入股数（只展示不进进度）
+    expect(slot?.savingCents).toBe(200000)
+  })
+
+  it('明细新增在 P 档价位的买入同样归链；用户结束链后不再归', () => {
+    const led = buildLedger([
+      rec(2, { buy: 1000, qty: 1000, sell: 700, soldQty: 1000, sellDate: 46010, p: 500 }),
+      rec(3, { buy: 500, qty: 300, sell: 600, soldQty: 300, buyDate: 46015, sellDate: 46020 }),
+    ], [STOCK])
+    expect(led.repairChains).toHaveLength(1)
+    expect(led.repairChains[0]).toMatchObject({ profitCents: 30000, holdingQty: 0 })
+
+    const closed = buildLedger(
+      [
+        rec(2, { buy: 1000, qty: 1000, sell: 700, soldQty: 1000, sellDate: 46010, p: 500 }),
+        rec(4, { buy: 500, qty: 200, sell: 600, soldQty: 200, buyDate: 46050, sellDate: 46060 }),
+      ],
+      [STOCK],
+      { chainLinks: [{ id: 'chainlink:2', anchorRow: 2, stockName: '柳工', memberRows: [], closedAt: 1, at: 0 }] },
+    )
+    expect(closed.repairChains).toHaveLength(1)
+    expect(closed.repairChains[0]).toMatchObject({ profitCents: 0, holdingQty: 0 })
+  })
+})

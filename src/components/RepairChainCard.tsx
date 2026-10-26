@@ -103,10 +103,20 @@ export function RepairChainCard({
               <div className="left">
                 <div className="t1 num">
                   {b.kind === 'sell' ? (
-                    <>
-                      {b.sellPriceCents === null ? '—' : price(b.sellPriceCents)} 卖 → {price(b.buyPriceCents)} 买回
-                      <span className="muted"> · 卖了 {b.cycles} 次</span>
-                    </>
+                    b.rootSellRow === null && b.sellPriceCents === null ? (
+                      <>
+                        P 档 {price(b.buyPriceCents)} 买回
+                        <span className="muted">
+                          {' '}
+                          · 买 {qty(b.qty)} 股{b.remainingQty > 0 ? `（手持 ${qty(b.remainingQty)}）` : ''} · 卖了 {b.cycles} 次
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        {b.sellPriceCents === null ? '—' : price(b.sellPriceCents)} 卖 → {price(b.buyPriceCents)} 买回
+                        <span className="muted"> · 卖了 {b.cycles} 次</span>
+                      </>
+                    )
                   ) : (
                     <>
                       {price(b.buyPriceCents)} 买 → {b.sellPriceCents === null ? '未卖出' : price(b.sellPriceCents)} 卖
@@ -125,11 +135,19 @@ export function RepairChainCard({
                 </div>
                 <div className="t2">
                   {b.kind === 'sell' ? (
-                    <>
-                      价位槽 · 根 {b.rootSellRow !== null ? rowLabel(b.rootSellRow) : '—'}
-                      {b.remainingQty > 0 ? ` · 手持 ${qty(b.remainingQty)}` : ''}
-                      {b.allocatedLossCents !== 0 && ` · 分摊亏损 ${money(b.allocatedLossCents)}`}
-                    </>
+                    b.rootSellRow === null && b.sellPriceCents === null ? (
+                      <>
+                        锚点 P 档 · 之后买在这个价位的批次自动归档，卖出盈利逐笔累加
+                        {b.allocatedLossCents !== 0 && ` · 分摊亏损 ${money(b.allocatedLossCents)}`}
+                        {b.savingCents !== 0 && ` · 回补省 ${money(b.savingCents)}`}
+                      </>
+                    ) : (
+                      <>
+                        价位槽 · 根 {b.rootSellRow !== null ? rowLabel(b.rootSellRow) : '—'}
+                        {b.remainingQty > 0 ? ` · 手持 ${qty(b.remainingQty)}` : ''}
+                        {b.allocatedLossCents !== 0 && ` · 分摊亏损 ${money(b.allocatedLossCents)}`}
+                      </>
+                    )
                   ) : (
                     <>
                       {b.kind === 'rebuy' ? '回补批次' : b.row !== null ? rowLabel(b.row) : '后续买入'}
