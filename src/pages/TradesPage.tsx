@@ -296,11 +296,13 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
         if (!hit) return false
       }
       if (idFilter !== null && rId !== idFilter) return false
+      /** 深链指到的那一行要一定看得见：软删（上面已放行）和「已完成」都不能把它藏掉 */
+      const deepLink = idFilter !== null && rId === idFilter
       // 状态多选取交集：勾了几个状态，行必须全都满足
       if (statuses.length > 0 && !statuses.every((k) => statusMatch(r, k))) return false
       // V9.5：默认隐藏已完成；勾「已卖完」或深链带该状态时自动放开，避免空列表陷阱
       // V9.36：回本链锚点不算完成（还欠着一笔要补），继续显示
-      if (hideDone && !statuses.includes('soldout') && isDone(r) && !chainRows.has(r.rec.sourceRow)) return false
+      if (hideDone && !deepLink && !statuses.includes('soldout') && isDone(r) && !chainRows.has(r.rec.sourceRow)) return false
       // 日期区间：卖出日期优先，其次买入日期；没日期的行在有区间条件时直接排除
       if (fromDate || toDate) {
         const d = tradeDate(r)

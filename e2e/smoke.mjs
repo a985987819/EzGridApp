@@ -1164,11 +1164,14 @@ try {
   check('落在明细并带单日区间', /from=\d{4}-\d{2}-\d{2}/.test(dayHash) && /to=\d{4}-\d{2}-\d{2}/.test(dayHash) && dayHash.match(/from=([^&]+)/)?.[1] === dayHash.match(/to=([^&]+)/)?.[1], dayHash)
 
   // 挂单 · 待卖条目（整行可点）→ nanoId 定位（V9.4 起跳转以 nanoId 为唯一依据）
+  // V9.47：待买卡里的「下一轮应买」行也含「· 买入」，这里要把它排掉，点的仍是待卖行
   await nav('orders')
   check(
     '点待卖清单行',
     await evaluate(`(() => {
-      const line = [...document.querySelectorAll('.data-block .line')].find(l => l.textContent.includes('· 买入'))
+      const line = [...document.querySelectorAll('.data-block .line')].find(
+        (l) => !l.hasAttribute('data-buy-level') && l.textContent.includes('· 买入'),
+      )
       if (!line) return false
       line.click(); return true
     })()`),
@@ -1253,6 +1256,49 @@ try {
   const tabCount = await evaluate(`document.querySelectorAll('[role="tab"]').length`)
   check('挂单页不再用页签藏待买', Number(tabCount) === 0, String(tabCount))
   check('待买清单常驻', /待买\s*\d+\s*条/.test(text))
+
+  // V9.47：卖完的老批次也排「下一轮应买」——价格回到成本档再提醒买一次
+  const nrRaw = await evaluate(`(() => {
+    const rows = [...document.querySelectorAll('[data-buy-level]')]
+    const inToday = rows.some((el) => {
+      const blk = el.closest('.data-block')
+      const lab = blk ? blk.previousElementSibling : null
+      return Boolean(lab && /可挂买/.test(lab.textContent ?? ''))
+    })
+    return JSON.stringify({
+      section: Boolean(document.querySelector('[data-testid="next-round-buy"]')),
+      count: rows.length,
+      levels: rows.map((el) => Number(el.getAttribute('data-buy-level'))),
+      tag: [...document.querySelectorAll('.group-label')].map((e) => e.textContent.trim()).find((t) => t.includes('可挂买')) ?? '',
+      chip: rows.length > 0 && rows[0].textContent.includes('下一轮'),
+      label: rows[0] ? (rows[0].querySelector('.t1')?.textContent.trim() ?? '') : '',
+      noExec: rows.every((el) => ![...el.querySelectorAll('button')].some((b) => b.textContent.trim() === '记成交')),
+      todayHasOne: inToday,
+    })
+  })()`)
+  console.log('  下一轮应买:', nrRaw)
+  const nr = JSON.parse(nrRaw)
+  check('待买卡有「下一轮应买」小节', nr.section, nrRaw)
+  check('卖完的老批次排出档位（≥5 档）', nr.count >= 5, String(nr.count))
+  check('今日挂单把下一轮算进可挂买', /含已完成批次/.test(nr.tag), nr.tag)
+  check('今日挂单里确实有下一轮行', nr.todayHasOne, nrRaw)
+  check('档位行标「下一轮」并给出买价 × 股数', nr.chip && /买\s*[\d.]+\s*×\s*[\d,]+/.test(nr.label), nr.label)
+  check('还没回补完的行不重复提示（R60-63 不在其中）', ![60, 61, 62, 63].some((r) => nr.levels.includes(r)), JSON.stringify(nr.levels))
+  check('下一轮行不给「记成交」（它不是一张待买单）', nr.noExec, nrRaw)
+
+  // 点下一轮行 → 明细要落在那一笔「已完成」的行上（V9.47 修：深链不能被默认隐藏干掉）
+  const deepRow = await evaluate(`(() => {
+    const el = document.querySelector('[data-testid="next-round-buy"] [data-buy-level]')
+    if (!el) return null
+    el.click(); return el.getAttribute('data-buy-level')
+  })()`)
+  await sleep(700)
+  check('点下一轮行跳明细', deepRow !== null, String(deepRow))
+  check('深链命中已完成那一行（不被隐藏）', (await headCount()) === 1, String(await headCount()))
+  check('清空筛选收尾', await clickByText('[data-testid="active-chips"] .filter-chip', '清空筛选'))
+  await sleep(400)
+  await nav('orders')
+  await sleep(700)
 
   console.log('\n[8.1] 涨跌停手工覆盖')
   check('点「手工调整」', await clickByText('button', '手工调整'))

@@ -143,6 +143,16 @@ export function buildLedger(
           r.sellDateSerial !== null &&
           r.sellDateSerial < r.buyDateSerial) ||
         (r.buyPriceCents === null && soldQty > 0)
+      /**
+       * V9.47.1 用户口径：先卖后买**允许卖出日期早于买入日期**，闭环只看份额——
+       * 卖出日 ≤ 买入日（A股 T+1，当日买的不能当日卖，所以同日也只可能是先卖后买）时，
+       * 本行的买入批次就是那笔回补本身：盖住多少卖出量就视为已买回多少，剩下的才是真欠账。
+       * 先买后卖（买入日更早）不变——那种行里的 P 列是「下一轮打算什么价买回」，照旧挂待买单。
+       */
+      const soldFirst =
+        r.buyDateSerial !== null && r.sellDateSerial !== null && r.sellDateSerial <= r.buyDateSerial
+      const ownLotCoverQty = isLot && soldFirst ? Math.min(qty!, soldQty) : 0
+      const needRebuyQty = Math.max(0, soldQty - ownLotCoverQty)
       const groupKey = cost !== null ? groupKeyOf(stockId, cost) : null
 
       const sell: SellExecution = {
@@ -157,7 +167,8 @@ export function buildLedger(
         soldAt,
         dateMissing: soldAt === null,
         priceSource: price === null ? 'missing' : 'target',
-        rebuyStatus: r.earlyBuyPriceCents !== null ? 'pending' : 'repaid',
+        rebuyStatus: r.earlyBuyPriceCents !== null && needRebuyQty > 0 ? 'pending' : 'repaid',
+        ownLotCoverQty,
         sellBeforeBuy,
         groupKey,
         costComplete,
@@ -451,6 +462,8 @@ export function buildLedger(
     const myExecs = execByOrder.get(orderId) ?? []
     const execQty = myExecs.reduce((a, e) => a + e.qty, 0)
     const doneRewardQty = myExecs.reduce((a, e) => a + e.rewardQty, 0)
+    // V9.47.1：本行买入批次已经盖住的那部分不再挂单，只剩真欠的
+    const needQty = Math.max(0, sell.qty - (sell.ownLotCoverQty ?? 0))
     orders.push({
       id: orderId,
       sellExecId: sell.id,
@@ -458,11 +471,11 @@ export function buildLedger(
       stockId: sell.stockId,
       stockName: sell.stockName,
       rebuyPriceCents: rec.earlyBuyPriceCents,
-      baseQty: sell.qty,
+      baseQty: needQty,
       rewardQty: 0,
       execQty,
       doneRewardQty,
-      remainingQty: Math.max(0, sell.qty - execQty),
+      remainingQty: Math.max(0, needQty - execQty),
       status: execQty <= 0 ? 'open' : 'partial',
       groupKey: groupKeyOf(sell.stockId, rec.earlyBuyPriceCents),
       grossProfitCents: 0,

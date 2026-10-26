@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { buildLedger } from './ledger'
+import { buildNextRoundBuyRows } from './buyBoard'
 import { DEFAULT_STOCKS } from './defaults'
 import { limitRange } from './limit'
 import { parseWorkbook } from '../io/parseWorkbook'
@@ -472,5 +473,127 @@ describe('§09 测试矩阵', () => {
       DEFAULT_STOCKS,
     )
     expect(l.anomalies.some((a) => a.kind === 'oversell')).toBe(true)
+  })
+
+  // ── V9.47.1 先卖后买：卖出日期早于买入日期合法，份额匹配即已完成 ──────────────
+
+  it('V9.47.1 先卖后买份额匹配 → 视为已完成：不挂待买、不算待回补', () => {
+    // 10-19 卖 500@8.58，10-21 买回 500@7.81（P 列当初计划 7.71）
+    const l = buildLedger(
+      [
+        rec({
+          stockName: '柳工',
+          sourceRow: 1,
+          buyPriceCents: 781,
+          buyQtyRaw: 500,
+          buyDateSerial: 46316,
+          soldQty: 500,
+          targetPriceCents: 858,
+          sellDateSerial: 46314,
+          earlyBuyPriceCents: 771,
+        }),
+      ],
+      DEFAULT_STOCKS,
+    )
+    expect(l.sells[0].sellBeforeBuy).toBe(true)
+    expect(l.sells[0].ownLotCoverQty).toBe(500)
+    expect(l.sells[0].rebuyStatus).toBe('repaid')
+    expect(l.orders).toHaveLength(0)
+    expect(l.lots[0].remainingQty).toBe(0)
+    expect(l.totals.exposureQty).toBe(0)
+    expect(l.totals.netQty).toBe(0)
+    for (const c of l.checks) expect(c.ok, `${c.name}: ${c.actual}`).toBe(true)
+    // 结掉之后这一档买入价就是「下一轮应买」的候选（V9.47）
+    const levels = buildNextRoundBuyRows({ lots: l.lots, orders: l.orders, sells: l.sells, merges: [] })
+    expect(levels.map((r) => r.priceCents)).toEqual([781])
+  })
+
+  it('V9.47.1 买入只盖住一半 → 待买单只挂没买回来的那截', () => {
+    const l = buildLedger(
+      [
+        rec({
+          stockName: '柳工',
+          sourceRow: 1,
+          buyPriceCents: 781,
+          buyQtyRaw: 300,
+          buyDateSerial: 46316,
+          soldQty: 500,
+          targetPriceCents: 858,
+          sellDateSerial: 46314,
+          earlyBuyPriceCents: 771,
+        }),
+      ],
+      DEFAULT_STOCKS,
+    )
+    expect(l.sells[0].ownLotCoverQty).toBe(300)
+    expect(l.sells[0].rebuyStatus).toBe('pending')
+    expect(l.orders).toHaveLength(1)
+    expect(l.orders[0].baseQty).toBe(200)
+    expect(l.orders[0].remainingQty).toBe(200)
+  })
+
+  it('V9.47.1 先买后卖（买入日更早）+ P 列 → 待买单照旧挂全量', () => {
+    const l = buildLedger(
+      [
+        rec({
+          stockName: '柳工',
+          sourceRow: 1,
+          buyPriceCents: 1031,
+          buyQtyRaw: 700,
+          buyDateSerial: 46090,
+          soldQty: 700,
+          targetPriceCents: 1088,
+          sellDateSerial: 46148,
+          earlyBuyPriceCents: 1000,
+        }),
+      ],
+      DEFAULT_STOCKS,
+    )
+    expect(l.sells[0].sellBeforeBuy).toBe(false)
+    expect(l.sells[0].ownLotCoverQty).toBe(0)
+    expect(l.sells[0].rebuyStatus).toBe('pending')
+    expect(l.orders[0].baseQty).toBe(700)
+  })
+
+  it('V9.47.1 同日买卖也算先卖后买（A股 T+1，当日买的不能当日卖）', () => {
+    const l = buildLedger(
+      [
+        rec({
+          stockName: '柳工',
+          sourceRow: 1,
+          buyPriceCents: 781,
+          buyQtyRaw: 500,
+          buyDateSerial: 46316,
+          soldQty: 500,
+          targetPriceCents: 858,
+          sellDateSerial: 46316,
+          earlyBuyPriceCents: 771,
+        }),
+      ],
+      DEFAULT_STOCKS,
+    )
+    expect(l.sells[0].ownLotCoverQty).toBe(500)
+    expect(l.orders).toHaveLength(0)
+  })
+
+  it('V9.47.1 卖出日期没填 → 无法判定顺序，保守地留着待买单', () => {
+    const l = buildLedger(
+      [
+        rec({
+          stockName: '柳工',
+          sourceRow: 1,
+          buyPriceCents: 781,
+          buyQtyRaw: 500,
+          buyDateSerial: 46316,
+          soldQty: 500,
+          targetPriceCents: 858,
+          sellDateSerial: null,
+          earlyBuyPriceCents: 771,
+        }),
+      ],
+      DEFAULT_STOCKS,
+    )
+    expect(l.sells[0].ownLotCoverQty).toBe(0)
+    expect(l.orders[0].baseQty).toBe(500)
   })
 })

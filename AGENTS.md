@@ -7,10 +7,10 @@
 
 ```bash
 npm run dev        # 127.0.0.1:5173
-npm test           # vitest，212 条（domain 纯函数 + 真实 xlsx fixture 回归）
+npm test           # vitest，229 条（domain 纯函数 + 真实 xlsx fixture 回归）
 npm run lint       # eslint
 npm run build      # tsc --noEmit && vite build；GITHUB_PAGES=true 时启用 /EzGridApp/ 子路径 base
-node e2e/smoke.mjs http://127.0.0.1:5173   # 无头 Chrome CDP，436 项断言，需先起 dev
+node e2e/smoke.mjs http://127.0.0.1:5173   # 无头 Chrome CDP，446 项断言，需先起 dev
                    # 数据种子 = tests/fixtures 经 CDP DOM.setFileInputFiles 塞进上传框（站点不带示例数据）
 ```
 
@@ -53,7 +53,7 @@ store/useApp（唯一写库入口，全部动作写 auditLogs）
 | 记录序号 V9.43 | 界面统一叫「第 N 笔」，Excel 行号退成**追溯信息**（只出现在明细抽屉的「Excel 第 N 行」标签、导出 CSV 的「Excel行号」列、导入预览）。序号是**纯派生**（`domain/recordNo.ts`，不落库、不改主键）：按录入时间排序——导入批次取 `batchId = batch:<ts>`、手动行取 `importKey = manual:...:<ts>`，同批/同毫秒按 `sourceRow` 二次排序；老备份没有 `batchId` 的行视为最早。软删除的行仍占号（不重排）；后导入的批次整体追加在已录入数据之后（即使 Excel 行号更小）。`useApp` 暴露 `recordNo: RecordNoIndex`（`of(row)` / `total`），明细卡、抽屉标题、挂单待买/待卖、概览、统计日历、挂钩面板、回本链统一用它；明细排序首项改「录入顺序」，导出第一列「序号」。虚拟行标签：200000 段「回补批次」、300000 段「模拟批次」 |
 | E 列双义 | `targetPriceCents` 既是持仓的待卖目标价、也是已成交行的成交价（D1） |
 | 待卖 R1 | 批次剩余 × E；手动拆分目标（extraTargets）先占额度，超剩余截断并标 anomaly |
-| 待买 R2 | 只认 P 列 `earlyBuyPriceCents`；`rebuyStatus`: pending/repaid；`exposure` = 卖出无买入批次（真空头） |
+| 待买 R2 | 只认 P 列 `earlyBuyPriceCents`；`rebuyStatus`: pending/repaid；`exposure` = 卖出无买入批次（真空头）。**V9.47.1 例外（用户口径）**：先卖后买**允许卖出日期早于买入日期**，闭环只看份额——`sellDate ≤ buyDate` 且本行有买入批次时，`ownLotCoverQty = min(批次量, 卖出量)` 那截就是回补本身，`rebuyStatus` 按 `卖出量 − ownLotCoverQty` 决定，待买单只挂没买回来的差额（同日买卖也算先卖后买：A股 T+1 当日买的不能当日卖；卖出日期空着 → 无法判序，保守地保留整张单）。先买后卖（买入日更早）不受影响，P 列仍是「下一轮打算什么价买回」。老 fixture 里没有「既有批次又填 P 列」的行，所以 BASELINE 的 rebuyCount=4 / exposureQty=2000 不变 |
 | 回补价 R3 | 手填 > 关联买入价 > 卖出价−该股间隔（`manual.ts` deriveRebuyPrice） |
 | 奖励 R4/R5 | 组池 key = `股票\|成本分`（**V9.32 起单一账户**，原来的 `账户\|` 前缀已删）；gross=全部真实卖出盈利；容量=floor((gross−used)/每手成本)；FIFO 授给最早还能买的单；`doneRewardQty` 已成交不可撤；used 按成交时价组永久归属（P4）。另有检查「Σ已买回的奖励手数 ≤ Σ组容量」（V9.33）：容量被挂钩/改数缩水到装不下已买回奖励时亮黄灯。已全部回补的单子不再领新奖励。老库/老备份的成交键带 `acc:xxx\|` 前缀——`ledger.ts` 的 `stripAccountPrefix` 统一剥掉（只改派生副本） |
 | 回补成交 R6 | 记成交 → **自动生成回补批次**（v9.20 用户决策 B，取代旧 D5「不新增批次」）：虚拟批次不落库、撤销成交即消失；目标价 = 成交价 + 该股间隔，自动出现在待卖清单/价格树；缺间隔配置 → 待补价格异常。id 形如 `lot:exec:*`，sourceRow 用 200000+ 段位避开 Excel/手动行号；明细页看不到该行（它不是 record），挂单/树/概览都可见 |
@@ -63,6 +63,7 @@ store/useApp（唯一写库入口，全部动作写 auditLogs）
 | 导入幂等 | v9.20 决策 C：`domain/importPlan.ts` 按行身份（股票+买入日期+买入价+有效份额，D 列派生值折算）匹配——同 key 跳过、身份命中则**更新卖出侧字段**（importKey/nanoId 不变）、身份对不上才新增。审计走 import-update 来源。改这个逻辑先跑 `importPlan.spec.ts` |
 | 账户 | **V9.32 已删除**（只按一个账户做）：没有 accounts 表/账户筛选/顶部选择器，`records` 就是全部数据；`accounts` 表在 Dexie v7 里整表丢弃，老备份带 `accounts` 段直接忽略（schemaVersion 7） |
 | 合并同价买单 V9.45 | **只做关联，不改数据**：明细抽屉里几笔**同股票、同买入价、还没卖完**的批次可以勾选合并（`merges` 表 `merge:<锚行号>`，Dexie v8）；`records` 各自的数量/买入日期一分不动。挂单页「待卖」（今日挂单 + 常驻待卖 + 复制清单 + CSV）按 `domain/merge.ts` 的 `mergeTargetRows` 合并显示：**数量/金额/预期盈利相加，日期取组内最早买入日**，`data-merge-group` 标合并行、点击跳最早那笔。组合并条件是**还有 ≥2 笔在卖**（有剩余、未删除、买入价仍一致）——卖到只剩一笔自动散开，但关联保留（回补/恢复后又能合上）；目标价不同的（手动拆过）不跨价合并。计划价：优先读 `plan:<merge:<组>@<价>>`（合并行自己的计划），没有就尝试把成员原有的同价计划数量相加；不同价则不给计划（一张单装不下两个价）。沙盒模拟行永不合并。合并只影响挂单提醒——价格树/概览汇总照旧按原始 targets 算。e2e `[8.1.3]` 用柳工 9.61 的 16/22 行合并成 10.68 × 800、校验最早 2026-03-20 与解除恢复 |
+| 下一轮应买 V9.47 | **卖完的老批次也要提醒买**（网格一轮一轮做）：`domain/buyBoard.ts` 的 `buildNextRoundBuyRows` 给每个**卖完的真实批次**（`lot:<行>` 且 `remainingQty === 0`）按**买入价 C 列**排一档应买，数量 = 建仓量（超卖夹到批次量）。用户拍板的三条：价用 C 列（不是「卖出价 − 间隔」）、纳入卖完的批次 + **已回补完**的单（`remainingQty === 0 && execQty > 0`，行上标「回补过一轮」）、同价合并**复用 V9.45 的 merges 组**（组内 ≥2 笔都是卖完候选才合，数量相加、日期取最早、`anchorRow` 跳最早那笔；只剩一笔自动散开，关联不动）。**还没回补完的行直接跳过**——那张 P 列待买单已经在提醒、价位还不一样，并列会把同一笔钱提示两遍。回补虚拟批次（`lot:exec:*`）与沙盒行不参与。**纯展示、不碰账**：不进 `ledger.orders` / 待买剩余金额 / 组池奖励 / 守恒式 / records，所以 baseline 与单测数都不受影响；`key` 是 `buy:<行>` / `buy:merge:<组 id>`（只活在内存，不落库、不是 ID 前缀约定的一部分）。界面（`OrdersPage`）：今日挂单的「可挂买」把区间内档位并进来（组标签注「含已完成批次 N 条」，越界计数 `outCount` 也算它），待买卡下方常驻 `[data-testid="next-round-buy"]` 小节列全部档（行 `[data-buy-level=<锚行>]`、`data-merge-group`、蓝「下一轮」标签、**不给「记成交」**——它不是一张待买单）；复制清单加「【今日可挂买 · 已完成批次下一轮】」，CSV 加类型「应买（下一轮）」。**顺带修**：点这些行跳明细会落到「已完成」行，而明细默认 `hideDone` 把它藏掉 → 深链落空；`TradesPage` 现在对 `idFilter` 命中的那一行豁免 hideDone（与软删豁免同一思路）。e2e `[8]` 钉了小节存在、档数 ≥5、并入可挂买、R60-63 不重复提示、无「记成交」、深链恰好命中 1 行 |
 | 计划价 P8 | plans 只影响展示/导出，永不参与计算 |
 | 软删除 | `deletedAt` 非空的行不参与一切派生；导入幂等按 importKey，同 key 不覆盖 |
 | 基准 | `defaults.ts` BASELINE 只对「26年网格记录」fixture 成立，金额 ±1 元容差（E 列三位小数取整）；改任何派生逻辑跑 `io/baseline.spec.ts` 是红线 |
@@ -128,3 +129,6 @@ schemaVersion 9（V9.46 加 chainLinks；V9.45 加 merges；V9.32 去掉 account
   「界面显示已回本、现金仍少 500」；买回没卖出的部分只算持仓。独立录入的交易**人工指定归属**、
   从链上发起的**自动继承**，**每份盈亏只归属一次**；全局「已实现盈利」每笔只算一次，链卡不再重复加一遍。
   界面固定四个数：原始亏损、后续净盈利、合计还差多少、当前实际持仓。
+- **G 先卖后买看份额不看日期**（2026-10-26 拍板，V9.47.1）：卖出日期早于买入日期是**合法记法**，不是数据错误；
+  只要本行买入份额盖得住卖出份额，就视为已回补 = 已完成（撤掉待买单、不再标待回补，随即成为 V9.47 的
+  下一轮应买档）。别再拿 `sellBeforeBuy` 当异常报，也别为了日期顺序把这类行留在待买里。

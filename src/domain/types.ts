@@ -113,6 +113,11 @@ export interface SellExecution {
   dateMissing: boolean
   priceSource: PriceSource
   rebuyStatus: RebuyStatus
+  /**
+   * V9.47.1：本行自己的买入批次盖住这次卖出的股数（先卖后买份额匹配即视为已回补）。
+   * 待买单只挂 `qty − ownLotCoverQty` 那截真没买回来的量；省略 = 0。
+   */
+  ownLotCoverQty?: number
   /** 卖出日期早于买入日期（D4，合法） */
   sellBeforeBuy: boolean
   /** 成本价分组键 stockId|priceCents */

@@ -11,6 +11,7 @@ import { isoToSerial } from '../domain/edit'
 import { serialToIso } from '../domain/defaults'
 import { sandboxRowOf, type SandboxItem, type SandboxKind } from '../domain/sandbox'
 import { mergeTargetRows, type TargetRow } from '../domain/merge'
+import { buildNextRoundBuyRows, type NextRoundBuyRow } from '../domain/buyBoard'
 import { buildNanoIdIndex } from '../ui/nanoid'
 import { downloadText, toCsv } from '../ui/csv'
 import { useFlashOnAppear } from '../ui/motion'
@@ -182,6 +183,74 @@ export function OrdersPage({
   const sellOut = range ? targetRows.filter((r) => !within(r.priceCents)).length : 0
   const buyTodayAmount = buyToday.reduce((a, o) => a + o.rebuyPriceCents * o.remainingQty, 0)
   const sellTodayAmount = sellToday.reduce((a, r) => a + r.amountCents, 0)
+
+  /**
+   * V9.47：卖完的老批次，股价回到买入价那一档也要提醒买一次（网格一轮一轮做）。
+   * 只做提醒——不进 orders、不计待买剩余金额、不参与组池奖励与守恒式。
+   */
+  const nextRound = useMemo(
+    () =>
+      buildNextRoundBuyRows({
+        lots: view.lots,
+        orders: view.orders,
+        sells: view.sells,
+        merges,
+        sandboxRows: new Set(sandboxByRow.keys()),
+      }).filter((r) => r.stockName === effectiveStock),
+    [view.lots, view.orders, view.sells, merges, sandboxByRow, effectiveStock],
+  )
+  const levelToday = range ? nextRound.filter((r) => within(r.priceCents)) : []
+  /** 越界计数把下一轮档也算进来（今日挂单列了它们，口径要一致） */
+  const outCount = buyOut + sellOut + nextRound.length - levelToday.length
+
+  /** 下一轮应买的一行：没有对应的待买单，所以不给「记成交」，点行跳明细 */
+  const levelLine = (r: NextRoundBuyRow, inToday: boolean) => {
+    const z = zone(r.priceCents)
+    return (
+      <div
+        key={r.key}
+        className="line wrap-row pending-buy clickable"
+        data-buy-level={r.anchorRow}
+        data-merge-group={r.merged ? r.key : undefined}
+        data-testid={inToday ? undefined : 'next-round-row'}
+        onClick={() => goTrades({ id: idFor(r.anchorRow), stock: r.stockName })}
+      >
+        <div className="left">
+          <div className="t1 num">
+            {r.merged && <span className="merge-mark">合并 · </span>}
+            买 {price(r.priceCents)} × {qty(r.qty)}
+          </div>
+          <div className="t2">
+            {r.merged
+              ? `合并 ${r.rows.length} 笔 · 最早 ${r.earliestBuyDate ?? '—'}`
+              : `${recordNoLabel(r.anchorRow, recordNo)} · 买入 ${r.earliestBuyDate ?? '—'}`}
+            {r.lastSoldAt && ` · 已卖完于 ${r.lastSoldAt}`}
+            {r.repaid && ' · 回补过一轮'}
+          </div>
+          <div className="tag-row" style={{ marginTop: 4 }}>
+            <Tag size="small" variant="soft" color="app-blue">下一轮</Tag>
+            <Tag
+              size="small"
+              variant="soft"
+              color={z === '区间内' ? 'app-green' : z === '无区间' ? 'default' : 'app-red'}
+            >
+              {z}
+            </Tag>
+            {r.merged && <Tag size="small" variant="soft" color="purple">同价 {r.rows.length} 笔</Tag>}
+          </div>
+        </div>
+        <div className="right num" style={{ fontWeight: 600 }}>
+          {money(r.amountCents)}
+        </div>
+      </div>
+    )
+  }
+
+  /** 下一轮应买在清单里的身份（复制 / CSV 共用） */
+  const levelShort = (r: NextRoundBuyRow) =>
+    r.merged
+      ? `合并 ${r.rows.length} 笔（${r.rows.map((row) => recordNoLabel(row, recordNo)).join(' + ')}）`
+      : recordNoLabel(r.anchorRow, recordNo)
 
   /** 待卖行的身份文案：合并行报「合并 N 笔 + 最早买入日期」，单笔行还是「第 N 笔 · 买入价」 */
   const sellRowLabel = (r: TargetRow) =>
@@ -401,6 +470,11 @@ export function OrdersPage({
         lines.push(`  ${recordNoLabel(o.sourceRow, recordNo)}  ${price(o.planPriceCents ?? o.rebuyPriceCents)} × ${o.planQty ?? o.remainingQty} 股`)
       }
     }
+    // V9.47：卖完的老批次排在同一份清单里，标一下是「下一轮」
+    if (levelToday.length) {
+      lines.push('【今日可挂买 · 已完成批次下一轮】')
+      for (const r of levelToday) lines.push(`  ${levelShort(r)}  ${price(r.priceCents)} × ${r.qty} 股`)
+    }
     if (sellToday.length) {
       lines.push('【今日可挂卖】')
       for (const r of sellToday) {
@@ -410,6 +484,7 @@ export function OrdersPage({
     if (!range) {
       lines.push('（未确认昨收价，以下是全部待买/待卖）')
       for (const o of orders) lines.push(`  待买 ${price(o.rebuyPriceCents)} × ${o.remainingQty}`)
+      for (const r of nextRound) lines.push(`  应买（下一轮） ${price(r.priceCents)} × ${r.qty}`)
       for (const r of targetRows) lines.push(`  待卖 ${sellRowShort(r)} ${price(r.priceCents)} × ${r.qty}`)
     }
     void navigator.clipboard?.writeText(lines.filter(Boolean).join('\n'))
@@ -429,6 +504,16 @@ export function OrdersPage({
         q,
         ((p * q) / 100).toFixed(2),
         zone(p),
+      ])
+    }
+    for (const r of nextRound) {
+      rows.push([
+        '应买（下一轮）',
+        levelShort(r),
+        price(r.priceCents),
+        r.qty,
+        ((r.priceCents * r.qty) / 100).toFixed(2),
+        zone(r.priceCents),
       ])
     }
     for (const r of targetRows) {
@@ -726,8 +811,8 @@ export function OrdersPage({
               </div>
               <div>
                 <div className="k">越界</div>
-                <div className="v" style={{ color: buyOut + sellOut > 0 ? 'var(--up)' : undefined }}>
-                  {buyOut + sellOut}
+                <div className="v" style={{ color: outCount > 0 ? 'var(--up)' : undefined }}>
+                  {outCount}
                 </div>
               </div>
               <div>
@@ -736,13 +821,16 @@ export function OrdersPage({
               </div>
             </div>
 
-            {buyToday.length === 0 && sellToday.length === 0 ? (
-              <div className="empty-box">这个区间里没有可挂的单（{buyOut} 买 / {sellOut} 卖 越界）</div>
+            {buyToday.length + levelToday.length === 0 && sellToday.length === 0 ? (
+              <div className="empty-box">这个区间里没有可挂的单（{outCount} 条越界）</div>
             ) : (
               <>
-                {buyToday.length > 0 && (
+                {buyToday.length + levelToday.length > 0 && (
                   <>
-                    <div className="group-label">可挂买 · {buyToday.length} 条</div>
+                    <div className="group-label">
+                      可挂买 · {buyToday.length + levelToday.length} 条
+                      {levelToday.length > 0 && `（含已完成批次 ${levelToday.length} 条）`}
+                    </div>
                     <div className="data-block">
                       {buyToday.map((o) => {
                         const sim = sandboxByRow.get(o.sourceRow)
@@ -805,6 +893,7 @@ export function OrdersPage({
                           </div>
                         )
                       })}
+                      {levelToday.map((r) => levelLine(r, true))}
                     </div>
                   </>
                 )}
@@ -903,6 +992,9 @@ export function OrdersPage({
         <div className="sec-head">
           <strong>待买</strong>
           <Tag size="small" variant="soft" color="purple">{orders.length} 条</Tag>
+          {nextRound.length > 0 && (
+            <Tag size="small" variant="soft" color="app-blue">下一轮 {nextRound.length} 档</Tag>
+          )}
           <div className="spacer" />
           {sandbox.active && (
             <Button size="small" type="text" data-action="sandbox-add-sell" onClick={() => openSandboxForm('sell')}>
@@ -1009,6 +1101,21 @@ export function OrdersPage({
                 </div>
               )
             })}
+          </div>
+        )}
+        {/* V9.47：卖完的老批次也排下一轮，价格回到成本档就再提醒买一次 */}
+        {nextRound.length > 0 && (
+          <div className="divider-top" data-testid="next-round-buy">
+            <div className="sec-head sm">
+              <strong>下一轮应买</strong>
+              <div className="spacer" />
+              <span className="sec-sub">已完成批次 · {nextRound.length} 档</span>
+            </div>
+            <div className="data-block">{nextRound.map((r) => levelLine(r, false))}</div>
+            <p className="tiny muted" style={{ margin: '6px 0 0' }}>
+              这些批次已经卖完（明细里算「已完成」）。股价回到买入价那一档时同样提醒买一次；
+              只做提醒——不计进下面的待买剩余金额，也不参与组池奖励。
+            </p>
           </div>
         )}
         <p className="tiny muted" style={{ margin: '10px 0 0' }}>
