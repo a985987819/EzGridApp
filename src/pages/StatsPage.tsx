@@ -2,7 +2,8 @@ import { useMemo, useState } from 'react'
 import { Button, Calendar, Card, Tag } from 'animal-island-ui'
 import { useApp } from '../store/useApp'
 import { activeStocks } from '../domain/stocks'
-import { money, qty, signedMoney, tone } from '../ui/format'
+import { buildGridStats } from '../domain/gridStats'
+import { money, price, qty, signedMoney, tone } from '../ui/format'
 import { monthRange, type TradesQuery } from '../ui/nav'
 import { recordNoLabel } from '../domain/recordNo'
 import { buildNanoIdIndex } from '../ui/nanoid'
@@ -12,11 +13,25 @@ export function StatsPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) 
   const t = ledger.totals
   const active = activeStocks(stocks)
   const enabledNames = new Set(active.map((s) => s.name))
-  const enabledIds = new Set(active.map((s) => s.id))
+  const enabledIds = useMemo(() => new Set(active.map((s) => s.id)), [active])
   const byStock = ledger.byStock.filter((s) => enabledNames.has(s.stockName))
   const groups = ledger.groups.filter((g) => enabledIds.has(g.stockId))
   const hiddenCount = ledger.byStock.length - byStock.length
   const stockNameOf = (id: string) => stocks.find((s) => s.id === id)?.name ?? ''
+  /**
+   * V9.61 网格进行度：完成轮次 / 高成交点位 / 平均持仓——纯派生（domain/gridStats）。
+   * 盈利口径是「批次自身的卖出盈利」，不含裸卖与挂钩暂记，别和上面的实现盈利总账对数。
+   */
+  const grid = useMemo(() => {
+    const enabledLotIds = new Set(
+      ledger.lots.filter((l) => enabledIds.has(l.stockId)).map((l) => l.id),
+    )
+    return buildGridStats(
+      ledger.lots.filter((l) => enabledLotIds.has(l.id)),
+      ledger.sells.filter((s) => s.lotId !== null && enabledLotIds.has(s.lotId)),
+    )
+  }, [ledger.lots, ledger.sells, enabledIds])
+  const pendingRebuyQty = ledger.orders.reduce((a, o) => a + o.remainingQty, 0)
 
   return (
     <div className="stack">
@@ -44,6 +59,107 @@ export function StatsPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) 
           </div>
         </div>
       </Card>
+
+      {/* V9.61 网格进行度：一眼看清做到哪一步了 */}
+      <Card data-testid="grid-progress">
+        <div className="sec-head">
+          <strong>网格进行度</strong>
+          <div className="spacer" />
+          <span className="sec-sub">完成一轮 = 买入后已卖光</span>
+        </div>
+        <div className="grid-4 metric-strip two-col">
+          <div>
+            <div className="k">完成轮次</div>
+            <div className="v">{grid.doneRounds}</div>
+          </div>
+          <div>
+            <div className="k">进行中批次</div>
+            <div className="v">{grid.activeRounds}</div>
+          </div>
+          <div>
+            <div className="k">每轮均盈</div>
+            <div className={`v money ${tone(grid.avgProfitCents ?? 0)}`}>
+              {grid.avgProfitCents === null ? '—' : signedMoney(grid.avgProfitCents)}
+            </div>
+          </div>
+          <div>
+            <div className="k">平均持仓</div>
+            <div className="v">{grid.avgHoldingDays === null ? '—' : `${grid.avgHoldingDays} 天`}</div>
+          </div>
+          <div>
+            <div className="k">待卖股数</div>
+            <div className="v">{qty(t.targetQty)}</div>
+          </div>
+          <div>
+            <div className="k">待回补股数</div>
+            <div className="v">{qty(pendingRebuyQty)}</div>
+          </div>
+          <div>
+            <div className="k">空头敞口</div>
+            <div className="v" style={{ color: t.exposureQty > 0 ? 'var(--up)' : undefined }}>
+              {qty(t.exposureQty)}
+            </div>
+          </div>
+          <div>
+            <div className="k">最热价位</div>
+            <div className="v" style={{ fontSize: 14 }}>
+              {grid.hotTop ? `${grid.hotTop.stockName} ${price(grid.hotTop.priceCents)} · ${grid.hotTop.doneCount} 轮` : '—'}
+            </div>
+          </div>
+        </div>
+        <p className="tiny muted" style={{ margin: '8px 0 0' }}>
+          「每轮均盈」与下面的高成交点位用批次自身盈利口径（不含裸卖与挂钩暂记），和总账的实现盈利不是同一个数。
+        </p>
+      </Card>
+
+      {/* V9.61 高成交点位：已完成次数最多的买入价位——网格踩得最熟的档 */}
+      <Card data-testid="hot-levels">
+        <div className="sec-head">
+          <strong>高成交点位</strong>
+          <div className="spacer" />
+          <span className="sec-sub">按已完成轮次排名</span>
+        </div>
+        {grid.levels.length === 0 ? (
+          <div className="empty-box">还没有已完成的买入批次</div>
+        ) : (
+          <div className="data-block">
+            {grid.levels.map((l, i) => {
+              const max = Math.max(1, ...grid.levels.map((x) => x.doneCount))
+              return (
+                <div
+                  key={`${l.stockName}|${l.priceCents}`}
+                  className="line clickable hot-row"
+                  onClick={() => goTrades({ stock: l.stockName, price: l.priceCents, showDone: true })}
+                >
+                  <div className="left" style={{ flex: 1, minWidth: 0 }}>
+                    <div className="t1 num">
+                      {i === 0 && l.doneCount > 0 && (
+                        <Tag size="small" variant="soft" color="app-orange" style={{ marginRight: 6 }}>最热</Tag>
+                      )}
+                      {l.stockName} {price(l.priceCents)}
+                    </div>
+                    <div className="t2 num">
+                      完成 {l.doneCount} 轮 · 在手 {l.activeCount} 批 · 累计买 {qty(l.buyQty)} 股
+                    </div>
+                    <div className="hot-bar" aria-hidden>
+                      <i style={{ width: `${Math.round((l.doneCount / max) * 100)}%` }} />
+                    </div>
+                  </div>
+                  <div className="right">
+                    <div className={`num ${tone(l.profitCents)}`} style={{ fontWeight: 700 }}>
+                      {signedMoney(l.profitCents)}
+                    </div>
+                    <div className="tiny muted num">该价位已实现</div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </Card>
+
+      {/* V9.61 近 12 个月盈利趋势：红盈绿亏，条高按绝对值 */}
+      <TrendCard monthly={ledger.monthly} />
 
       <CalendarCard goTrades={goTrades} />
 
@@ -175,6 +291,36 @@ export function StatsPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) 
   )
 }
 
+
+/** V9.61 近 12 个月盈利趋势：一格一个月，条高 = |盈利| 占最大值比例，红盈绿亏 */
+function TrendCard({ monthly }: { monthly: { month: string; profitCents: number; sellCount: number }[] }) {
+  const recent = monthly.slice(-12)
+  const maxAbs = Math.max(1, ...recent.map((m) => Math.abs(m.profitCents)))
+  return (
+    <Card data-testid="profit-trend">
+      <div className="sec-head">
+        <strong>近 12 个月盈利</strong>
+        <div className="spacer" />
+        <span className="sec-sub">条高按绝对值 · 红盈绿亏</span>
+      </div>
+      {recent.length === 0 ? (
+        <div className="empty-box">还没有按月归集的卖出</div>
+      ) : (
+        <div className="trend-chart">
+          {recent.map((m) => (
+            <div key={m.month} className="trend-col" title={`${m.month} · ${signedMoney(m.profitCents)} · ${m.sellCount} 笔`}>
+              <div
+                className={`trend-bar ${tone(m.profitCents)}`}
+                style={{ height: `${Math.max(3, Math.round((Math.abs(m.profitCents) / maxAbs) * 100))}%` }}
+              />
+              <div className="trend-month num">{m.month.slice(5)}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  )
+}
 
 /** 日历格用的紧凑盈利：+196 / -120（元，四舍五入到整数） */
 function compactYuan(cents: number): string {

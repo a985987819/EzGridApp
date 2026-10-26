@@ -753,6 +753,51 @@ button { font-family: inherit; }
 }
 .orders-compact .oc-expand { margin-left: auto; flex: none; color: #a09080; font-size: 12px; }
 
+/* ---------- 统计 · 网格进行度 / 高成交点位 / 盈利趋势（V9.61） ---------- */
+.hot-row { align-items: center; }
+.hot-bar {
+  height: 8px;
+  margin-top: 6px;
+  border-radius: 999px;
+  background: rgba(61, 52, 40, 0.08);
+  overflow: hidden;
+}
+.hot-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #19c8b9, #82d5bb);
+  transition: width var(--dur-3) var(--ease-soft);
+}
+.trend-chart {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  height: 118px;
+  padding: 4px 2px 0;
+}
+.trend-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+.trend-bar {
+  border-radius: 5px 5px 2px 2px;
+  min-height: 3px;
+  transition: height var(--dur-3) var(--ease-soft);
+}
+.trend-bar.up { background: var(--up); }
+.trend-bar.down { background: var(--down); }
+.trend-bar.flat { background: rgba(61, 52, 40, 0.15); }
+.trend-month {
+  margin-top: 4px;
+  text-align: center;
+  font-size: 10px;
+  color: #a09080;
+}
+
 /* ---------- 明细页吸顶：下滑只留标题计数，筛选项回顶再出来（V9.42） ---------- */
 .trades-sticky { transition: padding 0.18s var(--ease-soft); }
 .trades-sticky.is-condensed { padding: 4px 2px 6px; }

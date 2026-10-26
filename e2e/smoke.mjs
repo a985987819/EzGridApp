@@ -1118,6 +1118,36 @@ try {
   check('组池跳转带股票和价格档', groupHash.startsWith('#/trades') && /price=\d+/.test(groupHash) && decodeURIComponent(groupHash).includes('stock=柳工'), groupHash)
   check('组池[0]=柳工|7.81 命中 2 行（跳转自动放开隐藏）', (await headCount()) === 2, String(await headCount()))
 
+  // V9.61 网格进行度 + 高成交点位 + 盈利趋势
+  await nav('stats')
+  check('网格进行度卡存在', await evaluate(`Boolean(document.querySelector('[data-testid="grid-progress"]'))`))
+  check('高成交点位卡存在且有排名行', (await evaluate(`document.querySelectorAll('[data-testid="hot-levels"] .hot-row').length`)) >= 1)
+  check('盈利趋势卡存在', (await evaluate(`document.querySelectorAll('[data-testid="profit-trend"] .trend-col').length`)) >= 1)
+  const hotRaw = await evaluate(`(() => {
+    const rows = [...document.querySelectorAll('[data-testid="hot-levels"] .hot-row')]
+    return JSON.stringify({
+      first: rows[0]?.innerText.replace(/\s+/g, ' ').trim() ?? '',
+      sorted: rows.map((r) => Number((r.textContent.match(/完成 (\d+) 轮/) ?? [])[1] ?? 0)).every((v, i, a) => i === 0 || a[i - 1] >= v),
+    })
+  })()`)
+  console.log('  高成交点位:', hotRaw)
+  const hot = JSON.parse(hotRaw)
+  check('点位按完成轮次降序', hot.sorted, hotRaw)
+  check('首行标「最热」并给价与轮次', hot.first.includes('最热') && /完成 \d+ 轮/.test(hot.first), hotRaw)
+  // 基准钉值：fixture 里唯一一档完成 ≥1 轮的价位是三一重工 19.53（R2 卖光）
+  check('基准热点位 = 三一重工 19.53 · 完成 1 轮', hot.first.includes('三一重工 19.53') && hot.first.includes('完成 1 轮'), hotRaw)
+  check(
+    '点热点位行跳明细（带股票与价格档）',
+    await evaluate(`(() => {
+      const row = document.querySelector('[data-testid="hot-levels"] .hot-row')
+      if (!row) return false
+      row.click(); return true
+    })()`),
+  )
+  await sleep(600)
+  const hotHash = await evaluate('location.hash')
+  check('热点位跳转带股票和价格档', hotHash.startsWith('#/trades') && /price=\d+/.test(hotHash) && decodeURIComponent(hotHash).includes('stock='), hotHash)
+
   // V9.7：年 / 月累计盈利 + 日历按天聚合
   await nav('stats')
   text = await bodyText()
