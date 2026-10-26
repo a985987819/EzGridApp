@@ -2,6 +2,7 @@ import { useRef } from 'react'
 import { Button, Card, Collapse, Switch, Tag, notificationOpen } from 'animal-island-ui'
 import { useApp } from '../../store/useApp'
 import { downloadText } from '../../ui/csv'
+import { openFilePicker } from '../../ui/pickFile'
 import { IconDownload, IconUpload } from '../../ui/icons'
 
 export function ManageBackup() {
@@ -42,40 +43,71 @@ export function ManageBackup() {
           >
             <IconDownload /> 导出全量 JSON
           </Button>
-          <Button block onClick={() => fileRef.current?.click()}>
-            <IconUpload /> 从 JSON 恢复
-          </Button>
-          <input
-            ref={fileRef}
-            type="file"
-            accept=".json"
-            style={{ display: 'none' }}
-            onChange={(e) => {
-              const f = e.target.files?.[0]
-              if (!f) return
-              void f.text().then(async (text) => {
-                try {
-                  // S4：恢复是整库覆盖，先把当前库强制导出一份快照，手滑了还有后悔药
-                  const snapshot = await exportBackup()
-                  const stamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-')
-                  const snapName = `grid-backup-before-restore-${stamp}.json`
-                  downloadText(snapName, snapshot, 'application/json;charset=utf-8')
-                  await restoreBackup(text)
-                  notificationOpen({
-                    message: '备份已恢复',
-                    description: `恢复前已自动导出当前数据：${snapName}`,
-                    type: 'success',
-                  })
-                } catch (err) {
-                  notificationOpen({
-                    message: '恢复失败（当前数据未动，快照已导出到下载目录）',
-                    description: err instanceof Error ? err.message : String(err),
-                    type: 'error',
-                  })
-                }
-              })
+          {/*
+           * V9.59：恢复备份原来用「display:none 的 input + 按钮 onClick 里 fileRef.click()」——
+           * 程序化 click 在 iOS PWA 独立模式里一直不可靠，点「从 JSON 恢复」毫无反应。
+           * 换成导入区验证过的「透明 input 铺满触发区」（V9.52.1）+ 独立模式兜底
+           * （opacity 0.01、showPicker/click 兜底，见 ui/pickFile.ts）；accept 补 MIME，
+           * 只写扩展名会在部分 WebView 里把文件过滤成灰的（V9.52 的坑）。
+           */}
+          <label
+            htmlFor="restore-file-input"
+            style={{ display: 'block', cursor: 'pointer', position: 'relative' }}
+            onClick={(e) => {
+              if (e.target === fileRef.current) return
+              e.preventDefault()
+              openFilePicker(fileRef.current)
             }}
-          />
+          >
+            <input
+              ref={fileRef}
+              id="restore-file-input"
+              type="file"
+              accept=".json,application/json,text/plain,application/octet-stream"
+              style={{
+                position: 'absolute',
+                inset: 0,
+                width: '100%',
+                height: '100%',
+                opacity: 0.01,
+                cursor: 'pointer',
+                zIndex: 1,
+              }}
+              onChange={(e) => {
+                const f = e.target.files?.[0]
+                e.currentTarget.value = ''
+                if (!f) return
+                void f.text().then(async (text) => {
+                  try {
+                    // S4：恢复是整库覆盖，先把当前库强制导出一份快照，手滑了还有后悔药
+                    const snapshot = await exportBackup()
+                    const stamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-')
+                    const snapName = `grid-backup-before-restore-${stamp}.json`
+                    downloadText(snapName, snapshot, 'application/json;charset=utf-8')
+                    await restoreBackup(text)
+                    notificationOpen({
+                      message: '备份已恢复',
+                      description: `恢复前已自动导出当前数据：${snapName}`,
+                      type: 'success',
+                    })
+                  } catch (err) {
+                    notificationOpen({
+                      message: '恢复失败（当前数据未动，快照已导出到下载目录）',
+                      description: err instanceof Error ? err.message : String(err),
+                      type: 'error',
+                    })
+                  }
+                })
+              }}
+            />
+            {/* 按钮纯视觉，事件全交给铺满的 input；button 是 labelable 元素，
+                必须靠 htmlFor 把 labeled control 钉死在 file input 上 */}
+            <div style={{ pointerEvents: 'none' }}>
+              <Button block>
+                <IconUpload /> 从 JSON 恢复
+              </Button>
+            </div>
+          </label>
           <Button
             block
             danger

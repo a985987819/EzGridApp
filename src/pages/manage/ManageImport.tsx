@@ -1,10 +1,11 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Button, Card, Tag, notificationOpen } from 'animal-island-ui'
 import { useApp } from '../../store/useApp'
 import { parseWorkbookFile, parseCsvFile } from '../../io/parseWorkbook'
 import { buildLedger } from '../../domain/ledger'
 import { compareBaseline } from '../../domain/baseline'
 import { buildNanoIdIndex } from '../../ui/nanoid'
+import { openFilePicker } from '../../ui/pickFile'
 import { CheckList } from '../../components/CheckGrid'
 import { downloadText, toCsv } from '../../ui/csv'
 import { money, price, qty } from '../../ui/format'
@@ -43,6 +44,8 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
     rollbackBatch,
   } = useApp()
   const [busy, setBusy] = useState(false)
+  /** V9.59：独立模式兜底唤起要用（见 pickFile.ts 与 label 的 onClick） */
+  const importInputRef = useRef<HTMLInputElement>(null)
   const [lastFile, setLastFile] = useState('导入文件.xlsx')
 
   const previewLedger = useMemo(
@@ -116,8 +119,11 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
          * V9.52 移动端修复：原来用组件库的 Upload（隐藏 input + 程序 click + 只认扩展名的 accept），
          * iOS / 微信 WebView 里点开选择器后文件全被过滤成灰的，等于「无法选择文件」。
          * V9.52.1：label htmlFor + display:none 的 input 在部分手机 WebView 里点击无反应，
-         * 改成透明 input 直接铺满整个区域（opacity:0 + absolute inset:0），手指点的就是原生 input，
+         * 改成透明 input 直接铺满整个区域（absolute inset:0），手指点的就是原生 input，
          * 不依赖 label 转发，也不依赖任何 JS click()。桌面端拖拽保留（事件冒泡到 label）。
+         * V9.59：iOS PWA 独立模式里全透明（opacity:0）input 的原生激活偶尔不吃 tap，
+         * 浏览器标签页正常——透明度改 0.01，label onClick 再加 showPicker()/click() 兜底
+         * （tap 命中 input 时 target 就是它，直接返回，不会双重唤起；见 ui/pickFile.ts）。
          */}
         <label
           htmlFor="import-file-input"
@@ -130,9 +136,22 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
             const f = e.dataTransfer?.files?.[0]
             if (f) void handleFile(f)
           }}
+          onClick={(e) => {
+            /**
+             * V9.59：iOS PWA 独立模式兜底。tap 正常落在铺满的 input 上时，click 会以
+             * input 为 target 冒泡到这里——原生路径已经唤起选择器，直接返回；
+             * 独立模式偶尔把 tap 的命中测试跳过透明 input、落到 label 上时，趁手势
+             * 还在用 showPicker()/click() 兜底唤起（见 ui/pickFile.ts）。
+             */
+            if (e.target === importInputRef.current) return
+            if (busy) return
+            e.preventDefault()
+            openFilePicker(importInputRef.current)
+          }}
           style={{ display: 'block', cursor: 'pointer', position: 'relative' }}
         >
           <input
+            ref={importInputRef}
             id="import-file-input"
             name="import-file"
             type="file"
@@ -143,10 +162,13 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
               inset: 0,
               width: '100%',
               height: '100%',
-              opacity: 0,
+              // V9.59：透明度不能是 0——iOS PWA 独立模式里全透明 input 的原生激活偶尔不吃 tap
+              //（浏览器标签页正常），0.01 肉眼不可见但算「可见」，独立模式就能唤起选择器
+              opacity: 0.01,
               cursor: 'pointer',
-              // busy 时让整个区域不可点；正常时必须吃满整块区域接住 tap
+              // 压在内容层上面接 tap；busy 时让整个区域不可点
               pointerEvents: busy ? 'none' : 'auto',
+              zIndex: 1,
             }}
             onChange={(e) => {
               const f = e.target.files?.[0]

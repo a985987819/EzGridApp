@@ -154,11 +154,21 @@ schemaVersion 11（V9.50 加 buyTargets；V9.49 加行级成交来源；V9.46 �
 - **导入不要用组件库的 `Upload`（V9.52）**：它内部是隐藏 input + 程序 `click()` + 只写扩展名的
   `accept`，iOS / 微信 WebView 里点开选择器后文件会被全部过滤成灰的，表现就是「无法选择文件」。
   **V9.52.1 进一步**：`<label htmlFor>` + `display:none` 的 input 在部分手机 WebView 里点击仍无反应，
-  最终形态是**透明 input 直接铺满整个触发区域**（`position:absolute; inset:0; opacity:0`，label 只作
+  最终形态是**透明 input 直接铺满整个触发区域**（`position:absolute; inset:0`，label 只作
   `position:relative` 容器、内容层 `pointer-events:none`）——手指点的就是原生 input 本身，不依赖
   label 转发、不依赖任何 JS `click()`。`accept` 同时写上 MIME 与 `application/octet-stream`，onChange
   里清空 value 以便重复选同一文件；桌面端拖拽（`onDrop` 冒泡到 label）保留。e2e 仍用
   `input[type="file"]` 塞 fixture（透明铺满不影响 `DOM.setFileInputFiles`）。
+  **V9.59 独立模式（PWA）点击无响应**：浏览器标签页正常、添加到主屏幕后点文件选择没反应——
+  ① 全透明（`opacity:0`）input 在独立模式的原生激活偶尔不吃 tap，透明度改 **0.01**（肉眼不可见
+  但算「可见」）并加 `z-index:1`；② 程序化 `click()` 在独立模式里历史上不可靠，兜底顺序是
+  `showPicker()`（Safari 16+ 正规 API，独立模式可用）→ `click()`，统一在 `ui/pickFile.ts` 的
+  `openFilePicker`，**必须在 tap 的 click 手势里调用**；③ label 的 onClick 做「谁被点了」分诊——
+  tap 正常落在 input 上时 target 就是它、原生路径已唤起，直接 return（防止双重唤起），命中测试
+  被独立模式跳过时 target 是 label，preventDefault 后兜底唤起。**恢复备份的「从 JSON 恢复」
+  原来就是 display:none + `fileRef.click()` 形态（独立模式必挂），已改成同一套 overlay + 兜底；
+  accept 补了 `application/json,text/plain`——只写 `.json` 扩展名在部分 WebView 里文件是灰的。
+  以后任何「点这里选文件」入口都照这套抄，别用组件库 Upload，别用 display:none。**
 
 ## 设计决定记录（2026-10-24 用户拍板，接手 agent 不要擅自推翻）
 
