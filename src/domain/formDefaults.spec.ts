@@ -28,6 +28,14 @@ describe('表单留空采用占位默认值', () => {
     expect(buildLedger([record], DEFAULT_STOCKS).lots).toEqual([])
   })
 
+  it('买单数量跟着实际买入价派生，改价后不用自己算', () => {
+    expect(manualFormDefaults({ ...blank, price: '5' }, today, 57).qty).toBe('1200')
+    const { record, errors } = submit({ ...blank, price: '5' })
+    expect(errors).toEqual([])
+    expect(record.buyQtyRaw).toBe(1200)
+    expect(buildLedger([record], DEFAULT_STOCKS).targets[0]).toMatchObject({ priceCents: 557, qty: 1200 })
+  })
+
   it('手填价格覆盖默认值，目标价/回补价随实际输入重新推导', () => {
     const buy = submit({ ...blank, price: '6', qty: '500' })
     expect(buildLedger([buy.record], DEFAULT_STOCKS).targets[0]).toMatchObject({ priceCents: 657, qty: 500 })

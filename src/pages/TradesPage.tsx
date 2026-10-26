@@ -164,8 +164,10 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     historyOf,
     addExtraTarget,
     removeExtraTarget,
+    extraTargets,
     addBuyTarget,
     removeBuyTarget,
+    buyTargets,
     hedges,
     chainLinks,
     setChainMembers,
@@ -219,6 +221,25 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   /** V9.50 卖单拆买的输入（先卖后买 → 多笔买入） */
   const [bpPrice, setBpPrice] = useState('')
   const [bpQty, setBpQty] = useState('')
+
+  /**
+   * V9.51 用户拍板：拆分默认量 = **还能拆的量**（剩余 − 已经拆出去的档），
+   * 输入超过就直接夹到剩余量，绝不允许拆出超额。留空点确认即可完成一笔拆分。
+   */
+  const splitLeftOf = (lotId: string | null): number => {
+    if (!lotId) return 0
+    const lot = ledger.lots.find((l) => l.id === lotId)
+    if (!lot) return 0
+    const used = extraTargets.filter((t) => t.lotId === lotId).reduce((a, t) => a + t.qty, 0)
+    return Math.max(0, lot.remainingQty - used)
+  }
+  const buySplitLeftOf = (sellRow: number): number => {
+    const s = ledger.sells.find((x) => x.sourceRow === sellRow)
+    if (!s) return 0
+    const base = Math.max(0, s.qty - (s.ownLotCoverQty ?? 0))
+    const used = buyTargets.filter((t) => t.sellRow === sellRow).reduce((a, t) => a + t.qty, 0)
+    return Math.max(0, base - used)
+  }
 
   // 外部跳转 / 浏览器前进后退：hash 变了就把筛选整体换过去（跨数据跳转的落点）
   const urlKey = JSON.stringify(urlQuery)
@@ -1091,7 +1112,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                         className="grow"
                         value={tpQty}
                         onChange={(e) => setTpQty(e.target.value)}
-                        placeholder={String(current.lot.remainingQty)}
+                        placeholder={String(splitLeftOf(current.lot.id))}
                         aria-label="拆分股数"
                       />
                       <Button
@@ -1099,15 +1120,27 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                         onClick={() => {
                           if (!current.lot) return
                           const p = toCents(inputOrDefault(tpPrice, current.lot.targetPriceCents === null ? '' : centsToYuan(current.lot.targetPriceCents)))
-                          const qn = Number(inputOrDefault(tpQty, String(current.lot.remainingQty)))
-                          if (p === null || p <= 0 || !Number.isInteger(qn) || qn <= 0) {
+                          const left = splitLeftOf(current.lot.id)
+                          const raw = Number(inputOrDefault(tpQty, String(left)))
+                          if (p === null || p <= 0 || !Number.isInteger(raw) || raw <= 0) {
                             notificationOpen({ message: '拆分价和股数都要填', type: 'warning' })
                             return
                           }
+                          if (left <= 0) {
+                            notificationOpen({ message: '这批已经没有可拆的份额了', type: 'warning' })
+                            return
+                          }
+                          // V9.51：超过剩余量直接夹住，绝不拆出超额（不再靠事后截断报异常）
+                          const qn = Math.min(raw, left)
                           void addExtraTarget(current.lot.id, p, qn).then(() => {
                             setTpPrice('')
                             setTpQty('')
-                            notificationOpen({ message: '已拆分目标', description: '自动目标按剩余量缩减', type: 'success' })
+                            notificationOpen({
+                              message: '已拆分目标',
+                              description:
+                                raw > left ? `超过还能拆的 ${left} 股，已按剩余量拆分` : '自动目标按剩余量缩减',
+                              type: 'success',
+                            })
                           })
                         }}
                       >
@@ -1115,7 +1148,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                       </Button>
                     </div>
                     <p className="tiny muted" style={{ margin: '6px 0 0' }}>
-                      留空采用框内默认值。分批止盈：手动目标先占份额，剩下的仍挂在 E 列价上；合计超过批次剩余会被截断并标红。
+                      留空采用框内默认值（股数默认「还能拆的量」）。分批止盈：手动目标先占份额，剩下的仍挂在 E 列价上；超过还能拆的量会自动按剩余量拆分。
                     </p>
                   </div>
                 )}
@@ -1166,7 +1199,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                         className="grow"
                         value={bpQty}
                         onChange={(e) => setBpQty(e.target.value)}
-                        placeholder={String(current.sell?.rebuyRemainingQty ?? current.sell?.qty ?? 0)}
+                        placeholder={String(buySplitLeftOf(current.rec.sourceRow))}
                         aria-label="拆分买入股数"
                       />
                       <Button
@@ -1174,15 +1207,27 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                         onClick={() => {
                           const fallback = current.sell?.rebuyPriceCents ?? current.rec.earlyBuyPriceCents
                           const p = toCents(inputOrDefault(bpPrice, fallback == null ? '' : centsToYuan(fallback)))
-                          const qn = Number(inputOrDefault(bpQty, String(current.sell?.rebuyRemainingQty ?? current.sell?.qty ?? 0)))
-                          if (p === null || p <= 0 || !Number.isInteger(qn) || qn <= 0) {
+                          const left = buySplitLeftOf(current.rec.sourceRow)
+                          const raw = Number(inputOrDefault(bpQty, String(left)))
+                          if (p === null || p <= 0 || !Number.isInteger(raw) || raw <= 0) {
                             notificationOpen({ message: '拆分价和股数都要填', type: 'warning' })
                             return
                           }
+                          if (left <= 0) {
+                            notificationOpen({ message: '这笔已经没有可拆的回补份额了', type: 'warning' })
+                            return
+                          }
+                          // V9.51：超过还没回补的股数直接夹住
+                          const qn = Math.min(raw, left)
                           void addBuyTarget(current.rec.sourceRow, p, qn).then(() => {
                             setBpPrice('')
                             setBpQty('')
-                            notificationOpen({ message: '已拆分买入', description: '挂单页按拆出来的档显示', type: 'success' })
+                            notificationOpen({
+                              message: '已拆分买入',
+                              description:
+                                raw > left ? `超过还能拆的 ${left} 股，已按剩余量拆分` : '挂单页按拆出来的档显示',
+                              type: 'success',
+                            })
                           })
                         }}
                       >
@@ -1190,7 +1235,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                       </Button>
                     </div>
                     <p className="tiny muted" style={{ margin: '6px 0 0' }}>
-                      留空采用框内默认值。合计不能超过还没回补的股数，超出会被截断并标红；拆分后挂单页和概览只显示拆出来的买单。
+                      留空采用框内默认值（股数默认「还能拆的量」）。合计不能超过还没回补的股数，超过会自动按剩余量拆分；拆分后挂单页和概览只显示拆出来的买单。
                     </p>
                   </div>
                 )}
