@@ -312,7 +312,7 @@ export function OrdersPage({
         <details open><summary className="tiny muted">{r.sources.length} 笔来源 · 查看明细</summary>
           {/* V9.55 修：同一张卖单拆出的两档共用 sourceRow，撞价合并后会并进同一条建议 →
               key 只用「类型+行号」会重复；带上拆分段身份/股数才唯一 */}
-          {r.sources.map((v)=><div key={`${v.kind}:${v.row}:${v.kind==='order'?(v.splitKey??''):''}:${v.qty}`} className="tiny"><Button type="text" size="small" onClick={()=>goTrades({id:idFor(v.row),stock:r.stockName})}>{recordNoLabel(v.row,recordNo)}</Button> · {v.kind==='next'?'下一轮':(v.sellFirst?'先卖后买':'待回补')} {qty(v.qty)} 股</div>)}
+          {r.sources.map((v)=><div key={`${v.kind}:${v.row}:${v.kind==='order'?(v.splitKey??''):''}:${v.qty}`} className="tiny"><Button type="text" size="small" onClick={()=>goTrades({id:idFor(v.row),stock:r.stockName})}>{recordNoLabel(v.row,recordNo)}</Button> · {v.kind==='next'?'下一轮':(v.sellFirst?'先卖后买':'待回补')}{v.kind==='order' && v.splitKey ? ` 第 ${v.splitKey.split('#')[1] ?? '?'} 档` : ''} {qty(v.qty)} 股</div>)}
         </details>
       </div>
       <div className="right num">{money(r.amountCents)}</div>

@@ -247,7 +247,8 @@ export function HedgeBinder({
             <Input
               className="hedge-qty"
               value={draft[lot.sourceRow] ?? ''}
-              placeholder="0"
+              // V9.62：占位直接给「最多可挂量」——上限一目了然；留空仍表示不挂（防误挂满）
+              placeholder={`≤${qty(available)}`}
               onChange={(e) => setDraft({ ...draft, [lot.sourceRow]: e.target.value })}
               data-field={`hedge-${lot.sourceRow}`}
               aria-label={`挂到${recordNoLabel(lot.sourceRow, recordNo)}的股数`}

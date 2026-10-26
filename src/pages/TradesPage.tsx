@@ -245,6 +245,9 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     if (!o) return 0
     return Math.max(0, o.baseQty - o.execQty)
   }
+  /** V9.62：该股的网格间隔（拆分价缺省推导用） */
+  const intervalOf = (stock: string): number =>
+    stockList.find((s) => s.name === stock)?.intervalCents ?? 0
 
   // 外部跳转 / 浏览器前进后退：hash 变了就把筛选整体换过去（跨数据跳转的落点）
   const urlKey = JSON.stringify(urlQuery)
@@ -443,6 +446,26 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
 
   const current = visible.find((r) => r.rec.sourceRow === openRow) ?? null
   const drawerOpen = current !== null
+
+  /**
+   * V9.62 拆分价缺省推导：**能推出来的价都当 placeholder + 留空默认值**，理想情况拆一档只需要点确认。
+   * - 卖出目标：批次填了 E 列用 E 列；没填按 V9.49 口径「买入价 + 该股间隔」兜底。
+   * - 买入拆分：优先卖单已派生的回补价（P 列 > 卖价−间隔）；连推导条件都不满足才要求手填。
+   */
+  const tpFallback =
+    current?.lot == null
+      ? null
+      : (current.lot.targetPriceCents ??
+        (current.lot.buyPriceCents > 0 && intervalOf(current.lot.stockName) > 0
+          ? current.lot.buyPriceCents + intervalOf(current.lot.stockName)
+          : null))
+  const bpFallback = (() => {
+    if (current?.sell == null) return null
+    if (current.sell.rebuyPriceCents != null) return current.sell.rebuyPriceCents
+    const step = intervalOf(current.rec.stockName)
+    const p = current.sell.priceCents
+    return p != null && step > 0 && p - step > 0 ? p - step : null
+  })()
 
   // V9.40 输入法避让：抽屉打开期间把键盘高度写进 CSS 变量（面板挂 body 上，不会自己缩）
   useKeyboardInset(drawerOpen)
@@ -1105,7 +1128,10 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                         className="grow"
                         value={tpPrice}
                         onChange={(e) => setTpPrice(e.target.value)}
-                        placeholder={current.lot.targetPriceCents === null ? '拆分目标价' : centsToYuan(current.lot.targetPriceCents)}
+                        // V9.62：批次没填目标价时，按 V9.49 口径用「买入价 + 该股间隔」兜底——留空也能拆
+                        placeholder={
+                          tpFallback === null ? '拆分目标价' : centsToYuan(tpFallback)
+                        }
                         aria-label="拆分目标价"
                       />
                       <Input
@@ -1119,7 +1145,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                         size="small"
                         onClick={() => {
                           if (!current.lot) return
-                          const p = toCents(inputOrDefault(tpPrice, current.lot.targetPriceCents === null ? '' : centsToYuan(current.lot.targetPriceCents)))
+                          const p = toCents(inputOrDefault(tpPrice, tpFallback === null ? '' : centsToYuan(tpFallback)))
                           const left = splitLeftOf(current.lot.id)
                           const raw = Number(inputOrDefault(tpQty, String(left)))
                           if (p === null || p <= 0 || !Number.isInteger(raw) || raw <= 0) {
@@ -1164,13 +1190,13 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                       </span>
                     </div>
                     <div className="data-block">
-                      {ledger.buySplits
-                        .filter((b) => b.sourceRow === current.rec.sourceRow && b.split)
-                        .map((b) => (
+                      {(() => {
+                        const mine = ledger.buySplits.filter((b) => b.sourceRow === current.rec.sourceRow && b.split)
+                        return mine.map((b, i) => (
                           <div key={b.key} className="line" data-buy-split={b.key}>
                             <div className="left">
                               <div className="t1 num">
-                                {price(b.priceCents)} × {qty(b.plannedQty)}
+                                第 {i + 1}/{mine.length} 档 · {price(b.priceCents)} × {qty(b.plannedQty)}
                               </div>
                               <div className="t2">
                                 手动拆分
@@ -1183,16 +1209,16 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                               </Button>
                             )}
                           </div>
-                        ))}
+                        ))
+                      })()}
                     </div>
                     <div className="row nowrap" style={{ gap: 6, marginTop: 6 }}>
                       <Input
                         className="grow"
                         value={bpPrice}
                         onChange={(e) => setBpPrice(e.target.value)}
-                        placeholder={
-                          current.sell?.rebuyPriceCents == null ? '拆分买入价' : centsToYuan(current.sell.rebuyPriceCents)
-                        }
+                        // V9.62：回补价派生不出来时按「卖价 − 该股间隔」兜底，能推就当留空默认值
+                        placeholder={bpFallback === null ? '拆分买入价' : centsToYuan(bpFallback)}
                         aria-label="拆分买入价"
                       />
                       <Input
@@ -1205,8 +1231,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                       <Button
                         size="small"
                         onClick={() => {
-                          const fallback = current.sell?.rebuyPriceCents ?? current.rec.earlyBuyPriceCents
-                          const p = toCents(inputOrDefault(bpPrice, fallback == null ? '' : centsToYuan(fallback)))
+                          const p = toCents(inputOrDefault(bpPrice, bpFallback === null ? '' : centsToYuan(bpFallback)))
                           const left = buySplitLeftOf(current.rec.sourceRow)
                           const raw = Number(inputOrDefault(bpQty, String(left)))
                           if (p === null || p <= 0 || !Number.isInteger(raw) || raw <= 0) {
