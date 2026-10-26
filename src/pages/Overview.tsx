@@ -349,27 +349,29 @@ export function Overview({
 
           {openMetric === 'exposure' &&
             (() => {
-              const exposed = viewLedger.orders
-                .map((o) => ({
-                  o,
-                  owe: Math.max(0, o.baseQty - Math.max(0, o.execQty - o.doneRewardQty)),
-                }))
-                .filter((x) => x.o.exposure && x.owe > 0)
+              // V9.50：按待买展示档列出——卖单拆了几笔买入，这里就显示拆出来的价位
+              const exposedOrders = new Set(
+                viewLedger.orders
+                  .filter((o) => o.exposure && Math.max(0, o.baseQty - Math.max(0, o.execQty - o.doneRewardQty)) > 0)
+                  .map((o) => o.id),
+              )
+              const exposed = viewLedger.buySplits.filter((b) => exposedOrders.has(b.orderId) && b.qty > 0)
               if (exposed.length === 0) return <div className="empty-box">没有空头敞口</div>
               return (
                 <>
                   <div className="data-block">
-                    {exposed.map(({ o, owe }) => (
-                      <div key={o.id} className="line">
+                    {exposed.map((b) => (
+                      <div key={b.key} className="line" data-exposure={b.key}>
                         <div className="left">
-                          <div className="t1 num">{o.stockName} · 回补价 {price(o.rebuyPriceCents)}</div>
+                          <div className="t1 num">{b.stockName} · 回补价 {price(b.priceCents)}</div>
                           <div className="t2">
-                            {recordNoLabel(o.sourceRow, recordNo)}
-                            {o.execQty > 0 ? ` · 已回补 ${o.execQty}` : ''}
+                            {recordNoLabel(b.sourceRow, recordNo)}
+                            {b.split ? ' · 拆档' : ''}
+                            {b.executedQty > 0 ? ` · 已回补 ${b.executedQty}` : ''}
                           </div>
                         </div>
                         <div className="right num" style={{ fontWeight: 600, color: 'var(--up)' }}>
-                          {qty(owe)} 股
+                          {qty(b.qty)} 股
                         </div>
                       </div>
                     ))}

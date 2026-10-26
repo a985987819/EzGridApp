@@ -173,6 +173,43 @@ export interface ExtraTarget {
 }
 
 /**
+ * 卖单拆成多笔买入（V9.50）：先卖后买的单子按价位拆开挂买单。
+ * 总量不得超过该卖单还没回补的欠量，超出截断并标异常；拆分后挂单页/概览只认拆分段。
+ */
+export interface ExtraBuyTarget {
+  /** buytarget:<卖单行>:<ts> */
+  id: string
+  /** 被拆的那笔卖出（先卖后买）所在明细行号 */
+  sellRow: number
+  priceCents: number
+  qty: number
+  at: number
+}
+
+/**
+ * 待买订单的展示档（V9.50）：没拆分就是整单一条，拆了就按 buyTargets 分档。
+ * 只用于挂单页/概览展示与「记成交」取价、取量——账务仍走 RebuyOrder。
+ */
+export interface BuySplit {
+  /** 整单 = rb:sell:C；拆分段 = rb:sell:C#<序号> */
+  key: string
+  orderId: string
+  sellExecId: string
+  sourceRow: number
+  stockName: string
+  priceCents: number
+  /** 这一档还没买回来的量 */
+  qty: number
+  /** 这一档拆分时的原始量 */
+  plannedQty: number
+  /** 已经在这档成交的量（按档位顺序冲抵） */
+  executedQty: number
+  split: boolean
+  /** 手动拆分段对应的 buyTargets id（可删）；整单为 null */
+  targetId: string | null
+}
+
+/**
  * 先卖后买挂钩（V9.26）：裸卖在未回补期间人工指定挂到哪些未卖的高位批次上。
  * 纯派生输入——活跃条件由 buildLedger 判定（裸卖 + 无回补成交），回补一出现
  * 挂钩即失效（批次复原），撤销成交又自动恢复；这里只存分配，不存状态。
@@ -428,6 +465,7 @@ export interface Anomaly {
     | 'hedgeInvalid'
     | 'hedgeOverflow'
     | 'hedgeMismatch'
+    | 'buyTargetOverflow'
   sourceRow: number
   stockName: string
   detail: string
@@ -446,6 +484,8 @@ export interface Ledger {
   sells: SellExecution[]
   targets: SellTarget[]
   orders: RebuyOrder[]
+  /** V9.50：待买的展示档（没拆分 = 整单一条，拆了按 buyTargets 分段） */
+  buySplits: BuySplit[]
   groups: GroupPool[]
   byStock: StockSummary[]
   daily: DayBucket[]

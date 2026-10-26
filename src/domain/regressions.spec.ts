@@ -116,7 +116,7 @@ describe('挂单建议回归',()=>{
  it('同价待回补和下一轮建议汇总，金额包含所有建议',()=>{
   const l=buildLedger([sell(9,700,500),{...buy(2,500,300),soldQty:300}],[stock])
   const next=buildNextRoundBuyRows({...l,merges:[]})
-  const board=buildBuySuggestions(l.orders,next,[])
+  const board=buildBuySuggestions(l.buySplits,next,[])
   expect(board[0]).toMatchObject({qty:l.orders[0].remainingQty+300,amountCents:500*(l.orders[0].remainingQty+300)});expect(board[0].sources).toHaveLength(2)
  })
  it('下一轮成交部分消耗建议，软删买入后额度恢复',()=>{
@@ -157,5 +157,30 @@ describe('挂单建议回归',()=>{
   const l=buildLedger(records,[stock],{plans})
   const rows=mergeTargetRows({...l,merges:[]})
   expect(rows).toHaveLength(2);expect(new Set(rows.map((r)=>r.key)).size).toBe(2)
+ })
+})
+
+describe('V9.50 卖单拆买',()=>{
+ it('拆几档就挂几档，成交按档位顺序冲抵',()=>{
+  const targets=[{id:'bt1',sellRow:9,priceCents:600,qty:400,at:1},{id:'bt2',sellRow:9,priceCents:500,qty:600,at:2}]
+  const l=buildLedger([sell(9,700,1000)],[stock],{buyTargets:targets})
+  expect(l.buySplits.map((b)=>[b.priceCents,b.qty,b.split])).toEqual([[600,400,true],[500,1000,true]])
+  expect(l.buySplits.reduce((a,b)=>a+b.qty,0)).toBe(l.orders[0].remainingQty)
+  const withExec=buildLedger([sell(9,700,1000)],[stock],{buyTargets:targets,executions:[ex(9,300,600)]})
+  expect(withExec.buySplits.map((b)=>b.qty)).toEqual([100,1000])
+  expect(withExec.buySplits.map((b)=>b.executedQty)).toEqual([300,0])
+ })
+ it('拆分合计超过欠量按欠量截断并标 buyTargetOverflow',()=>{
+  const l=buildLedger([sell(9,700,500)],[stock],{buyTargets:[
+   {id:'bt1',sellRow:9,priceCents:600,qty:400,at:1},
+   {id:'bt2',sellRow:9,priceCents:500,qty:400,at:2},
+  ]})
+  expect(l.buySplits.map((b)=>b.qty)).toEqual([400,300])
+  expect(l.anomalies.some((a)=>a.kind==='buyTargetOverflow')).toBe(true)
+ })
+ it('没拆的待买仍然是整单一条',()=>{
+  const l=buildLedger([sell(9,700,500)],[stock])
+  expect(l.buySplits).toHaveLength(1)
+  expect(l.buySplits[0]).toMatchObject({split:false,qty:700,priceCents:500})
  })
 })

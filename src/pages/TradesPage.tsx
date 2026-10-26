@@ -140,6 +140,16 @@ function isNakedSell(rec: RawRecord): boolean {
   return !rec.soldLotId && rec.buyPriceCents === null && (rec.soldQty ?? 0) > 0
 }
 
+/**
+ * V9.50 用户拍板：成交数量是既成事实——已落库的买入/卖出份额只读，只放开对手价
+ * （买单改预期卖出价、卖单改预期买入价）。「补买入」的空买入侧仍可填，那是新增不是修改。
+ */
+function lockedField(key: EditableKey, row: TradeRow): boolean {
+  if (key === 'buyQty') return row.lot !== null || row.rec.buyQtyRaw !== null
+  if (key === 'soldQty') return (row.rec.soldQty ?? 0) > 0
+  return false
+}
+
 export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   const {
     ledger,
@@ -154,6 +164,8 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     historyOf,
     addExtraTarget,
     removeExtraTarget,
+    addBuyTarget,
+    removeBuyTarget,
     hedges,
     chainLinks,
     setChainMembers,
@@ -204,6 +216,9 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
 
   const [tpPrice, setTpPrice] = useState('')
   const [tpQty, setTpQty] = useState('')
+  /** V9.50 卖单拆买的输入（先卖后买 → 多笔买入） */
+  const [bpPrice, setBpPrice] = useState('')
+  const [bpQty, setBpQty] = useState('')
 
   // 外部跳转 / 浏览器前进后退：hash 变了就把筛选整体换过去（跨数据跳转的落点）
   const urlKey = JSON.stringify(urlQuery)
@@ -891,38 +906,50 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
             {editing ? (
               <>
               <div className="form-grid">
-                {EDITABLE.map((f) => (
-                  <label key={f.key}>
-                    <span>
-                      {f.label}
-                      {/* V9.35：日期给个「今天」快捷键，省得手打；输入框也认 2026/10/25 */}
-                      {f.kind === 'date' && (
-                        <button
-                          type="button"
-                          className="date-today"
-                          onClick={() => setDraft({ ...draft, [f.key]: todayIso() })}
-                        >
-                          今天
-                        </button>
+                {EDITABLE.map((f) => {
+                  // V9.50 用户拍板：成交数量是既成事实——买入/卖出份额只能看不能改，只放开对手价
+                  const locked = lockedField(f.key, current)
+                  return (
+                    <label key={f.key}>
+                      <span>
+                        {f.label}
+                        {locked && (
+                          <b className="tiny muted" style={{ fontWeight: 400 }}>
+                            {' '}
+                            · 成交数量不可改
+                          </b>
+                        )}
+                        {/* V9.35：日期给个「今天」快捷键，省得手打；输入框也认 2026/10/25 */}
+                        {f.kind === 'date' && !locked && (
+                          <button
+                            type="button"
+                            className="date-today"
+                            onClick={() => setDraft({ ...draft, [f.key]: todayIso() })}
+                          >
+                            今天
+                          </button>
+                        )}
+                      </span>
+                      {f.kind === 'date' ? (
+                        <DateField
+                          value={draft[f.key]}
+                          placeholder="YYYY-MM-DD 或 YYYY/MM/DD"
+                          onChange={(v) => setDraft({ ...draft, [f.key]: v })}
+                          data-field={f.key}
+                        />
+                      ) : (
+                        <Input
+                          value={draft[f.key]}
+                          placeholder={f.kind === 'qty' ? '股数' : '元'}
+                          onChange={(e) => setDraft({ ...draft, [f.key]: e.target.value })}
+                          data-field={f.key}
+                          data-locked={locked ? '1' : undefined}
+                          disabled={locked}
+                        />
                       )}
-                    </span>
-                    {f.kind === 'date' ? (
-                      <DateField
-                        value={draft[f.key]}
-                        placeholder="YYYY-MM-DD 或 YYYY/MM/DD"
-                        onChange={(v) => setDraft({ ...draft, [f.key]: v })}
-                        data-field={f.key}
-                      />
-                    ) : (
-                      <Input
-                        value={draft[f.key]}
-                        placeholder={f.kind === 'qty' ? '股数' : '元'}
-                        onChange={(e) => setDraft({ ...draft, [f.key]: e.target.value })}
-                        data-field={f.key}
-                      />
-                    )}
-                  </label>
-                ))}
+                    </label>
+                  )
+                })}
                 <p className="tiny muted" style={{ margin: 0 }}>
                   成交价由 E 列（目标售价）决定；成本优先取买入价，无批次时取 P 列。
                 </p>
@@ -1089,6 +1116,81 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                     </div>
                     <p className="tiny muted" style={{ margin: '6px 0 0' }}>
                       留空采用框内默认值。分批止盈：手动目标先占份额，剩下的仍挂在 E 列价上；合计超过批次剩余会被截断并标红。
+                    </p>
+                  </div>
+                )}
+
+                {/* V9.50 卖单拆买：先卖后买拆成多笔买入，挂单页与概览只显示拆出来的档 */}
+                {isNakedSell(current.rec) && (current.sell?.qty ?? 0) > 0 && (
+                  <div className="divider-top" data-testid="buy-split-section">
+                    <div className="sec-head sm">
+                      <strong>买入拆分</strong>
+                      <div className="spacer" />
+                      <span className="sec-sub">
+                        还没回补 {qty(current.sell?.rebuyRemainingQty ?? current.sell?.qty ?? 0)} 股
+                      </span>
+                    </div>
+                    <div className="data-block">
+                      {ledger.buySplits
+                        .filter((b) => b.sourceRow === current.rec.sourceRow && b.split)
+                        .map((b) => (
+                          <div key={b.key} className="line" data-buy-split={b.key}>
+                            <div className="left">
+                              <div className="t1 num">
+                                {price(b.priceCents)} × {qty(b.plannedQty)}
+                              </div>
+                              <div className="t2">
+                                手动拆分
+                                {b.executedQty > 0 ? ` · 已回补 ${qty(b.executedQty)} · 还剩 ${qty(b.qty)}` : ''}
+                              </div>
+                            </div>
+                            {b.targetId && (
+                              <Button size="small" danger onClick={() => void removeBuyTarget(b.targetId!)}>
+                                删除
+                              </Button>
+                            )}
+                          </div>
+                        ))}
+                    </div>
+                    <div className="row nowrap" style={{ gap: 6, marginTop: 6 }}>
+                      <Input
+                        className="grow"
+                        value={bpPrice}
+                        onChange={(e) => setBpPrice(e.target.value)}
+                        placeholder={
+                          current.sell?.rebuyPriceCents == null ? '拆分买入价' : centsToYuan(current.sell.rebuyPriceCents)
+                        }
+                        aria-label="拆分买入价"
+                      />
+                      <Input
+                        className="grow"
+                        value={bpQty}
+                        onChange={(e) => setBpQty(e.target.value)}
+                        placeholder={String(current.sell?.rebuyRemainingQty ?? current.sell?.qty ?? 0)}
+                        aria-label="拆分买入股数"
+                      />
+                      <Button
+                        size="small"
+                        onClick={() => {
+                          const fallback = current.sell?.rebuyPriceCents ?? current.rec.earlyBuyPriceCents
+                          const p = toCents(inputOrDefault(bpPrice, fallback == null ? '' : centsToYuan(fallback)))
+                          const qn = Number(inputOrDefault(bpQty, String(current.sell?.rebuyRemainingQty ?? current.sell?.qty ?? 0)))
+                          if (p === null || p <= 0 || !Number.isInteger(qn) || qn <= 0) {
+                            notificationOpen({ message: '拆分价和股数都要填', type: 'warning' })
+                            return
+                          }
+                          void addBuyTarget(current.rec.sourceRow, p, qn).then(() => {
+                            setBpPrice('')
+                            setBpQty('')
+                            notificationOpen({ message: '已拆分买入', description: '挂单页按拆出来的档显示', type: 'success' })
+                          })
+                        }}
+                      >
+                        拆分
+                      </Button>
+                    </div>
+                    <p className="tiny muted" style={{ margin: '6px 0 0' }}>
+                      留空采用框内默认值。合计不能超过还没回补的股数，超出会被截断并标红；拆分后挂单页和概览只显示拆出来的买单。
                     </p>
                   </div>
                 )}

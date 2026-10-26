@@ -8,7 +8,7 @@ import { deriveBuyQty } from './qty'
 import { deriveRebuyPrice } from './manual'
 import { serialToIso, stockIdOf } from './defaults'
 import { buildRepairChains } from './chain'
-import { type Anomaly, type ExtraTarget, type HedgeLink, type RebuyExecution, type TradePlan, type CheckResult, type GroupPool, type Ledger, type Lot, type DayBucket, type MonthlyBucket, type RawRecord, type RebuyOrder, type RepairChain, type RepairChainLink, type SellExecution, type SellTarget, type StockConfig, type StockSummary } from './types'
+import { type Anomaly, type BuySplit, type ExtraBuyTarget, type ExtraTarget, type HedgeLink, type RebuyExecution, type TradePlan, type CheckResult, type GroupPool, type Ledger, type Lot, type DayBucket, type MonthlyBucket, type RawRecord, type RebuyOrder, type RepairChain, type RepairChainLink, type SellExecution, type SellTarget, type StockConfig, type StockSummary } from './types'
 
 export interface BuildOptions {
   /** 基准金额，默认 6000 元 */
@@ -25,6 +25,8 @@ export interface BuildOptions {
   plans?: TradePlan[]
   /** 手动拆出来的卖出目标（V6 分批止盈） */
   extraTargets?: ExtraTarget[]
+  /** 卖单拆出来的买入目标（V9.50 分批回补）：只影响挂单展示与记成交取价 */
+  buyTargets?: ExtraBuyTarget[]
   /** 先卖后买挂钩（V9.26）：裸卖 → 高位批次的人工分配 */
   hedges?: HedgeLink[]
   /** 回本链归属（V9.46）：锚点 + 后续归属的真实买入行 */
@@ -583,6 +585,9 @@ export function buildLedger(
     }
   }
 
+  // V9.50：待买展示档——没拆分就是整单一条，拆了按 buyTargets 分段（记成交按档取价、取量）
+  const buySplits = buildBuySplits(orders, opts.buyTargets ?? [], anomalies)
+
   // 汇总（v9.20：回补批次已是派生批次计入 Σ买入，净持仓不再单独加回补量）
   // 暂记卖出（hedgedFromSellRow）不重复计入卖出量/金额/笔数——同一批股的另一种
   // 记账视角；其负盈利计入 profitCents（V9.26「暂记真实亏损」口径）
@@ -722,6 +727,7 @@ export function buildLedger(
     sells,
     targets,
     orders,
+    buySplits,
     groups: [...groups.values()].sort((a, b) => b.grossProfitCents - a.grossProfitCents),
     byStock,
     daily,
@@ -731,6 +737,89 @@ export function buildLedger(
     totals,
     repairChains,
   }
+}
+
+/**
+ * 待买展示档（V9.50 用户拍板）：卖单拆多笔买入后，挂单页/概览只显示拆出来的档，
+ * 记成交也按档位取价、取量。
+ * - 没拆 = 整单一条（价格取计划价 > P 列）；
+ * - 拆了 = 按 at 顺序分段，合计不得超过这张单的欠量（超出截断并标 buyTargetOverflow）；
+ * - 已成交的量按档位顺序冲抵，后面的档位还剩多少就挂多少。
+ */
+function buildBuySplits(
+  orders: RebuyOrder[],
+  targets: readonly ExtraBuyTarget[],
+  anomalies: Anomaly[],
+): BuySplit[] {
+  const bySell = new Map<number, ExtraBuyTarget[]>()
+  for (const t of targets) {
+    const list = bySell.get(t.sellRow)
+    if (list) list.push(t)
+    else bySell.set(t.sellRow, [t])
+  }
+  const out: BuySplit[] = []
+  for (const o of orders) {
+    const mine = (bySell.get(o.sourceRow) ?? []).slice().sort((a, b) => a.at - b.at)
+    if (mine.length === 0) {
+      out.push({
+        key: o.id,
+        orderId: o.id,
+        sellExecId: o.sellExecId,
+        sourceRow: o.sourceRow,
+        stockName: o.stockName,
+        priceCents: o.planPriceCents ?? o.rebuyPriceCents,
+        qty: o.remainingQty,
+        plannedQty: o.baseQty,
+        executedQty: o.execQty,
+        split: false,
+        targetId: null,
+      })
+      continue
+    }
+    const cap = Math.max(0, o.baseQty)
+    const total = mine.reduce((a, t) => a + t.qty, 0)
+    if (total > cap) {
+      anomalies.push({
+        kind: 'buyTargetOverflow',
+        sourceRow: o.sourceRow,
+        stockName: o.stockName,
+        detail: `拆分买单合计 ${total} 股 > 还没回补 ${cap} 股，已按欠量截断`,
+      })
+    }
+    let planned = 0
+    let execLeft = o.execQty
+    const rows: BuySplit[] = []
+    mine.forEach((t, i) => {
+      const qty = Math.min(t.qty, Math.max(0, cap - planned))
+      planned += qty
+      const used = Math.min(qty, Math.max(0, execLeft))
+      execLeft -= used
+      rows.push({
+        key: `${o.id}#${i + 1}`,
+        orderId: o.id,
+        sellExecId: o.sellExecId,
+        sourceRow: o.sourceRow,
+        stockName: o.stockName,
+        priceCents: t.priceCents,
+        qty: Math.max(0, qty - used),
+        plannedQty: qty,
+        executedQty: used,
+        split: true,
+        targetId: t.id,
+      })
+    })
+    // 组池奖励股是额外买入，按最后一个拆分段的价格一起挂（总量才和整单 remainingQty 对齐）
+    const rewardQty = Math.max(0, o.rewardQty - o.doneRewardQty)
+    if (rewardQty > 0 && rows.length > 0) {
+      const last = rows[rows.length - 1]
+      const used = Math.min(rewardQty, Math.max(0, execLeft))
+      last.qty += rewardQty - used
+      last.plannedQty += rewardQty
+      last.executedQty += used
+    }
+    out.push(...rows)
+  }
+  return out
 }
 
 /**

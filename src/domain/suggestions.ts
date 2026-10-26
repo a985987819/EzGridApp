@@ -1,7 +1,9 @@
-import type { Ledger, RawRecord, RebuyOrder, TradePlan } from './types'
+import type { BuySplit, Ledger, RawRecord, TradePlan } from './types'
 import type { NextRoundBuyRow } from './buyBoard'
 
-export type BuySource = { kind: 'order'; id: string; qty: number; row: number } | { kind: 'next'; id: string; qty: number; row: number }
+export type BuySource =
+  | { kind: 'order'; id: string; qty: number; row: number; /** V9.50 拆分段身份（同一卖单拆出的两档不能混） */ splitKey?: string }
+  | { kind: 'next'; id: string; qty: number; row: number }
 export interface BuySuggestion {
   key: string
   stockName: string
@@ -15,7 +17,11 @@ export function consumedNextRounds(records: readonly RawRecord[]): Map<number,nu
   for(const r of records)if(!r.deletedAt && r.nextRoundOfRow!==undefined)out.set(r.nextRoundOfRow,(out.get(r.nextRoundOfRow)??0)+(r.buyQtyRaw??0))
   return out
 }
-export function buildBuySuggestions(orders: readonly RebuyOrder[], next: readonly NextRoundBuyRow[], plans: readonly TradePlan[]): BuySuggestion[] {
+/**
+ * 买入建议（V9.50）：输入改成「待买展示档」——卖单拆了几笔买入就按几档出建议，
+ * 同价再合并（7.01 买 500 ×2 → 7.01 买 1000）。账务仍按 orderId 记成交。
+ */
+export function buildBuySuggestions(splits: readonly BuySplit[], next: readonly NextRoundBuyRow[], plans: readonly TradePlan[]): BuySuggestion[] {
   const rows=new Map<string,BuySuggestion>()
   const add=(stockName:string,p:number,source:BuySource)=>{
     if(source.qty<=0)return
@@ -24,7 +30,7 @@ export function buildBuySuggestions(orders: readonly RebuyOrder[], next: readonl
     if(hit){hit.qty+=source.qty;hit.amountCents+=p*source.qty;hit.sources.push(source)}
     else rows.set(key,{key,stockName,priceCents:p,qty:source.qty,amountCents:p*source.qty,sources:[source]})
   }
-  for(const o of orders)if(o.remainingQty>0)add(o.stockName,o.planPriceCents??o.rebuyPriceCents,{kind:'order',id:o.id,row:o.sourceRow,qty:Math.min(o.remainingQty,o.planQty??o.remainingQty)})
+  for(const b of splits)if(b.qty>0)add(b.stockName,b.priceCents,{kind:'order',id:b.orderId,row:b.sourceRow,qty:b.qty,splitKey:b.key})
   for(const n of next) {
     const plan=plans.find((p)=>p.kind==='buy'&&p.refId===n.key)
     let left=Math.min(n.qty,plan?.qty??n.qty)

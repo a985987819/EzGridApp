@@ -18,6 +18,8 @@ export interface BackupShape {
   rebuyExecutions?: unknown
   plans?: unknown
   extraTargets?: unknown
+  /** V9.50：卖单拆出来的买入目标 */
+  buyTargets?: unknown
   hedges?: unknown
   merges?: unknown
   chainLinks?: unknown
@@ -145,6 +147,19 @@ function checkChainLinks(list: unknown[]): string | null {
   return null
 }
 
+/** 卖单拆买（V9.50）：sellRow + 价位 + 股数，缺了会让挂单页分段报错 */
+function checkBuyTargets(list: unknown[]): string | null {
+  for (let i = 0; i < list.length; i += 1) {
+    const t = list[i] as Obj | null
+    if (!isObj(t)) return `buyTargets[${i}] 不是对象`
+    if (typeof t.id !== 'string' || t.id === '') return `buyTargets[${i}] 缺 id`
+    if (!isRow(t.sellRow)) return `buyTargets[${i}] 缺 sellRow（卖单所在行号）`
+    if (!isNum(t.priceCents)) return `buyTargets[${i}] 缺 priceCents`
+    if (!isNum(t.qty)) return `buyTargets[${i}] 缺 qty`
+  }
+  return null
+}
+
 /** 每张表：是数组 + 逐项校验；键不存在就跳过（老备份允许缺表） */
 const TABLES: { key: keyof BackupShape; label: string; check: (list: unknown[]) => string | null }[] = [
   { key: 'records', label: 'records', check: checkRecords },
@@ -152,6 +167,7 @@ const TABLES: { key: keyof BackupShape; label: string; check: (list: unknown[]) 
   { key: 'rebuyExecutions', label: '回补成交', check: checkExecutions },
   { key: 'plans', label: '计划价', check: checkPlans },
   { key: 'extraTargets', label: '拆分目标', check: checkExtraTargets },
+  { key: 'buyTargets', label: '拆分买入', check: checkBuyTargets },
   { key: 'hedges', label: '挂钩分配', check: checkHedges },
   { key: 'merges', label: '合并买单', check: checkMerges },
   { key: 'chainLinks', label: '回本链归属', check: checkChainLinks },

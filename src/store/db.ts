@@ -1,6 +1,7 @@
 import Dexie, { type Table } from 'dexie'
 import type {
   AuditLog,
+  ExtraBuyTarget,
   ExtraTarget,
   HedgeLink,
   LotMergeLink,
@@ -36,6 +37,7 @@ class GridTradingDB extends Dexie {
   rebuyExecutions!: Table<RebuyExecution, string>
   plans!: Table<TradePlan, string>
   extraTargets!: Table<ExtraTarget, string>
+  buyTargets!: Table<ExtraBuyTarget, string>
   hedges!: Table<HedgeLink, string>
   merges!: Table<LotMergeLink, string>
   chainLinks!: Table<RepairChainLink, string>
@@ -80,6 +82,10 @@ class GridTradingDB extends Dexie {
     // V9.46：回本链归属（锚点行 + 后续归属的真实买入行 + 用户结束时间），盈亏仍纯派生
     this.version(9).stores({
       chainLinks: 'id, anchorRow, stockName',
+    })
+    // V9.50：卖单拆多笔买入（先卖后买分批回补），只影响挂单提醒/记成交取价，账务仍走 orders
+    this.version(10).stores({
+      buyTargets: 'id, sellRow',
     })
   }
 }

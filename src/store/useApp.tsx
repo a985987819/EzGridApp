@@ -36,6 +36,7 @@ import type {
   AuditLog,
   CheckResult,
   ExtraTarget,
+  ExtraBuyTarget,
   HedgeLink,
   Ledger,
   LotMergeLink,
@@ -100,6 +101,8 @@ interface AppContextValue {
   executions: RebuyExecution[]
   plans: TradePlan[]
   extraTargets: ExtraTarget[]
+  /** 卖单拆多笔买入（V9.50）：只影响挂单展示与记成交取价，账务仍走 orders */
+  buyTargets: ExtraBuyTarget[]
   /** 先卖后买挂钩（V9.26）：裸卖 → 高位批次的人工分配 */
   hedges: HedgeLink[]
   /** 合并同价买单（V9.45）：只影响挂单页的合并显示，records 不改 */
@@ -144,6 +147,9 @@ interface AppContextValue {
   reopenRepairChain: (anchorRow: number) => Promise<void>
   addExtraTarget: (lotId: string, priceCents: number, qty: number) => Promise<void>
   removeExtraTarget: (id: string) => Promise<void>
+  /** V9.50 卖单拆买：给一笔先卖后买拆出一档买入（超欠量由 ledger 截断） */
+  addBuyTarget: (sellRow: number, priceCents: number, qty: number) => Promise<void>
+  removeBuyTarget: (id: string) => Promise<void>
   historyOf: (sourceRow: number) => AuditLog[]
   updateStock: (s: StockConfig) => Promise<void>
   addStock: (s: StockConfig) => Promise<void>
@@ -204,6 +210,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [executions, setExecutions] = useState<RebuyExecution[]>([])
   const [plans, setPlans] = useState<TradePlan[]>([])
   const [extraTargets, setExtraTargets] = useState<ExtraTarget[]>([])
+  const [buyTargets, setBuyTargets] = useState<ExtraBuyTarget[]>([])
   const [hedges, setHedges] = useState<HedgeLink[]>([])
   const [merges, setMerges] = useState<LotMergeLink[]>([])
   const [chainLinks, setChainLinks] = useState<RepairChainLink[]>([])
@@ -230,7 +237,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [ordersSession])
 
   const reloadRecords = useCallback(async () => {
-    const [r, a, x, pl, et, hd, mg, cl] = await Promise.all([
+    const [r, a, x, pl, et, hd, mg, cl, bt] = await Promise.all([
       db.records.toArray(),
       db.auditLogs.toArray(),
       db.rebuyExecutions.toArray(),
@@ -239,6 +246,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       db.hedges.toArray(),
       db.merges.toArray(),
       db.chainLinks.toArray(),
+      db.buyTargets.toArray(),
     ])
     setRecords(r)
     setAudits(a)
@@ -248,6 +256,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setHedges(hd)
     setMerges(mg)
     setChainLinks(cl)
+    setBuyTargets(bt)
   }, [])
 
   useEffect(() => {
@@ -258,7 +267,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         await db.stocks.bulkPut(DEFAULT_STOCKS)
       }
       // 单一账户（V9.32：账户功能已删除）
-      const [sRaw, r, a, b, x, backupMeta, pl, et, fontMeta, hd, mg, cl] = await Promise.all([
+      const [sRaw, r, a, b, x, backupMeta, pl, et, fontMeta, hd, mg, cl, bt] = await Promise.all([
         db.stocks.toArray(),
         db.records.toArray(),
         db.auditLogs.toArray(),
@@ -271,6 +280,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         db.hedges.toArray(),
         db.merges.toArray(),
         db.chainLinks.toArray(),
+        db.buyTargets.toArray(),
       ])
       if (!alive) return
       // 老库补齐 order / enabled 并压平序号
@@ -286,6 +296,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setHedges(hd)
       setMerges(mg)
       setChainLinks(cl)
+      setBuyTargets(bt)
       setBatches(b)
       setBasename(b[0]?.fileName ?? '—')
       setLastBackupAt(backupMeta ? Number(backupMeta.value) : null)
@@ -301,8 +312,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const ledger = useMemo(
     () =>
-      buildLedger(records, stocks, { deriveSellPrice, executions, plans, extraTargets, hedges, chainLinks }),
-    [records, stocks, deriveSellPrice, executions, plans, extraTargets, hedges, chainLinks],
+      buildLedger(records, stocks, { deriveSellPrice, executions, plans, extraTargets, buyTargets, hedges, chainLinks }),
+    [records, stocks, deriveSellPrice, executions, plans, extraTargets, buyTargets, hedges, chainLinks],
   )
 
   const recordNo = useMemo(() => buildRecordNoIndex(records), [records])
@@ -323,6 +334,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       executions,
       plans,
       extraTargets,
+      buyTargets,
       hedges: sandbox.hedges.length ? [...hedges, ...sandbox.hedges] : hedges,
       chainLinks,
     })
@@ -336,6 +348,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     executions,
     plans,
     extraTargets,
+    buyTargets,
     hedges,
     chainLinks,
   ])
@@ -424,8 +437,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   )
 
   const currentLedger = useCallback(async () => {
-    const [r,s,x,hd,et,cl]=await Promise.all([db.records.toArray(),db.stocks.toArray(),db.rebuyExecutions.toArray(),db.hedges.toArray(),db.extraTargets.toArray(),db.chainLinks.toArray()])
-    return { records:r, ledger:buildLedger(r,s,{executions:x,hedges:hd,extraTargets:et,chainLinks:cl}) }
+    const [r,s,x,hd,et,cl,bt]=await Promise.all([db.records.toArray(),db.stocks.toArray(),db.rebuyExecutions.toArray(),db.hedges.toArray(),db.extraTargets.toArray(),db.chainLinks.toArray(),db.buyTargets.toArray()])
+    return { records:r, ledger:buildLedger(r,s,{executions:x,hedges:hd,extraTargets:et,buyTargets:bt,chainLinks:cl}) }
   }, [])
 
   const editRecord = useCallback(
@@ -598,7 +611,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const timestamp=Date.now()
       for(const source of sources){
         if(left<=0)break
-        const key=source.kind+':'+source.row
+        const key=source.kind==='order'&&source.splitKey?source.splitKey:source.kind+':'+source.row
         if(seen.has(key))throw new Error('重复的买入来源')
         seen.add(key)
         if(source.kind==='order') {
@@ -709,6 +722,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const removeExtraTarget = useCallback(async (id: string) => {
     await db.extraTargets.delete(id)
     setExtraTargets(await db.extraTargets.toArray())
+  }, [])
+
+  /** V9.50 卖单拆买：给一笔先卖后买拆出一档买入（总量超出欠量时由 ledger 截断并标异常） */
+  const addBuyTarget = useCallback(async (sellRow: number, priceCents: number, qty: number) => {
+    if (!Number.isInteger(priceCents) || priceCents <= 0) throw new Error('买入价不合法')
+    if (!Number.isInteger(qty) || qty <= 0) throw new Error('买入股数不合法')
+    await db.buyTargets.put({
+      id: `buytarget:${sellRow}:${Date.now()}`,
+      sellRow,
+      priceCents,
+      qty,
+      at: Date.now(),
+    })
+    setBuyTargets(await db.buyTargets.toArray())
+  }, [])
+
+  const removeBuyTarget = useCallback(async (id: string) => {
+    await db.buyTargets.delete(id)
+    setBuyTargets(await db.buyTargets.toArray())
   }, [])
 
   const setHedgeLink = useCallback(
@@ -1065,6 +1097,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       db.rebuyExecutions.clear(),
       db.plans.clear(),
       db.extraTargets.clear(),
+      db.buyTargets.clear(),
       db.hedges.clear(),
       db.merges.clear(),
       db.chainLinks.clear(),
@@ -1084,7 +1117,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const exportBackup = useCallback(async () => {
-    const [s, r, b, a, x, pl, et, hd, mg, cl] = await Promise.all([
+    const [s, r, b, a, x, pl, et, hd, mg, cl, bt] = await Promise.all([
       db.stocks.toArray(),
       db.records.toArray(),
       db.batches.toArray(),
@@ -1095,14 +1128,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
       db.hedges.toArray(),
       db.merges.toArray(),
       db.chainLinks.toArray(),
+      db.buyTargets.toArray(),
     ])
     const stamp = String(Date.now())
     await db.meta.put({ key: 'lastBackupAt', value: stamp })
     setLastBackupAt(Number(stamp))
     return JSON.stringify(
       {
-        // 版本 10：records 增加卖出来源和下一轮买入来源；旧版本无法解释这些关系。
-        schemaVersion: 10,
+        // 版本 11：V9.50 加卖单拆买（buyTargets）；旧版本恢复时会丢掉这些分段。
+        schemaVersion: 11,
         exportedAt: new Date().toISOString(),
         stocks: s,
         records: r,
@@ -1111,6 +1145,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         rebuyExecutions: x,
         plans: pl,
         extraTargets: et,
+        buyTargets: bt,
         hedges: hd,
         merges: mg,
         chainLinks: cl,
@@ -1131,12 +1166,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
         rebuyExecutions?: RebuyExecution[]
         plans?: TradePlan[]
         extraTargets?: ExtraTarget[]
+        buyTargets?: ExtraBuyTarget[]
         hedges?: HedgeLink[]
         merges?: LotMergeLink[]
         chainLinks?: RepairChainLink[]
       }
       const version = data.schemaVersion ?? 1
-      if (version > 10) throw new Error('备份版本高于当前程序，拒绝导入（P11）')
+      if (version > 11) throw new Error('备份版本高于当前程序，拒绝导入（P11）')
       // P11 之外的第二道闸：结构坏掉的备份整包拒绝，不让半截 JSON 污染本地库
       const problem = validateBackup(data)
       if (problem) throw new Error(`备份内容校验失败：${problem}`)
@@ -1160,6 +1196,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (data.plans) await db.plans.bulkPut(data.plans)
         await db.extraTargets.clear()
         if (data.extraTargets) await db.extraTargets.bulkPut(data.extraTargets)
+        // V9.50：卖单拆买同样整表替换
+        await db.buyTargets.clear()
+        if (data.buyTargets) await db.buyTargets.bulkPut(data.buyTargets)
         // 回补成交与计划/拆分目标同级的派生输入：恢复时同样整表替换，
         // 否则旧库里残留的成交会污染恢复后的净持仓与奖励预算
         await db.rebuyExecutions.clear()
@@ -1236,8 +1275,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     reopenRepairChain,
     addExtraTarget,
     removeExtraTarget,
+    addBuyTarget,
+    removeBuyTarget,
     plans,
     extraTargets,
+    buyTargets,
     hedges,
     merges,
     chainLinks,

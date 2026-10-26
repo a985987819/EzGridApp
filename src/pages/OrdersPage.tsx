@@ -181,9 +181,11 @@ export function OrdersPage({
     [view.targets, view.lots, effectiveStock, merges, plans, sandboxByRow],
   )
 
-  const buyToday = range ? orders.filter((o) => within(o.planPriceCents ?? o.rebuyPriceCents) && o.remainingQty > 0) : []
+  const buySplits = view.buySplits
+  const orderById = new Map(orders.map((o) => [o.id, o]))
+  const buyToday = range ? buySplits.filter((b) => b.qty > 0 && within(b.priceCents)) : []
   const sellToday = range ? targetRows.filter((r) => within(r.priceCents)) : []
-  const buyOut = range ? orders.filter((o) => !within(o.planPriceCents ?? o.rebuyPriceCents) && o.remainingQty > 0).length : 0
+  const buyOut = range ? buySplits.filter((b) => b.qty > 0 && !within(b.priceCents)).length : 0
   const sellOut = range ? targetRows.filter((r) => !within(r.priceCents)).length : 0
   const sellTodayAmount = sellToday.reduce((a, r) => a + r.amountCents, 0)
 
@@ -203,7 +205,7 @@ export function OrdersPage({
       }).filter((r) => r.stockName === effectiveStock),
     [view.lots, view.orders, view.sells, merges, sandboxByRow, effectiveStock, records],
   )
-  const buySuggestions=buildBuySuggestions(orders,nextRound,plans)
+  const buySuggestions=buildBuySuggestions(buySplits,nextRound,plans)
   const suggestionsToday=range?buySuggestions.filter((r)=>within(r.priceCents)):[]
   const buyTodayAmount=suggestionsToday.reduce((a,r)=>a+r.amountCents,0)
   const [trade,setTrade]=useState<{side:'buy'|'sell';buy?:BuySuggestion;sell?:TargetRow}|null>(null)
@@ -311,7 +313,7 @@ export function OrdersPage({
     return m
   }, [view])
 
-  const rebuyTotal = orders.reduce((a, o) => a + o.rebuyPriceCents * o.remainingQty, 0)
+  const rebuyTotal = buySplits.reduce((a, b) => a + b.priceCents * b.qty, 0)
   const rewardTotal = orders.reduce((a, o) => a + o.rebuyPriceCents * Math.max(0, o.rewardQty - o.doneRewardQty), 0)
   const targetTotal = targets.reduce((a, t) => a + t.amountCents, 0)
   const availableProfit = view.groups
@@ -871,28 +873,31 @@ export function OrdersPage({
                       {levelToday.length > 0 && `（含已完成批次 ${levelToday.length} 条）`}
                     </div>
                     <div className="data-block">
-                      {buyToday.map((o) => {
-                        const sim = sandboxByRow.get(o.sourceRow)
+                      {buyToday.map((b) => {
+                        const sim = sandboxByRow.get(b.sourceRow)
+                        const o = orderById.get(b.orderId)
                         return (
                           <div
-                            key={`t-${o.id}`}
+                            key={`t-${b.key}`}
                             // V9.29.1：左侧状态边框（蓝=买 / 红=卖），与明细页 trade-item 同一套语义
                             className={`line wrap-row pending-buy ${sim ? 'sandbox-row' : 'clickable'}`}
-                            data-row={o.sourceRow}
-                            data-sandbox-row={sim ? o.sourceRow : undefined}
-                            onClick={sim ? undefined : () => goTrades({ id: idFor(o.sourceRow), stock: o.stockName })}
+                            data-row={b.sourceRow}
+                            data-split-key={b.split ? b.key : undefined}
+                            data-sandbox-row={sim ? b.sourceRow : undefined}
+                            onClick={sim ? undefined : () => goTrades({ id: idFor(b.sourceRow), stock: b.stockName })}
                           >
                             <div className="left">
                               <div className="t1 num">
                                 {sim && <span className="sandbox-mark">模拟 · </span>}
-                                买 {price(o.rebuyPriceCents)} × {qty(o.remainingQty)}
+                                买 {price(b.priceCents)} × {qty(b.qty)}
+                                {b.split && <span className="merge-mark"> · 拆档</span>}
                               </div>
                               <div className="t2">
-                                {sim ? `沙盒模拟单 · 计划 ${o.baseQty} 股` : `${recordNoLabel(o.sourceRow, recordNo)} · 计划 ${o.baseQty}`}
-                                {o.rewardQty > 0 && ` · 含奖励 ${o.rewardQty}`}
-                                {o.execQty > 0 && ` · 已回补 ${o.execQty}`}
+                                {sim ? `沙盒模拟单 · 计划 ${b.plannedQty} 股` : `${recordNoLabel(b.sourceRow, recordNo)} · 计划 ${b.plannedQty}`}
+                                {!b.split && (o?.rewardQty ?? 0) > 0 && ` · 含奖励 ${o!.rewardQty}`}
+                                {b.executedQty > 0 && ` · 已回补 ${b.executedQty}`}
                               </div>
-                              {o.planPriceCents != null && (
+                              {!b.split && o?.planPriceCents != null && (
                                 <div className="tag-row" style={{ marginTop: 4 }}>
                                   <Tag size="small" variant="soft" color="purple">
                                     计划 {price(o.planPriceCents)} × {qty(o.planQty ?? o.remainingQty)}
@@ -902,17 +907,17 @@ export function OrdersPage({
                               {/* V9.49：这笔待买的身份——回补哪一笔卖出；属于回本链的再标出来 */}
                               <div className="tag-row" style={{ marginTop: 4 }}>
                                 <Tag size="small" variant="soft" color="app-teal" data-testid="rebuy-of">
-                                  回补 {recordNoLabel(o.sourceRow, recordNo)}
+                                  回补 {recordNoLabel(b.sourceRow, recordNo)}
                                 </Tag>
-                                {chainOfSell.has(o.sourceRow) && (
+                                {chainOfSell.has(b.sourceRow) && (
                                   <Tag size="small" variant="soft" color="app-yellow" data-testid="rebuy-chain">
-                                    回本链 {recordNoLabel(chainOfSell.get(o.sourceRow)!.anchorRow, recordNo)}
+                                    回本链 {recordNoLabel(chainOfSell.get(b.sourceRow)!.anchorRow, recordNo)}
                                   </Tag>
                                 )}
                               </div>
                             </div>
                             <div className="right num" style={{ fontWeight: 600 }}>
-                              {money(o.rebuyPriceCents * o.remainingQty)}
+                              {money(b.priceCents * b.qty)}
                             </div>
                             <div className="acts">
                               {sim ? (
@@ -930,13 +935,21 @@ export function OrdersPage({
                                 </>
                               ) : (
                                 <>
+                                  {!b.split && o && (
+                                    <Button
+                                      size="small"
+                                      onClick={stopWith(() => openPlan('buy', o.id, `买 ${o.stockName}`, o.rebuyPriceCents, o.remainingQty, o.planPriceCents, o.planQty))}
+                                    >
+                                      计划
+                                    </Button>
+                                  )}
                                   <Button
                                     size="small"
-                                    onClick={stopWith(() => openPlan('buy', o.id, `买 ${o.stockName}`, o.rebuyPriceCents, o.remainingQty, o.planPriceCents, o.planQty))}
+                                    disabled={!o}
+                                    onClick={stopWith(() => o && openExec(o, { qty: b.qty, priceCents: b.priceCents }))}
                                   >
-                                    计划
+                                    记成交
                                   </Button>
-                                  <Button size="small" onClick={stopWith(() => openExec(o))}>记成交</Button>
                                 </>
                               )}
                             </div>
