@@ -7,10 +7,10 @@
 
 ```bash
 npm run dev        # 127.0.0.1:5173
-npm test           # vitest，229 条（domain 纯函数 + 真实 xlsx fixture 回归）
+npm test           # vitest，237 条（domain 纯函数 + 真实 xlsx fixture 回归）
 npm run lint       # eslint
 npm run build      # tsc --noEmit && vite build；GITHUB_PAGES=true 时启用 /EzGridApp/ 子路径 base
-node e2e/smoke.mjs http://127.0.0.1:5173   # 无头 Chrome CDP，446 项断言，需先起 dev
+node e2e/smoke.mjs http://127.0.0.1:5173   # 无头 Chrome CDP，458 项断言，需先起 dev
                    # 数据种子 = tests/fixtures 经 CDP DOM.setFileInputFiles 塞进上传框（站点不带示例数据）
 ```
 
@@ -81,6 +81,15 @@ store/useApp（唯一写库入口，全部动作写 auditLogs）
 | 管理页入口 V9.44 | 管理页从「一排 tab」改成**按钮入口**：`ManagePage` 先渲染 4 个 `.manage-item`（`[data-manage-entry]` = stocks / import / checks / backup，带图标 + 名称 + 一句说明），点进去才渲染对应分区，顶部 `.manage-bar` 有「‹ 管理」返回按钮（`[data-testid="manage-back"]`）。不再用 `Tabs`；离开管理 tab 再回来会回到入口列表（组件卸载，不记忆上次分区）。e2e 里进分区要先点入口、换分区要先点返回——`nav('manage')` 在同 tab 时不会重挂载，别指望它重置 |
 | 明细吸顶 V9.42 | **删除明细页搜索框**（原「搜股票名 / 行号」）：连带 `TradesPage` 的 keyword 过滤、搜索条件 chip、URL `q` 参数一起删（`TradesQuery` 不再有 `q`）。下滑超过 96px 把股票 tab / 状态筛选 / 条件 chips 整块用 `.trades-filters[hidden]` 收掉，只留「明细 x / y 行」标题（吸顶高 42px）；回到 24px 内恢复。排序 / 导出 / 新增仍在那张卡里，随页面自然滚走，回顶一起回来。e2e `[6.1]` 钉了搜索框不存在、收起与恢复、排序离开视野、标题仍吸顶 |
 | 动效 V9.37 | 统一缓动 `--ease-soft / --ease-back` + 三档时长（`--dur-1/2/3`）；只动 transform / opacity / 色彩，不动 layout（唯一例外是删除那一行用 max-height 收高度）。**切页带方向**：`.app-main[data-dir=forward\|back]` → `page-in-forward / page-in-back`，方向由 App.tsx 比较 tab 序号得出。**明细行三态**用 `data-anim` 属性驱动（样式在 styles.css）：`new` = 新增落位 + 微光（承接「弹窗收成一条明细」）、`leaving` = 删除向右滑出并收高度（**先播 300ms 动画再真删**，别直接消失）、`done` = 刚完成洗一层青。通用 hook：`ui/motion.ts` 的 `useFlashOnAppear(keys)`（首帧不闪、依赖用 key 签名避免每帧重跑）。底部导航短横线常驻 + scaleX 过渡、图标弹跳；挂单页回补成交的那行同样会闪。`prefers-reduced-motion: reduce` 时全部退化为瞬切。 |
+
+## 弹窗默认值 V9.48
+
+- 有明确数值/日期默认值的输入留空（含纯空格）时，保存使用框内默认值；手填非空值优先，非法值和显式 0 仍走原校验，不能悄悄回退。
+- 新增一笔：`domain/formDefaults.ts` 的 `manualFormDefaults` 同时提供 placeholder 与提交默认值，`resolveManualForm` 仅用于新增。买入默认 8.01 元、卖出默认 8.58 元、700 股、日期今天；目标/回补价按实际采用的价格和该股间隔派生，回补价优先关联买入价。可选买入信息全部空白时**不生成买入批次**，开始填写任一项后，其余项默认 8.30 元 / 本次卖出数量 / 今天。
+- 普通编辑里的「元、股数、YYYY-MM-DD」仅为格式提示，清空字段继续表示清空；不得给普通编辑补买入默认值。
+- 拆分目标默认当前批次目标价/剩余量；挂单计划默认建议价/待买剩余量或待卖量；回补成交默认回补价/剩余量/未成交奖励量（明确填 0 表示不买奖励股）。
+- 沙盒默认昨收价（未确认昨收时 8.10）/100 股/今天，目标或回补价空白按当前实际采用价格与间隔推导。新增股票间隔空白默认 0.57 元；股票名称与股票选择仍须明确指定。
+- 日期编辑占位统一用格式文字，新增与沙盒才显示今天；不要再把固定历史日期作为默认值提示。8 条 `formDefaults.spec.ts` 和 e2e 留空提交后的 IndexedDB 只读核验覆盖此行为。
 
 ## ID 前缀约定
 

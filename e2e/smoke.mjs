@@ -194,6 +194,18 @@ try {
       el.dispatchEvent(new Event('input', { bubbles: true }))
       return true
     })()`)
+  const readTable = (table) => evaluate(`new Promise((resolve, reject) => {
+    const request = indexedDB.open('grid-trading')
+    request.onerror = () => reject(request.error)
+    request.onsuccess = () => {
+      const db = request.result
+      const tx = db.transaction(${JSON.stringify(table)}, 'readonly')
+      const rows = tx.objectStore(${JSON.stringify(table)}).getAll()
+      rows.onsuccess = () => resolve(rows.result)
+      rows.onerror = () => reject(rows.error)
+      tx.oncomplete = () => db.close()
+    }
+  })`)
   const stockOrder = () =>
     evaluate(
       `JSON.stringify([...document.querySelectorAll('[data-stock-row]')].map(e => e.getAttribute('data-stock-row').replace('stock:','')))`,
@@ -861,6 +873,16 @@ try {
   check('删掉拆分目标', await clickByText('button', '删除'))
   await sleep(700)
   check('拆分目标已移除', !(await bodyText()).includes('手动拆分'))
+  const splitDefaults = await evaluate(`({
+    price: document.querySelector('input[aria-label="拆分目标价"]').placeholder,
+    qty: document.querySelector('input[aria-label="拆分股数"]').placeholder,
+  })`)
+  check('拆分留空保存', await clickByText('button', '拆分'))
+  await sleep(700)
+  const defaultTarget = (await readTable('extraTargets')).find((t) => t.lotId === 'lot:16')
+  check('拆分实际采用默认价量', defaultTarget?.priceCents === Math.round(Number(splitDefaults.price) * 100) && defaultTarget?.qty === Number(splitDefaults.qty), JSON.stringify(defaultTarget))
+  await clickByText('button', '删除')
+  await sleep(500)
   await closeDrawer()
 
   console.log('\n[7] 删除 → 恢复 → 改回')
@@ -1513,6 +1535,18 @@ try {
   check('点第一个「计划」', await clickByText('button', '计划'))
   await sleep(500)
   check('计划弹窗出现', (await bodyText()).includes('计划价只用于显示和导出'))
+  const planDefaults = await evaluate(`({
+    price: document.querySelector('input[data-field="planPrice"]').placeholder,
+    qty: document.querySelector('input[data-field="planQty"]').placeholder,
+  })`)
+  await setInput('input[data-field="planPrice"]', ' ')
+  await setInput('input[data-field="planQty"]', '')
+  check('计划价量留空保存', await clickByText('button', '保存'))
+  await sleep(700)
+  const defaultPlan = (await readTable('plans')).find((p) => p.priceCents === Math.round(Number(planDefaults.price) * 100) && p.qty === Number(planDefaults.qty))
+  check('计划实际采用默认价量', Boolean(defaultPlan), JSON.stringify(planDefaults))
+  await clickByText('button', '计划')
+  await sleep(400)
   await setInput('input[data-field="planPrice"]', '7.95')
   await setInput('input[data-field="planQty"]', '300')
   await sleep(200)
@@ -1529,8 +1563,15 @@ try {
   await sleep(600)
   check('弹出记成交窗口', (await bodyText()).includes('本次回补股数'))
   check('默认股数已填', (await evaluate(`document.querySelector('input[data-field="execQty"]')?.value ?? ''`)) !== '')
+  const execDefaults = await evaluate(`({
+    qty: document.querySelector('input[data-field="execQty"]').placeholder,
+    price: document.querySelector('input[data-field="execPrice"]').placeholder,
+    reward: document.querySelector('input[data-field="execReward"]').placeholder,
+  })`)
+  for (const field of ['execQty', 'execPrice', 'execReward']) await setInput(`input[data-field="${field}"]`, ' ')
   check('点保存', await clickByText('button', '保存'))
   await sleep(1200)
+  check('回补成交实际采用默认股数/价格/奖励', (await readTable('rebuyExecutions')).some((e) => e.qty === Number(execDefaults.qty) && e.priceCents === Math.round(Number(execDefaults.price) * 100) && e.rewardQty === Number(execDefaults.reward)))
   await nav('overview')
   text = await bodyText()
   check('回补 500 股后待补 1,500', text.includes('1,500'))
@@ -2522,9 +2563,13 @@ try {
   await sleep(400)
   await evaluate(`document.querySelector('[data-action="sandbox-add-sell"]')?.click()`)
   await sleep(400)
+  for (const field of ['sandboxDate', 'sandboxPrice', 'sandboxQty', 'sandboxExtra']) await setInput(`input[data-field="${field}"]`, ' ')
+  await sleep(200)
   await evaluate(`document.querySelector('[data-action="sandbox-save"]')?.click()`)
   await sleep(600)
   check('刷新前有模拟行', Boolean(await evaluate(`Boolean(document.querySelector('[data-sandbox-row]'))`)))
+  const blankSandbox = await evaluate(`document.querySelector('[data-sandbox-row]')?.textContent ?? ''`)
+  check('沙盒留空采用昨收与100股并推导回补价', blankSandbox.includes('7.53') && blankSandbox.includes('100'), blankSandbox)
   await send('Page.reload', { ignoreCache: true })
   await settle(3000)
   await sleep(500)
@@ -2533,6 +2578,72 @@ try {
   // V9.41 全局 header 已删：净持仓 13,200 现在只在概览的合计卡里
   await nav('overview')
   check('刷新后净持仓仍是 13,200（模拟没写库）', (await bodyText()).includes('13,200'))
+
+  console.log('\n[12.8] 新增弹窗留空采用默认值，检查实际落库')
+  await nav('trades')
+  await clickByText('button', '新增一笔')
+  await sleep(400)
+  await evaluate(`[...document.querySelectorAll('[role="combobox"]')].pop()?.click()`)
+  await sleep(200)
+  await clickByText('[role="option"]', '柳工')
+  await sleep(200)
+  const blankBuyDefaults = await evaluate(`({
+    date: document.querySelector('input[data-field="date"]').placeholder,
+    target: document.querySelector('input[data-field="targetPrice"]').placeholder,
+  })`)
+  for (const field of ['date', 'price', 'qty', 'targetPrice']) await setInput(`input[data-field="${field}"]`, ' ')
+  await clickByText('button', '保存')
+  await sleep(700)
+  let manualRows = (await readTable('records')).filter((r) => r.origin === 'manual' && !r.deletedAt).sort((a, b) => b.sourceRow - a.sourceRow)
+  const defaultBuy = manualRows[0]
+  check('新增买入留空实际写入8.01元700股', defaultBuy?.buyPriceCents === 801 && defaultBuy?.buyQtyRaw === 700 && defaultBuy?.stockName === '柳工', JSON.stringify(defaultBuy))
+  check('日期留空实际采用当天，目标价留空仍由间隔推导', defaultBuy?.buyDateSerial === Math.round((Date.parse(blankBuyDefaults.date + 'T00:00:00Z') - Date.UTC(1899, 11, 30)) / 86400000) && defaultBuy?.targetNeedsDerive === true && blankBuyDefaults.target === '8.58')
+  await evaluate(`document.querySelector('[data-row="${defaultBuy.sourceRow}"]')?.click()`)
+  await sleep(400)
+  await clickByText('button', '编辑')
+  await sleep(200)
+  await setInput('input[data-field="buyDate"]', '')
+  await clickByText('button', '保存')
+  await sleep(400)
+  check('普通编辑清空日期仍保存为空', (await readTable('records')).find((r) => r.sourceRow === defaultBuy.sourceRow)?.buyDateSerial === null)
+  await closeDrawer()
+
+  await clickByText('button', '新增一笔')
+  await sleep(300)
+  await clickByText('.type-toggle button', '卖出')
+  await sleep(200)
+  await evaluate(`[...document.querySelectorAll('[role="combobox"]')].pop()?.click()`)
+  await sleep(200)
+  await clickByText('[role="option"]', '柳工')
+  await sleep(200)
+  for (const field of ['date', 'price', 'qty', 'rebuyPrice']) await setInput(`input[data-field="${field}"]`, '')
+  await clickByText('button', '保存')
+  await sleep(600)
+  manualRows = (await readTable('records')).filter((r) => r.origin === 'manual' && !r.deletedAt).sort((a, b) => b.sourceRow - a.sourceRow)
+  const defaultSell = manualRows[0]
+  check('新增卖出留空实际写入8.58元700股和8.01回补价', defaultSell?.targetPriceCents === 858 && defaultSell?.soldQty === 700 && defaultSell?.earlyBuyPriceCents === 801, JSON.stringify(defaultSell))
+  check('可选买入全部留空不会产生买入批次', defaultSell?.buyPriceCents === null && defaultSell?.buyQtyRaw === null && defaultSell?.buyDateSerial === null)
+
+  await clickByText('button', '新增一笔')
+  await sleep(300)
+  const rowCountBeforeInvalid = (await readTable('records')).length
+  await setInput('input[data-field="price"]', '0')
+  await clickByText('button', '保存')
+  await sleep(400)
+  check('显式0不会被默认值替换落库', (await readTable('records')).length === rowCountBeforeInvalid && await evaluate(`Boolean(document.querySelector('input[data-field="price"]'))`))
+  await clickByText('button', '取消')
+  await sleep(300)
+
+  await nav('manage')
+  await clickByText('[data-manage-entry="stocks"]', '股票设置')
+  await sleep(300)
+  await clickByText('button', '新增股票')
+  await sleep(300)
+  await setInput('input[placeholder="填写与 Excel 一致的股票名称"]', '默认值测试股')
+  await setInput('input[placeholder="0.57"]', ' ')
+  await clickByText('button', '添加')
+  await sleep(500)
+  check('新增股票间隔留空实际写入0.57', (await readTable('stocks')).some((s) => s.name === '默认值测试股' && s.intervalCents === 57))
 
   console.log('\n[13] 运行时错误')
   check('无未捕获异常 / console.error', problems.length === 0, problems.slice(0, 5).join(' | '))

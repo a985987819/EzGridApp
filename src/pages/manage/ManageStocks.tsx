@@ -5,6 +5,7 @@ import { useApp } from '../../store/useApp'
 import { stockIdOf } from '../../domain/defaults'
 import { centsToYuan, toCents } from '../../domain/money'
 import { moveItem, normalizeStocks } from '../../domain/stocks'
+import { inputOrDefault } from '../../domain/formDefaults'
 import type { PriceLimitType } from '../../domain/limit'
 import type { StockConfig } from '../../domain/types'
 import { IconGrip } from '../../ui/icons'
@@ -203,8 +204,8 @@ export function ManageStocks() {
               type="primary"
               style={{ flex: 1 }}
               onClick={() => {
-                const cents = toCents(newInterval)
-                if (!newName.trim() || cents === null) {
+                const cents = toCents(inputOrDefault(newInterval, '0.57'))
+                if (!newName.trim() || cents === null || cents <= 0) {
                   notificationOpen({ message: '名称和间隔都要填', type: 'warning' })
                   return
                 }
@@ -230,10 +231,10 @@ export function ManageStocks() {
         <div className="form-grid">
           <label>
             <span>名称（要和 Excel 明细写法一致）</span>
-            <Input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="如 安道麦（不是 安道麦A）" />
+            <Input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="填写与 Excel 一致的股票名称" />
           </label>
           <label>
-            <span>默认间隔（元）</span>
+            <span>默认间隔（元，留空用 0.57）</span>
             <Input value={newInterval} onChange={(e) => setNewInterval(e.target.value)} placeholder="0.57" />
           </label>
         </div>

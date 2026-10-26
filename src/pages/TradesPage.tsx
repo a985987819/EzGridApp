@@ -7,6 +7,7 @@ import { EDITABLE, fieldText, type EditableKey } from '../domain/edit'
 import { activeStocks } from '../domain/stocks'
 import { isHedgeable } from '../domain/hedge'
 import type { ManualInput } from '../domain/manual'
+import { inputOrDefault, manualFormDefaults, resolveManualForm } from '../domain/formDefaults'
 import type { RawRecord, RepairChain } from '../domain/types'
 import { isoDate, money, price, qty, signedMoney, todayIso, tone } from '../ui/format'
 import { replaceRoute, type TradesQuery } from '../ui/nav'
@@ -244,9 +245,9 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   const stockNames = useMemo(() => stockList.map((s) => s.name), [stockList])
   // V9.35 新增表单的「按间隔自动算出来」提示：成交价改了 placeholder 就跟着变，省得自己减
   const formInterval = stockList.find((s) => s.name === form.stockName)?.intervalCents ?? 0
-  const formPrice = toCents(form.price)
-  const autoTarget = formPrice !== null && formInterval > 0 ? centsToYuan(formPrice + formInterval) : ''
-  const autoRebuy = formPrice !== null && formInterval > 0 && formPrice > formInterval ? centsToYuan(formPrice - formInterval) : ''
+  const formDefaults = manualFormDefaults(form, todayIso(), formInterval)
+  const autoTarget = formDefaults.targetPrice
+  const autoRebuy = formDefaults.rebuyPrice
   const enabledSet = useMemo(() => new Set(stockNames), [stockNames])
   const hiddenStockCount = useMemo(
     () => new Set(records.map((r) => r.stockName).filter((n) => !enabledSet.has(n))).size,
@@ -551,7 +552,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
 
   async function onAdd() {
     try {
-      const row = await addManualRecord(form)
+      const row = await addManualRecord(resolveManualForm(form, todayIso(), formInterval))
       setAdding(false)
       const anchor = pendingChainAnchor
       setPendingChainAnchor(null)
@@ -888,7 +889,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                     {f.kind === 'date' ? (
                       <DateField
                         value={draft[f.key]}
-                        placeholder="2026-10-25 或 2026/10/25"
+                        placeholder="YYYY-MM-DD 或 YYYY/MM/DD"
                         onChange={(v) => setDraft({ ...draft, [f.key]: v })}
                         data-field={f.key}
                       />
@@ -1036,23 +1037,23 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                         className="grow"
                         value={tpPrice}
                         onChange={(e) => setTpPrice(e.target.value)}
-                        placeholder="拆分价，如 9.20"
+                        placeholder={current.lot.targetPriceCents === null ? '拆分目标价' : centsToYuan(current.lot.targetPriceCents)}
                         aria-label="拆分目标价"
                       />
                       <Input
                         className="grow"
                         value={tpQty}
                         onChange={(e) => setTpQty(e.target.value)}
-                        placeholder="股数"
+                        placeholder={String(current.lot.remainingQty)}
                         aria-label="拆分股数"
                       />
                       <Button
                         size="small"
                         onClick={() => {
                           if (!current.lot) return
-                          const p = toCents(tpPrice)
-                          const qn = Number(tpQty)
-                          if (p === null || !Number.isFinite(qn) || qn <= 0) {
+                          const p = toCents(inputOrDefault(tpPrice, current.lot.targetPriceCents === null ? '' : centsToYuan(current.lot.targetPriceCents)))
+                          const qn = Number(inputOrDefault(tpQty, String(current.lot.remainingQty)))
+                          if (p === null || p <= 0 || !Number.isInteger(qn) || qn <= 0) {
                             notificationOpen({ message: '拆分价和股数都要填', type: 'warning' })
                             return
                           }
@@ -1067,7 +1068,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                       </Button>
                     </div>
                     <p className="tiny muted" style={{ margin: '6px 0 0' }}>
-                      分批止盈：手动目标先占份额，剩下的仍挂在 E 列价上；合计超过批次剩余会被截断并标红。
+                      留空采用框内默认值。分批止盈：手动目标先占份额，剩下的仍挂在 E 列价上；合计超过批次剩余会被截断并标红。
                     </p>
                   </div>
                 )}
@@ -1190,7 +1191,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
               <span>{form.kind === 'buy' ? '买入日期' : '卖出日期'}</span>
               <DateField
                 value={form.date}
-                placeholder="2026-10-23"
+                placeholder={formDefaults.date}
                 onChange={(v) => setForm({ ...form, date: v })}
                 data-field="date"
               />
@@ -1199,7 +1200,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
               <span>{form.kind === 'buy' ? '买入价' : '成交价'}</span>
               <Input
                 value={form.price}
-                placeholder={form.kind === 'buy' ? '8.01' : '8.58'}
+                placeholder={formDefaults.price}
                 onChange={(e) => setForm({ ...form, price: e.target.value })}
                 data-field="price"
               />
@@ -1208,7 +1209,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
               <span>{form.kind === 'buy' ? '买入份额' : '卖出数量'}</span>
               <Input
                 value={form.qty}
-                placeholder="700"
+                placeholder={formDefaults.qty}
                 onChange={(e) => setForm({ ...form, qty: e.target.value })}
                 data-field="qty"
               />
@@ -1253,14 +1254,14 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                     <span>买入价（选填）</span>
                     <Input
                       value={form.buyPrice ?? ''}
-                      placeholder="8.30"
+                      placeholder={formDefaults.buyPrice}
                       onChange={(e) => {
                         const v = e.target.value
                         // V9.35：开始填买入价（=这笔回补）时，份额默认=卖出数量、日期默认=今天
                         setForm((f) => ({
                           ...f,
                           buyPrice: v,
-                          buyQty: f.buyQty || (v.trim() ? f.qty : ''),
+                          buyQty: f.buyQty || (v.trim() ? inputOrDefault(f.qty, formDefaults.qty) : ''),
                           buyDate: f.buyDate || (v.trim() ? todayIso() : ''),
                         }))
                       }}
@@ -1271,7 +1272,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                     <span>买入份额（选填）</span>
                     <Input
                       value={form.buyQty ?? ''}
-                      placeholder="700"
+                      placeholder={formDefaults.buyQty}
                       onChange={(e) => setForm({ ...form, buyQty: e.target.value })}
                       data-field="buyQty"
                     />
@@ -1281,7 +1282,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                   <span>买入日期（选填）</span>
                   <DateField
                     value={form.buyDate ?? ''}
-                    placeholder="2026-10-22"
+                    placeholder={formDefaults.buyDate}
                     onChange={(v) => setForm({ ...form, buyDate: v })}
                     data-field="buyDate"
                   />
@@ -1289,6 +1290,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
               </>
             )}
             <p className="tiny muted" style={{ margin: 0 }}>
+              留空采用框内默认值；选填买入信息全部留空时不新增买入，开始填写后其余项采用默认值。
               新增后和导入的数据完全同构，按录入顺序编号；Excel 行号只在抽屉里做追溯。
             </p>
           </div>

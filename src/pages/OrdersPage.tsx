@@ -6,7 +6,8 @@ import { activeStocks } from '../domain/stocks'
 import { recordNoLabel, type RecordNoIndex } from '../domain/recordNo'
 import { isHedgeable } from '../domain/hedge'
 import { limitRange } from '../domain/limit'
-import { toCents } from '../domain/money'
+import { centsToYuan, toCents } from '../domain/money'
+import { inputOrDefault } from '../domain/formDefaults'
 import { isoToSerial } from '../domain/edit'
 import { serialToIso } from '../domain/defaults'
 import { sandboxRowOf, type SandboxItem, type SandboxKind } from '../domain/sandbox'
@@ -276,6 +277,7 @@ export function OrdersPage({
     refId: string
     title: string
     suggestPrice: number
+    suggestQty: number
   } | null>(null)
   const [planPrice, setPlanPrice] = useState('')
   const [planQty, setPlanQty] = useState('')
@@ -294,8 +296,18 @@ export function OrdersPage({
   const [sbExtra, setSbExtra] = useState('')
   const [committing, setCommitting] = useState<string | null>(null)
 
-  function openPlan(kind: 'buy' | 'sell', refId: string, title: string, suggestPrice: number, planPriceCents?: number | null, planQtyValue?: number | null) {
-    setPlanRef({ kind, refId, title, suggestPrice })
+  const sbDefaults = {
+    date: todayIso(),
+    price: confirmedCents == null ? '8.10' : centsToYuan(confirmedCents),
+    qty: '100',
+  }
+  const sbEffectivePrice = toCents(inputOrDefault(sbPrice, sbDefaults.price))
+  const sbStep = cfg?.intervalCents ?? 0
+  const sbDerivedExtra = sbEffectivePrice === null || sbStep <= 0 ? null : sbEffectivePrice + (sbKind === 'sell' ? -sbStep : sbStep)
+  const sbDefaultExtra = sbDerivedExtra !== null && sbDerivedExtra > 0 ? centsToYuan(sbDerivedExtra) : ''
+
+  function openPlan(kind: 'buy' | 'sell', refId: string, title: string, suggestPrice: number, suggestQty: number, planPriceCents?: number | null, planQtyValue?: number | null) {
+    setPlanRef({ kind, refId, title, suggestPrice, suggestQty })
     setPlanPrice((planPriceCents ?? suggestPrice) === 0 ? '' : ((planPriceCents ?? suggestPrice) / 100).toFixed(2))
     setPlanQty(planQtyValue ? String(planQtyValue) : '')
   }
@@ -303,10 +315,10 @@ export function OrdersPage({
   async function savePlan() {
     if (!planRef) return
     try {
-      const p = toCents(planPrice)
-      const q = Number(planQty)
-      if (p === null) throw new Error('计划价不合法')
-      if (!Number.isFinite(q) || q <= 0) throw new Error('计划量要填正整数')
+      const p = toCents(inputOrDefault(planPrice, centsToYuan(planRef.suggestPrice)))
+      const q = Number(inputOrDefault(planQty, String(planRef.suggestQty)))
+      if (p === null || p <= 0) throw new Error('计划价不合法')
+      if (!Number.isInteger(q) || q <= 0) throw new Error('计划量要填正整数')
       await setPlan(planRef.kind, planRef.refId, p, q)
       setPlanRef(null)
       notificationOpen({ message: '计划已保存', description: '只影响显示与导出，不动真实成交', type: 'success' })
@@ -325,19 +337,20 @@ export function OrdersPage({
   async function saveExec() {
     if (!execOrder) return
     try {
-      const q = Number(execQty)
-      const p = toCents(execPrice)
-      const r = Number(execReward || 0)
-      if (!Number.isFinite(q) || q <= 0) throw new Error('股数要填正整数')
-      if (p === null) throw new Error('回补价不合法')
-      if (!Number.isFinite(r) || r < 0) throw new Error('奖励股数不合法')
+      const q = Number(inputOrDefault(execQty, String(execOrder.remainingQty)))
+      const priceText = inputOrDefault(execPrice, centsToYuan(execOrder.rebuyPriceCents))
+      const p = toCents(priceText)
+      const r = Number(inputOrDefault(execReward, String(Math.max(0, execOrder.rewardQty - execOrder.doneRewardQty))))
+      if (!Number.isInteger(q) || q <= 0) throw new Error('股数要填正整数')
+      if (p === null || p <= 0) throw new Error('回补价不合法')
+      if (!Number.isInteger(r) || r < 0) throw new Error('奖励股数不合法')
       await recordRebuy(execOrder, q, p, r)
       setExecOrder(null)
       notificationOpen({
         message: '已记回补成交',
         description: execOrder.exposure
-          ? `${q} 股 @ ${execPrice}，敞口减少，已生成回补批次进待卖`
-          : `${q} 股 @ ${execPrice}，已生成回补批次进待卖`,
+          ? `${q} 股 @ ${priceText}，敞口减少，已生成回补批次进待卖`
+          : `${q} 股 @ ${priceText}，已生成回补批次进待卖`,
         type: 'success',
       })
     } catch (e) {
@@ -373,10 +386,10 @@ export function OrdersPage({
 
   function saveSandboxForm() {
     if (!sbKind) return
-    const serial = isoToSerial(sbDate)
-    const p = toCents(sbPrice)
-    const q = Number(sbQty)
-    const extraText = sbExtra.trim()
+    const serial = isoToSerial(inputOrDefault(sbDate, sbDefaults.date))
+    const p = toCents(inputOrDefault(sbPrice, sbDefaults.price))
+    const q = Number(inputOrDefault(sbQty, sbDefaults.qty))
+    const extraText = inputOrDefault(sbExtra, sbDefaultExtra)
     const extra = extraText === '' ? null : toCents(extraText)
     try {
       if (serial === null) throw new Error('日期写成 YYYY-MM-DD，或点日历选')
@@ -882,7 +895,7 @@ export function OrdersPage({
                                 <>
                                   <Button
                                     size="small"
-                                    onClick={stopWith(() => openPlan('buy', o.id, `买 ${o.stockName}`, o.rebuyPriceCents, o.planPriceCents, o.planQty))}
+                                    onClick={stopWith(() => openPlan('buy', o.id, `买 ${o.stockName}`, o.rebuyPriceCents, o.remainingQty, o.planPriceCents, o.planQty))}
                                   >
                                     计划
                                   </Button>
@@ -966,6 +979,7 @@ export function OrdersPage({
                                       r.key,
                                       `卖 ${r.targets[0].stockName}`,
                                       r.priceCents,
+                                      r.qty,
                                       r.planPriceCents,
                                       r.planQty ?? (r.merged ? r.qty : null),
                                     ),
@@ -1248,13 +1262,14 @@ export function OrdersPage({
             <div className="form-grid">
               <label>
                 <span>计划价</span>
-                <Input value={planPrice} onChange={(e) => setPlanPrice(e.target.value)} data-field="planPrice" />
+                <Input value={planPrice} placeholder={centsToYuan(planRef.suggestPrice)} onChange={(e) => setPlanPrice(e.target.value)} data-field="planPrice" />
               </label>
               <label>
                 <span>计划量（股）</span>
-                <Input value={planQty} onChange={(e) => setPlanQty(e.target.value)} data-field="planQty" />
+                <Input value={planQty} placeholder={String(planRef.suggestQty)} onChange={(e) => setPlanQty(e.target.value)} data-field="planQty" />
               </label>
             </div>
+            <p className="tiny muted" style={{ margin: 0 }}>留空采用框内默认值。</p>
             <Button
               size="small"
               onClick={() => {
@@ -1292,18 +1307,19 @@ export function OrdersPage({
             <div className="form-grid">
               <label>
                 <span>本次回补股数</span>
-                <Input value={execQty} onChange={(e) => setExecQty(e.target.value)} data-field="execQty" />
+                <Input value={execQty} placeholder={String(execOrder.remainingQty)} onChange={(e) => setExecQty(e.target.value)} data-field="execQty" />
               </label>
               <label>
                 <span>成交价</span>
-                <Input value={execPrice} onChange={(e) => setExecPrice(e.target.value)} data-field="execPrice" />
+                <Input value={execPrice} placeholder={centsToYuan(execOrder.rebuyPriceCents)} onChange={(e) => setExecPrice(e.target.value)} data-field="execPrice" />
               </label>
               <label>
                 <span>其中奖励股数（已成交不可撤）</span>
-                <Input value={execReward} onChange={(e) => setExecReward(e.target.value)} data-field="execReward" />
+                <Input value={execReward} placeholder={String(Math.max(0, execOrder.rewardQty - execOrder.doneRewardQty))} onChange={(e) => setExecReward(e.target.value)} data-field="execReward" />
               </label>
             </div>
             <p className="tiny muted" style={{ margin: 0 }}>
+              留空采用框内默认值；奖励股数填 0 表示本次不买奖励股。
               回补成交会平掉空头敞口，并按「成交价 + 该股间隔」自动生成一笔可卖批次（回到待卖）。
               这笔卖如果挂着高位买单，成交后绑定自动解除，先卖 + 后买就是一笔正常完成的订单。
             </p>
@@ -1336,7 +1352,7 @@ export function OrdersPage({
             <div className="form-grid">
               <label>
                 <span>{sbKind === 'sell' ? '卖出日期' : '买入日期'}</span>
-                <DateField value={sbDate} onChange={setSbDate} data-field="sandboxDate" aria-label="沙盒日期" />
+                <DateField value={sbDate} placeholder={sbDefaults.date} onChange={setSbDate} data-field="sandboxDate" aria-label="沙盒日期" />
               </label>
               <label>
                 <span>{sbKind === 'sell' ? '卖出成交价' : '买入价'}</span>
@@ -1344,7 +1360,7 @@ export function OrdersPage({
                   value={sbPrice}
                   onChange={(e) => setSbPrice(e.target.value)}
                   data-field="sandboxPrice"
-                  placeholder="如 8.10"
+                  placeholder={sbDefaults.price}
                 />
               </label>
               <label>
@@ -1353,19 +1369,21 @@ export function OrdersPage({
                   value={sbQty}
                   onChange={(e) => setSbQty(e.target.value)}
                   data-field="sandboxQty"
-                  placeholder="100"
+                  placeholder={sbDefaults.qty}
                 />
               </label>
               <label>
                 <span>{sbKind === 'sell' ? '回补价 P（可空，按间隔推）' : '目标售价（可空，按间隔推）'}</span>
                 <Input
                   value={sbExtra}
+                  placeholder={sbDefaultExtra || '按该股间隔推导'}
                   onChange={(e) => setSbExtra(e.target.value)}
                   data-field="sandboxExtra"
                 />
               </label>
             </div>
             <p className="tiny muted" style={{ margin: 0 }}>
+              留空采用框内默认值。
               {sbKind === 'sell'
                 ? '回补价留空时，按「卖出价 − 该股间隔」自动生成待买。'
                 : '目标价留空时，按「买入价 + 该股间隔」自动生成待卖。'}

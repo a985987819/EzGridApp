@@ -25,7 +25,7 @@ function nativeValue(value: string): string {
   return iso ?? todayIso()
 }
 
-export function DateField({ value, onChange, placeholder = '2026-10-25', ...rest }: DateFieldProps) {
+export function DateField({ value, onChange, placeholder = 'YYYY-MM-DD', ...rest }: DateFieldProps) {
   const nativeRef = useRef<HTMLInputElement>(null)
 
   function openPicker() {
