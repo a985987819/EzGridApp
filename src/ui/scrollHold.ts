@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef } from 'react'
 
 /**
  * V9.55：让所有编辑弹层（Modal / Drawer）**不改变页面滚动位置**。
@@ -17,38 +17,52 @@ import { useLayoutEffect, useRef } from 'react'
  *
  * 用 `useLayoutEffect` 是有意的：库锁 body 是在 `useEffect` 里做的，layout 阶段
  * 一定先跑完——这时 `scrollY` 还是打开前的真值，换成 `useEffect` 就记录到 0 了。
+ *
+ * V9.55 修（重入）：关掉一个弹层后 400ms 内又打开另一个时，别把「还没滚到位的
+ * 当前位置」当成新的锚点——那会把人留在半路。回滚没落地（`restoring`）就沿用
+ * 上一次记下的位置，等这一轮也关掉再一起补回去。
  */
 export function useScrollHold(open: boolean): void {
   const savedY = useRef(0)
   const holding = useRef(false)
+  const restoring = useRef(false)
+  const frame = useRef(0)
+  const timer = useRef(0)
+
+  // 卸载时清掉还没跑完的回滚
+  useEffect(
+    () => () => {
+      window.cancelAnimationFrame(frame.current)
+      window.clearTimeout(timer.current)
+    },
+    [],
+  )
 
   useLayoutEffect(() => {
     if (open) {
       if (holding.current) return
       holding.current = true
-      // 已被别的弹层锁住 body（scrollY 已经是 0）时不要记，否则会把人拽回顶部
       const locked = document.body.style.overflow === 'hidden'
-      savedY.current = locked ? -1 : window.scrollY
+      // 已被别的弹层锁住（scrollY 已经是 0）或上一轮回滚还没落地时，不要重记
+      if (!locked && !restoring.current) savedY.current = window.scrollY
       return
     }
     if (!holding.current) return
     holding.current = false
     const top = savedY.current
-    savedY.current = 0
     if (top <= 0) return
+    restoring.current = true
     let tries = 0
-    let frame = 0
-    let timer = 0
     const step = () => {
       tries += 1
       window.scrollTo(0, top)
-      if (Math.abs(window.scrollY - top) <= 2 || tries >= 5) return
-      timer = window.setTimeout(step, 80)
+      if (Math.abs(window.scrollY - top) <= 2 || tries >= 5) {
+        // 落地（或这次滚不动了——通常是被新弹层锁住），放过下一轮
+        restoring.current = false
+        return
+      }
+      timer.current = window.setTimeout(step, 80)
     }
-    frame = window.requestAnimationFrame(step)
-    return () => {
-      window.cancelAnimationFrame(frame)
-      window.clearTimeout(timer)
-    }
+    frame.current = window.requestAnimationFrame(step)
   }, [open])
 }

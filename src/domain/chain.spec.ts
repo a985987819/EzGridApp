@@ -318,6 +318,48 @@ describe('V9.49 价位槽：同价买入全自动归链', () => {
     expect(led.orders.find((o) => o.sourceRow === 3)?.baseQty).toBe(500)
     expect(c.holdingQty).toBe(0)
   })
+
+  /**
+   * V9.55 修：认不出先后就不许自动归链。
+   * 真实触发（e2e 里那 4 条红灯）：R60–63 是老裸卖，卖出日期是 `=TODAY()` 公式没有缓存值
+   * → soldAt 为 null。原来 `s.soldAt === null` 直接放行，于是它们被当成「链之后的同价再卖」，
+   * 槽又把历史同价批次当成「已买回」→ 待买被自动关掉、敞口凭空少一截、守恒式红灯。
+   */
+  it('卖出日期空着的同价裸卖不自动归链（敞口与守恒式不受影响）', () => {
+    const led = buildLedger(
+      [
+        rec(2, { buy: 1000, qty: 1000, sell: 700, soldQty: 1000, sellDate: 46010 }),
+        // 同价再卖，但卖出日期空着 → 无法判序 → 不归链
+        rec(3, { sell: 700, soldQty: 500, p: 500 }),
+        // 同价买入（回补价 500），日期也在，但槽根本不该成立
+        rec(4, { buy: 500, qty: 500, sell: 700, soldQty: 500, buyDate: 46030, sellDate: 46040 }),
+      ],
+      [STOCK],
+    )
+    const c = led.repairChains[0]
+    expect(c.branches.filter((b) => b.kind === 'sell')).toHaveLength(0)
+    expect(c.profitCents).toBe(0)
+    // 这笔裸卖照旧欠 500 股、照旧算敞口
+    expect(led.orders.find((o) => o.sourceRow === 3)?.baseQty).toBe(500)
+    expect(led.totals.exposureQty).toBe(500)
+    expect(led.checks.every((k) => k.ok)).toBe(true)
+  })
+
+  it('买入日期空着的同价批次也不自动归槽', () => {
+    const led = buildLedger(
+      [
+        rec(2, { buy: 1000, qty: 1000, sell: 700, soldQty: 1000, sellDate: 46010 }),
+        rec(3, { sell: 700, soldQty: 500, sellDate: 46020, p: 500 }),
+        // 同价 500 的批次，但买入日期空着 → 认不出是不是「之后买回来的」
+        rec(4, { buy: 500, qty: 500, sell: 700, soldQty: 500 }),
+      ],
+      [STOCK],
+    )
+    const c = led.repairChains[0]
+    // 槽根还是那笔有日期的再卖（3），但买入日期空着的那批不能算「买回来」（4 不在成员里）
+    expect(c.branches.find((b) => b.kind === 'sell')?.memberRows).toEqual([3])
+    expect(led.orders.find((o) => o.sourceRow === 3)?.baseQty).toBe(500)
+  })
 })
 
 describe('归属、结束与部分成交', () => {

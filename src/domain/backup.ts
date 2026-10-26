@@ -173,6 +173,88 @@ const TABLES: { key: keyof BackupShape; label: string; check: (list: unknown[]) 
   { key: 'chainLinks', label: '回本链归属', check: checkChainLinks },
 ]
 
+/**
+ * V9.56：结构对 ≠ 引用对。上面这些表全部以「行号 / 批次号」当外键，指向不存在的行时
+ * buildLedger 是**静默跳过**的（挂钩失效、soldLotId 找不到成本 → 那笔卖出的 profitCents
+ * 变 null 直接不计入合计），界面却提示「恢复成功」——账面就这么静默少算了。
+ * 所以恢复前把引用关系也走一遍：宁可整包拒绝，也不让半截备份把本地账算歪。
+ */
+function checkReferences(data: BackupShape): string | null {
+  if (!Array.isArray(data.records)) return null
+  const rows = new Set((data.records as Obj[]).map((r) => r.sourceRow as number))
+  const list = (v: unknown): Obj[] => (Array.isArray(v) ? (v as Obj[]) : [])
+  const lotRow = (id: unknown): number | null => {
+    if (typeof id !== 'string') return null
+    const m = /^lot:(\d+)$/.exec(id)
+    return m ? Number(m[1]) : null
+  }
+  const planRow = (refId: unknown): number | null => {
+    if (typeof refId !== 'string') return null
+    const a = /^target:lot:(\d+)$/.exec(refId)
+    if (a) return Number(a[1])
+    const b = /^rb:sell:(\d+)$/.exec(refId)
+    if (b) return Number(b[1])
+    return null
+  }
+  const execRow = (id: unknown): number | null => {
+    if (typeof id !== 'string') return null
+    const m = /^sell:(\d+)$/.exec(id)
+    return m ? Number(m[1]) : null
+  }
+
+  const hedges = list(data.hedges)
+  for (let i = 0; i < hedges.length; i += 1) {
+    const h = hedges[i]
+    if (!rows.has(h.sellRow as number)) return `hedges[${i}] 指向不存在的卖出行 ${String(h.sellRow)}`
+    const items = list(h.items)
+    for (let j = 0; j < items.length; j += 1) {
+      if (!rows.has(items[j].row as number)) return `hedges[${i}].items[${j}] 指向不存在的买入行 ${String(items[j].row)}`
+    }
+  }
+
+  const buyTargets = list(data.buyTargets)
+  for (let i = 0; i < buyTargets.length; i += 1) {
+    if (!rows.has(buyTargets[i].sellRow as number)) return `buyTargets[${i}] 指向不存在的卖出行 ${String(buyTargets[i].sellRow)}`
+  }
+
+  const extraTargets = list(data.extraTargets)
+  for (let i = 0; i < extraTargets.length; i += 1) {
+    const row = lotRow(extraTargets[i].lotId)
+    if (row !== null && !rows.has(row)) return `extraTargets[${i}] 指向不存在的批次 ${String(extraTargets[i].lotId)}`
+  }
+
+  const merges = list(data.merges)
+  for (let i = 0; i < merges.length; i += 1) {
+    const members = Array.isArray(merges[i].rows) ? (merges[i].rows as number[]) : []
+    for (let j = 0; j < members.length; j += 1) {
+      if (!rows.has(members[j])) return `merges[${i}].rows[${j}] 指向不存在的行 ${String(members[j])}`
+    }
+  }
+
+  const chainLinks = list(data.chainLinks)
+  for (let i = 0; i < chainLinks.length; i += 1) {
+    if (!rows.has(chainLinks[i].anchorRow as number)) return `chainLinks[${i}] 的锚点行 ${String(chainLinks[i].anchorRow)} 不存在`
+    const members = Array.isArray(chainLinks[i].memberRows) ? (chainLinks[i].memberRows as number[]) : []
+    for (let j = 0; j < members.length; j += 1) {
+      if (!rows.has(members[j])) return `chainLinks[${i}].memberRows[${j}] 指向不存在的行 ${String(members[j])}`
+    }
+  }
+
+  const execs = list(data.rebuyExecutions)
+  for (let i = 0; i < execs.length; i += 1) {
+    const row = execRow(execs[i].sellExecId)
+    if (row !== null && !rows.has(row)) return `rebuyExecutions[${i}] 指向不存在的卖出行 ${String(execs[i].sellExecId)}`
+  }
+
+  const plans = list(data.plans)
+  for (let i = 0; i < plans.length; i += 1) {
+    const row = planRow(plans[i].refId)
+    if (row !== null && !rows.has(row)) return `plans[${i}] 的计划身份指向不存在的行 ${String(plans[i].refId)}`
+  }
+
+  return null
+}
+
 /** 通过返回 null；不通过返回中文原因，恢复方直接抛错 */
 export function validateBackup(data: BackupShape): string | null {
   for (const t of TABLES) {
@@ -182,5 +264,5 @@ export function validateBackup(data: BackupShape): string | null {
     const problem = t.check(value)
     if (problem) return problem
   }
-  return null
+  return checkReferences(data)
 }

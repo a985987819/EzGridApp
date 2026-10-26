@@ -16,6 +16,12 @@ export function useFlashOnAppear(keys: number[], ms = 1200): Set<number> {
   const seen = useRef<Set<number> | null>(null)
   const keysRef = useRef(keys)
   keysRef.current = keys
+  /**
+   * V9.55 修：定时器改成**按 key 各一个**，并且只有卸载时才统一清。
+   * 原来一个 effect 只留一个定时器、依赖变化就把它 clear 掉——第二笔回补在 1.2s 内
+   * 完成时，第一行已经进了 `flashed` 却再也等不到清除，动效会一直亮着。
+   */
+  const timers = useRef(new Map<number, number>())
   const sig = keys.join(',')
   useEffect(() => {
     const now = new Set(keysRef.current)
@@ -25,14 +31,28 @@ export function useFlashOnAppear(keys: number[], ms = 1200): Set<number> {
     const fresh = [...now].filter((k) => !prev.has(k))
     if (fresh.length === 0) return
     setFlashed((s) => new Set([...s, ...fresh]))
-    const t = window.setTimeout(() => {
-      setFlashed((s) => {
-        const n = new Set(s)
-        for (const k of fresh) n.delete(k)
-        return n
-      })
-    }, ms)
-    return () => window.clearTimeout(t)
+    for (const k of fresh) {
+      const old = timers.current.get(k)
+      if (old !== undefined) window.clearTimeout(old)
+      timers.current.set(
+        k,
+        window.setTimeout(() => {
+          timers.current.delete(k)
+          setFlashed((s) => {
+            const n = new Set(s)
+            n.delete(k)
+            return n
+          })
+        }, ms),
+      )
+    }
   }, [sig, ms])
+  useEffect(() => {
+    const map = timers.current
+    return () => {
+      for (const t of map.values()) window.clearTimeout(t)
+      map.clear()
+    }
+  }, [])
   return flashed
 }

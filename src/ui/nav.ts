@@ -62,12 +62,22 @@ export function parseTradesQuery(search: string): TradesQuery {
   if (stock) q.stock = stock
   const status = p.get('status')
   if (status) q.status = status.split(',').filter(Boolean)
-  const price = Number(p.get('price'))
-  if (p.get('price') !== null && Number.isFinite(price)) q.price = price
-  const priceLo = Number(p.get('priceLo'))
-  if (p.get('priceLo') !== null && Number.isFinite(priceLo)) q.priceLo = priceLo
-  const priceHi = Number(p.get('priceHi'))
-  if (p.get('priceHi') !== null && Number.isFinite(priceHi)) q.priceHi = priceHi
+  /**
+   * V9.55 修：空串也会 `Number('') === 0` 且 `Number.isFinite(0)`，于是 `?price=` 被当成
+   * 「价格为 0 分」的筛选，列表被筛空、还会自己把 `price=0` 写回 URL 卡住——先挡掉空值。
+   */
+  const num = (key: string): number | null => {
+    const raw = p.get(key)
+    if (raw === null || raw.trim() === '') return null
+    const v = Number(raw)
+    return Number.isFinite(v) ? v : null
+  }
+  const price = num('price')
+  if (price !== null) q.price = price
+  const priceLo = num('priceLo')
+  if (priceLo !== null) q.priceLo = priceLo
+  const priceHi = num('priceHi')
+  if (priceHi !== null) q.priceHi = priceHi
   const from = p.get('from')
   if (from) q.from = from
   const to = p.get('to')

@@ -25,6 +25,12 @@ export interface TargetRow {
   buyPriceCents: number | null
   planPriceCents: number | null
   planQty: number | null
+  /**
+   * V9.55：这条行**读过哪些计划 refId**（包括改价后继续追的那串 `sell:股票:价`）。
+   * 「清除改单」要按这张清单逐个删——行 key 是当前价派生的，改完价就换身份了，
+   * 只删当前 key 会删不到任何东西（按钮点了没反应）。
+   */
+  planRefs: string[]
   sandbox: boolean
 }
 
@@ -100,6 +106,8 @@ export function mergeTargetRows(opts: {
     for(const plan of groupPlans)groupBudget.set(plan.refId,(groupBudget.get(plan.refId)??plan.qty)-q)
     const hasPlan=groupPlans.length>0 || Boolean(singlePlan) || t.planPriceCents!=null
     const key=sandbox ? t.id : `sell:${t.stockName}:${p}`
+    /** V9.55：这条行用到的计划身份（单个来源的计划 + 沿价格追下去的整串） */
+    const rowPlanRefs=[...(singlePlan?[t.id]:[]),...groupPlans.map((x)=>x.refId)]
     const hit=rows.find((r)=>r.key===key)
     if(hit) {
       hit.targets.push({...t,qty:q}); hit.lotIds.push(t.lotId)
@@ -110,9 +118,10 @@ export function mergeTargetRows(opts: {
       hit.merged=true
       if(hasPlan)hit.planPriceCents=p
       if(hit.buyPriceCents!==l.buyPriceCents)hit.buyPriceCents=null
+      for(const ref of rowPlanRefs)if(!hit.planRefs.includes(ref))hit.planRefs.push(ref)
     } else rows.push({key,targets:[{...t,qty:q}],lotRows:[l.sourceRow],lotIds:[l.id],priceCents:p,qty:q,amountCents:p*q,
       expectProfitCents:(p-l.buyPriceCents)*q,merged:false,anchorRow:l.sourceRow,earliestBuyDate:l.buyDate,
-      buyPriceCents:l.buyPriceCents,planPriceCents:hasPlan ? p : null,planQty:null,sandbox})
+      buyPriceCents:l.buyPriceCents,planPriceCents:hasPlan ? p : null,planQty:null,planRefs:rowPlanRefs,sandbox})
   }
   for(const r of rows) {
     const legacy=groups.get(r.lotRows[0])

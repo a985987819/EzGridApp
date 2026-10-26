@@ -341,10 +341,24 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
                   size="small"
                   danger
                   onClick={() => {
-                    if (!window.confirm(`回滚会物理删除「${b.fileName}」这一批 ${b.addedCount} 行（不可恢复，审计日志保留）；之后可重新导入同一文件。确定回滚？`)) return
-                    void rollbackBatch(b.id).then((n) =>
-                      notificationOpen({ message: `已回滚 ${n} 行`, type: 'info' }),
+                    if (
+                      !window.confirm(
+                        `回滚会物理删除「${b.fileName}」这一批 ${b.addedCount} 行（不可恢复，审计日志保留），\n` +
+                          `并一起清掉指向这些行的挂钩、拆分档、同价合并、回本链归属与改单计划；\n` +
+                          `之后可重新导入同一文件。确定回滚？`,
+                      )
                     )
+                      return
+                    // V9.56：加了「这批还有回补成交 → 先撤销」的拦截，错误必须冒出来，别静默失败
+                    void rollbackBatch(b.id)
+                      .then((n) => notificationOpen({ message: `已回滚 ${n} 行`, type: 'info' }))
+                      .catch((e) =>
+                        notificationOpen({
+                          message: '无法回滚',
+                          description: e instanceof Error ? e.message : String(e),
+                          type: 'error',
+                        }),
+                      )
                   }}
                 >
                   回滚

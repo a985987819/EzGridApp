@@ -140,7 +140,6 @@ export function OrdersPage({
   /** 沙盒开启时看预览账本（真实 + 模拟条目 + 模拟挂钩）；关掉就是真实台账 */
   const view = sandbox.active ? sandboxLedger : ledger
   const previewRecords = sandbox.active ? sandboxPreviewRecords : records
-  const targets = view.targets.filter((t) => t.stockName === effectiveStock)
   const orders = view.orders.filter((o) => o.stockName === effectiveStock)
   /** V9.37：刚记了回补成交的待买单闪一下——状态变了给个落点提示 */
   const justRebought = useFlashOnAppear(
@@ -271,7 +270,9 @@ export function OrdersPage({
         )}
         {/* V9.54：推荐挂单默认展开来源——点开才知道这档是从哪几笔欠出来的 */}
         <details open><summary className="tiny muted">{r.sources.length} 笔来源 · 查看明细</summary>
-          {r.sources.map((v)=><div key={v.kind+v.row} className="tiny"><Button type="text" size="small" onClick={()=>goTrades({id:idFor(v.row),stock:r.stockName})}>{recordNoLabel(v.row,recordNo)}</Button> · {v.kind==='next'?'下一轮':(v.sellFirst?'先卖后买':'待回补')} {qty(v.qty)} 股</div>)}
+          {/* V9.55 修：同一张卖单拆出的两档共用 sourceRow，撞价合并后会并进同一条建议 →
+              key 只用「类型+行号」会重复；带上拆分段身份/股数才唯一 */}
+          {r.sources.map((v)=><div key={`${v.kind}:${v.row}:${v.kind==='order'?(v.splitKey??''):''}:${v.qty}`} className="tiny"><Button type="text" size="small" onClick={()=>goTrades({id:idFor(v.row),stock:r.stockName})}>{recordNoLabel(v.row,recordNo)}</Button> · {v.kind==='next'?'下一轮':(v.sellFirst?'先卖后买':'待回补')} {qty(v.qty)} 股</div>)}
         </details>
       </div>
       <div className="right num">{money(r.amountCents)}</div>
@@ -282,7 +283,13 @@ export function OrdersPage({
           data-action="suggestion-plan"
           onClick={stopWith(() => {
             const plan = plans.find((p) => p.kind === 'buy' && p.refId === r.key)
-            openPlan('buy', r.key, `买 ${r.stockName}`, r.priceCents, r.qty, plan?.priceCents, plan?.qty, r.members)
+            /**
+             * V9.55 修：合并行不能拿「某个成员」的计划量当默认值——计划是按成员身份存的，
+             * 拿到的是那一份的股数（两条各 400 合并成 800 时预填 400），
+             * 用户「打开→不动→保存」就会把合计量砍掉一半。合并行一律用整行现价现量。
+             */
+            const merged = (r.members?.length ?? 0) > 1
+            openPlan('buy', r.key, `买 ${r.stockName}`, r.priceCents, r.qty, merged ? null : plan?.priceCents, merged ? null : plan?.qty, r.members)
           })}
         >
           改单
@@ -358,7 +365,12 @@ export function OrdersPage({
 
   const rebuyTotal = buySplits.reduce((a, b) => a + b.priceCents * b.qty, 0)
   const rewardTotal = orders.reduce((a, o) => a + o.rebuyPriceCents * Math.max(0, o.rewardQty - o.doneRewardQty), 0)
-  const targetTotal = targets.reduce((a, t) => a + t.amountCents, 0)
+  /**
+   * V9.55 修：待卖「合计」原来直接累加 `view.targets`（真实目标价 × 目标量），而上面每一行显示的
+   * 是**计划后**的价量，右边的预期收益也已经按计划口径累加——改单之后同一张卡片里「行加起来 ≠ 合计」。
+   * V9.53 的口径本来就是「金额合计也走改后的价量」，这里改成按行金额相加。
+   */
+  const targetTotal = targetRows.reduce((a, r) => a + r.amountCents, 0)
   const availableProfit = view.groups
     .filter((g) => g.stockId === (summary?.stockId ?? ''))
     .reduce((a, g) => a + g.availableCents, 0)
@@ -372,6 +384,8 @@ export function OrdersPage({
     suggestQty: number
     /** V9.55：这条推荐是改单撞价合并出来的，改单/清除要按份写回（见 savePlan） */
     members?: { key: string; qty: number }[]
+    /** V9.55：卖单行读过的计划身份（含改价后追下去的那串），清除时要一起删 */
+    planRefs?: string[]
   } | null>(null)
   const [planPrice, setPlanPrice] = useState('')
   const [planQty, setPlanQty] = useState('')
@@ -382,6 +396,8 @@ export function OrdersPage({
   const [execPrice, setExecPrice] = useState('')
   const [execReward, setExecReward] = useState('')
   const [execDefaults,setExecDefaults]=useState({qty:0,priceCents:0,reward:0})
+  /** V9.55：保存回补成交在途保护（连点两下会记两笔） */
+  const [savingExec, setSavingExec] = useState(false)
 
   // 沙盒：新增模拟待买 / 待卖（只活在内存，刷新即清空）
   const [sbKind, setSbKind] = useState<SandboxKind | null>(null)
@@ -417,8 +433,9 @@ export function OrdersPage({
     planPriceCents?: number | null,
     planQtyValue?: number | null,
     members?: { key: string; qty: number }[],
+    planRefs?: string[],
   ) {
-    setPlanRef({ kind, refId, title, suggestPrice, suggestQty, members })
+    setPlanRef({ kind, refId, title, suggestPrice, suggestQty, members, planRefs })
     setPlanPrice((planPriceCents ?? suggestPrice) === 0 ? '' : ((planPriceCents ?? suggestPrice) / 100).toFixed(2))
     setPlanQty(planQtyValue ? String(planQtyValue) : '')
   }
@@ -475,6 +492,10 @@ export function OrdersPage({
 
   async function saveExec() {
     if (!execOrder) return
+    // V9.55 修：这个弹窗原来没有在途保护，连点两下「保存」会记两笔回补成交
+    // （部分成交时第二次仍满足 remainingQty 校验）——敞口/持仓/回补批次一起多算。
+    if (savingExec) return
+    setSavingExec(true)
     try {
       const q = Number(inputOrDefault(execQty, String(execDefaults.qty)))
       const priceText = inputOrDefault(execPrice, centsToYuan(execDefaults.priceCents))
@@ -494,6 +515,8 @@ export function OrdersPage({
       })
     } catch (e) {
       notificationOpen({ message: '记录失败', description: e instanceof Error ? e.message : String(e), type: 'error' })
+    } finally {
+      setSavingExec(false)
     }
   }
 
@@ -1124,6 +1147,8 @@ export function OrdersPage({
                                       r.qty,
                                       r.planPriceCents,
                                       r.planQty ?? (r.merged ? r.qty : null),
+                                      undefined,
+                                      r.planRefs,
                                     ),
                                   )}
                                 >
@@ -1457,9 +1482,15 @@ export function OrdersPage({
               size="small"
               onClick={() => {
                 if (!planRef) return
-                // V9.55：合并行要把每一条成员的计划一起清掉，否则只有半边回到建议价
-                const refs = planRef.members && planRef.members.length > 1 ? planRef.members.map((m) => m.key) : [planRef.refId]
-                void Promise.all(refs.map((ref) => clearPlan(ref))).then(() => {
+                /**
+                 * V9.55：合并行要把每一条成员的计划一起清掉（否则只有半边回到建议价）；
+                 * 卖单行则要把「改价追下去的那串计划」一起清掉——行 key 是当前价派生的，
+                 * 只删当前 key 根本删不到东西（按钮点了没反应）。
+                 */
+                const refs = new Set<string>([planRef.refId])
+                if (planRef.members && planRef.members.length > 1) for (const m of planRef.members) refs.add(m.key)
+                for (const ref of planRef.planRefs ?? []) refs.add(ref)
+                void Promise.all([...refs].map((ref) => clearPlan(ref))).then(() => {
                   setPlanRef(null)
                   notificationOpen({ message: '已恢复建议价量', type: 'info' })
                 })
@@ -1478,8 +1509,8 @@ export function OrdersPage({
         onClose={() => setExecOrder(null)}
         footer={
           <div className="row nowrap" style={{ gap: 8 }}>
-            <Button type="primary" style={{ flex: 1 }} onClick={() => void saveExec()}>保存</Button>
-            <Button onClick={() => setExecOrder(null)}>取消</Button>
+            <Button type="primary" style={{ flex: 1 }} disabled={savingExec} onClick={() => void saveExec()}>保存</Button>
+            <Button disabled={savingExec} onClick={() => setExecOrder(null)}>取消</Button>
           </div>
         }
       >

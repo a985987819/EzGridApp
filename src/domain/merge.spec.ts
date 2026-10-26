@@ -146,6 +146,39 @@ describe('mergeTargetRows（挂单提醒的合并显示）', () => {
     expect(rows.map((r)=>r.qty)).toEqual([200,600])
   })
 
+  /**
+   * V9.55：两笔**原始目标价不同**的批次被改单撞到同一价后，行身份是「当前价」派生的
+   * （`sell:股票:价`），再改一次价就换身份——原来「清除改单」只删当前 key，删不到任何计划
+   * （按钮点了没反应）。planRefs 记下这一行读过的全部计划身份，清除时逐个删。
+   */
+  it('改价撞价后行身份会漂移：planRefs 记全整串，清除才有东西可删', () => {
+    const two: SellTarget[] = [target('lot:16', 750, 500), target('lot:22', 760, 500)]
+    const twoLots = [lot(16, 700, 500, '2026-01-01'), lot(22, 700, 500, '2026-03-02')]
+    const step1 = mergeTargetRows({
+      targets: two,
+      lots: twoLots,
+      merges: [],
+      plans: [{ id: 'p1', kind: 'sell', refId: 'sell:柳工:750', priceCents: 760, qty: 500, at: 1 }],
+    })
+    expect(step1).toHaveLength(1)
+    expect(step1[0].key).toBe('sell:柳工:760')
+    expect(step1[0].planRefs).toEqual(['sell:柳工:750'])
+    // 对这条已经漂到 760 的行再改一次价 → 计划挂在 760 这个身份上，key 再漂到 770
+    const step2 = mergeTargetRows({
+      targets: two,
+      lots: twoLots,
+      merges: [],
+      plans: [
+        { id: 'p1', kind: 'sell', refId: 'sell:柳工:750', priceCents: 760, qty: 500, at: 1 },
+        { id: 'p2', kind: 'sell', refId: 'sell:柳工:760', priceCents: 770, qty: 1000, at: 2 },
+      ],
+    })
+    expect(step2).toHaveLength(1)
+    expect(step2[0].key).toBe('sell:柳工:770')
+    expect(step2[0].planRefs).toEqual(['sell:柳工:750', 'sell:柳工:760'])
+    expect(step2[0].qty).toBe(1000)
+  })
+
   it('沙盒批次永远不合并', () => {
     const simLots = [lot(300001, 961, 200, '2026-01-01'), lot(22, 961, 600, '2026-03-02')]
     const simTargets = [target('lot:300001', 1068, 200), target('lot:22', 1068, 600)]

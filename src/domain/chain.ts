@@ -193,7 +193,16 @@ function collectPriceSlots(opts: {
         x.stockName === s.stockName &&
         x.closePrice !== null &&
         s.priceCents === x.closePrice &&
-        (x.closeDate === null || s.soldAt === null || s.soldAt >= x.closeDate),
+        /**
+         * V9.55 修：**认不出先后就不归链**（fail-closed）。原来 `s.soldAt === null`
+         * 也放行，于是「卖出日期是 =TODAY() 公式、没有缓存值」的老裸卖（R60–63 这种）
+         * 会被当成链之后的同价再卖：它的待买被槽「买回」自动关掉 → 敞口凭空少 500 股、
+         * 守恒式红灯，链的盈利还被这笔空头收益顶成「已不亏钱」（e2e 四条断言就是这么红的）。
+         * 和 V9.47.1 一个口径：日期空着 → 无法判序 → 保守地保留整张单（想归链可以人工指定）。
+         */
+        x.closeDate !== null &&
+        s.soldAt !== null &&
+        s.soldAt >= x.closeDate,
     )
     if (!seed) continue
     const ended = endedIsoOf(seed.anchorRow)
@@ -222,9 +231,13 @@ function collectPriceSlots(opts: {
       (x) =>
         x.stockName === lot.stockName &&
         x.priceCents === lot.buyPriceCents &&
-        (x.date === null || lot.buyDate === null || lot.buyDate >= x.date) &&
+        // V9.55 修：买入日期认不出来也不能归槽（原来 null 直接放行，历史同价批次会被当成
+        // 「之后买回来的」，槽的 cover 于是盖住了还没买回的裸卖待买）
+        x.date !== null &&
+        lot.buyDate !== null &&
+        lot.buyDate >= x.date &&
         // 链结束之后的买入不再自动归链（和「结束后的算独立交易」同一口径）
-        (x.endedIso === null || lot.buyDate === null || lot.buyDate <= x.endedIso),
+        (x.endedIso === null || lot.buyDate <= x.endedIso),
     )
     if (!slot) continue
     slot.lots.push(lot)

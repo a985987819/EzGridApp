@@ -62,6 +62,59 @@ describe('恢复前的备份内容校验', () => {
     expect(validateBackup({ merges: 'nope' })).toBe('merges 不是数组')
   })
 
+  /**
+   * V9.56：结构对 ≠ 引用对。指向不存在的行时 buildLedger 是静默跳过的（挂钩失效、
+   * soldLotId 找不到成本 → 盈亏变 null 不计入），界面却提示恢复成功 —— 宁可整包拒绝。
+   */
+  it('引用不存在的行一律拒绝（V9.56）', () => {
+    const records = [
+      { sourceRow: 2, importKey: 'k2', stockName: '柳工' },
+      { sourceRow: 3, importKey: 'k3', stockName: '柳工' },
+    ]
+    expect(
+      validateBackup({ records, hedges: [{ id: 'hedge:9', sellRow: 9, items: [{ row: 2, qty: 500 }] }] }),
+    ).toContain('不存在的卖出行 9')
+    expect(
+      validateBackup({ records, hedges: [{ id: 'hedge:3', sellRow: 3, items: [{ row: 77, qty: 500 }] }] }),
+    ).toContain('不存在的买入行 77')
+    expect(validateBackup({ records, buyTargets: [{ id: 'bt', sellRow: 9, priceCents: 500, qty: 100 }] })).toContain('buyTargets[0]')
+    expect(
+      validateBackup({ records, extraTargets: [{ id: 'et', lotId: 'lot:9', priceCents: 500, qty: 100, at: 1 }] }),
+    ).toContain('extraTargets[0]')
+    expect(
+      validateBackup({ records, merges: [{ id: 'merge:2', stockName: '柳工', priceCents: 500, rows: [2, 9], at: 1 }] }),
+    ).toContain('merges[0].rows[1]')
+    expect(
+      validateBackup({
+        records,
+        chainLinks: [{ id: 'chainlink:2', anchorRow: 2, stockName: '柳工', memberRows: [9], closedAt: null, at: 0 }],
+      }),
+    ).toContain('memberRows[0]')
+    expect(
+      validateBackup({ records, plans: [{ id: 'p', kind: 'buy', refId: 'rb:sell:9', priceCents: 500, qty: 100, at: 1 }] }),
+    ).toContain('plans[0]')
+    expect(
+      validateBackup({
+        records,
+        rebuyExecutions: [
+          { id: 'e', orderId: 'rb:sell:9', sellExecId: 'sell:9', stockId: 's', stockName: '柳工', qty: 100, priceCents: 500, rewardQty: 0, groupKeyAtExecution: 'k', at: 1 },
+        ],
+      }),
+    ).toContain('rebuyExecutions[0]')
+    // 全部指到存在的行 → 放行（虚拟批次 lot:exec:* 与价格型计划身份认不出，不拦）
+    expect(
+      validateBackup({
+        records,
+        hedges: [{ id: 'hedge:3', sellRow: 3, items: [{ row: 2, qty: 500 }] }],
+        extraTargets: [{ id: 'et', lotId: 'lot:exec:abc', priceCents: 500, qty: 100, at: 1 }],
+        plans: [
+          { id: 'p', kind: 'buy', refId: 'rb:sell:3', priceCents: 500, qty: 100, at: 1 },
+          { id: 'q', kind: 'sell', refId: 'sell:柳工:780', priceCents: 780, qty: 100, at: 2 },
+        ],
+      }),
+    ).toBeNull()
+  })
+
   it('回本链归属缺 anchorRow/memberRows 拒绝，空成员（仅结束标记）放行（V9.46）', () => {
     expect(validateBackup({ chainLinks: [{ id: 'chainlink:2', stockName: '柳工' }] })).toContain('anchorRow')
     expect(

@@ -12,8 +12,10 @@ import { activeDependents, validateExecutionInput } from '../domain/dependencies
 import { buildNextRoundBuyRows } from '../domain/buyBoard'
 import { consumedNextRounds, type BuySource } from '../domain/suggestions'
 import { isoToSerial } from '../domain/edit'
+import { serialToIso } from '../domain/defaults'
 import { buildLedger } from '../domain/ledger'
-import { buildRecordNoIndex, type RecordNoIndex } from '../domain/recordNo'
+import { buildRecordNoIndex, recordNoLabel, type RecordNoIndex } from '../domain/recordNo'
+import { cleanupRowLinks } from '../domain/unlink'
 import { compareBaseline } from '../domain/baseline'
 import { DEFAULT_STOCKS } from '../domain/defaults'
 import { applyEdits, type EditableKey } from '../domain/edit'
@@ -92,6 +94,12 @@ const LEDGER_TX_TABLES = () => [
   db.buyTargets,
   db.auditLogs,
 ]
+
+/** `sell:12` → 12；合成卖出（sell:hedged:* / sell:closed:*）与沙盒行认不出 → null */
+function sellRowOfExecId(id: string): number | null {
+  const m = /^sell:(\d+)$/.exec(id)
+  return m ? Number(m[1]) : null
+}
 
 /** 从 localStorage 恢复（V9.28 起跨会话保留；结构坏掉就当空会话） */
 function loadOrdersSession(): OrdersSession {
@@ -433,17 +441,78 @@ export function AppProvider({ children }: { children: ReactNode }) {
     async (batchId: string) => {
       const all=await db.records.toArray()
       const rows = all.filter((r) => r.batchId === batchId)
+      const rowSet = new Set(rows.map((r) => r.sourceRow))
       const execs=await db.rebuyExecutions.toArray()
       if(rows.some((r)=>activeDependents(r.sourceRow,all,execs).some((child)=>!rows.some((v)=>v.sourceRow===child.sourceRow))))throw new Error('这批导入已有后续卖出，请先撤销后续成交')
-      await db.transaction('rw', db.records, db.batches, db.auditLogs, async () => {
-        await db.records.bulkDelete(rows.map((r) => r.sourceRow))
-        await db.batches.delete(batchId)
-        if (rows.length) {
-          await db.auditLogs.bulkAdd(
-            rows.map((r) => audit(`record:${r.sourceRow}`, '回滚导入', `第 ${r.sourceRow} 行`, '已移除', 'rollback')),
-          )
-        }
-      })
+      /**
+       * V9.56：这批上已经记过回补成交 / 卖出的，先撤销——回滚会把成交变成指向不存在行的孤儿，
+       * 界面看不出问题，但备份里全是野引用。
+       */
+      const batchExecs = execs.filter((e) => rowSet.has(sellRowOfExecId(e.sellExecId) ?? -1))
+      if (batchExecs.length) throw new Error(`这批里还有 ${batchExecs.length} 笔回补成交，先在挂单页撤销再回滚`)
+      let cleaned: ReturnType<typeof cleanupRowLinks> | null = null
+      await db.transaction(
+        'rw',
+        [db.records, db.batches, db.auditLogs, db.hedges, db.buyTargets, db.extraTargets, db.merges, db.chainLinks, db.plans],
+        async () => {
+          /**
+           * V9.56：行号会被下一次导入复用（importPlan 见空就用 Excel 行号），所以指向这些行的
+           * 挂钩 / 拆分档 / 合并组 / 归属 / 计划价必须一起清掉，否则旧关联静默套到另一笔交易上。
+           */
+          cleaned = cleanupRowLinks(rowSet, {
+            hedges: await db.hedges.toArray(),
+            buyTargets: await db.buyTargets.toArray(),
+            extraTargets: await db.extraTargets.toArray(),
+            merges: await db.merges.toArray(),
+            chainLinks: await db.chainLinks.toArray(),
+            plans: await db.plans.toArray(),
+          })
+          if (cleaned.changed.hedges) {
+            await db.hedges.clear()
+            if (cleaned.hedges.length) await db.hedges.bulkPut(cleaned.hedges)
+          }
+          if (cleaned.changed.buyTargets) {
+            await db.buyTargets.clear()
+            if (cleaned.buyTargets.length) await db.buyTargets.bulkPut(cleaned.buyTargets)
+          }
+          if (cleaned.changed.extraTargets) {
+            await db.extraTargets.clear()
+            if (cleaned.extraTargets.length) await db.extraTargets.bulkPut(cleaned.extraTargets)
+          }
+          if (cleaned.changed.merges) {
+            await db.merges.clear()
+            if (cleaned.merges.length) await db.merges.bulkPut(cleaned.merges)
+          }
+          if (cleaned.changed.chainLinks) {
+            await db.chainLinks.clear()
+            if (cleaned.chainLinks.length) await db.chainLinks.bulkPut(cleaned.chainLinks)
+          }
+          if (cleaned.changed.plans) {
+            await db.plans.clear()
+            if (cleaned.plans.length) await db.plans.bulkPut(cleaned.plans)
+          }
+          await db.records.bulkDelete(rows.map((r) => r.sourceRow))
+          await db.batches.delete(batchId)
+          if (rows.length) {
+            await db.auditLogs.bulkAdd(
+              rows.map((r) => audit(`record:${r.sourceRow}`, '回滚导入', `第 ${r.sourceRow} 行`, '已移除', 'rollback')),
+            )
+          }
+          if (cleaned.changed.hedges + cleaned.changed.buyTargets + cleaned.changed.extraTargets + cleaned.changed.merges + cleaned.changed.chainLinks + cleaned.changed.plans > 0) {
+            const parts = [
+              cleaned.changed.hedges ? `挂钩 ${cleaned.changed.hedges}` : '',
+              cleaned.changed.buyTargets ? `拆分买入 ${cleaned.changed.buyTargets}` : '',
+              cleaned.changed.extraTargets ? `拆分卖出 ${cleaned.changed.extraTargets}` : '',
+              cleaned.changed.merges ? `同价合并 ${cleaned.changed.merges}` : '',
+              cleaned.changed.chainLinks ? `回本链归属 ${cleaned.changed.chainLinks}` : '',
+              cleaned.changed.plans ? `计划价 ${cleaned.changed.plans}` : '',
+            ].filter(Boolean)
+            await db.auditLogs.add(
+              audit(`batch:${batchId}`, '回滚导入', '关联', `一并清理：${parts.join(' · ')}${cleaned.hedgeQty ? `（挂钩 ${cleaned.hedgeQty} 股）` : ''}`, 'rollback'),
+            )
+          }
+        },
+      )
       await reloadRecords()
       const left = await db.batches.orderBy('importedAt').reverse().toArray()
       setBatches(left)
@@ -497,7 +566,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
     async (sourceRow: number) => {
       const current = await db.records.get(sourceRow)
       if (!current) return
-      if(activeDependents(sourceRow,await db.records.toArray(),await db.rebuyExecutions.toArray()).length>0)throw new Error('这笔交易已有后续卖出，请先撤销后续成交')
+      const allRows = await db.records.toArray()
+      if(activeDependents(sourceRow,allRows,await db.rebuyExecutions.toArray()).length>0)throw new Error('这笔交易已有后续卖出，请先撤销后续成交')
+      /**
+       * V9.56：这一行正被裸卖挂钩占着股数时不许删。挂账是**会计输入**（批次暂记卖出、
+       * 裸卖盈利暂缓、敞口归零），行一删 buildLedger 里 `lotByRow.get(it.row)` 找不到就直接
+       * `continue`，挂账凭空消失、盈利从「暂缓」变回按 P 列结算——账面静默变，用户完全察觉不到。
+       * 和「先撤销后续成交」一个道理：先把依赖解掉。
+       */
+      const hedgeHit = (await db.hedges.toArray()).find((h) => h.items.some((it) => it.row === sourceRow))
+      if (hedgeHit) {
+        const held = hedgeHit.items.filter((it) => it.row === sourceRow).reduce((a, it) => a + it.qty, 0)
+        const label = recordNoLabel(hedgeHit.sellRow, buildRecordNoIndex(allRows))
+        throw new Error(`这一行被「${label}」的裸卖挂钩占着 ${held} 股，先解除挂钩再删`)
+      }
       await db.transaction('rw', db.records, db.auditLogs, async () => {
         await db.records.put({ ...current, deletedAt: Date.now() })
         await db.auditLogs.add(audit(`record:${sourceRow}`, '软删除', '有效', '已删除', 'delete'))
@@ -619,6 +701,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const recordBuySuggestion = async (sources:BuySource[],qty:number,priceCents:number,date:string) => {
     const serial=isoToSerial(date)
     if(!Number.isInteger(qty)||qty<=0||!Number.isInteger(priceCents)||priceCents<=0||serial===null)throw new Error('成交数量、价格或日期不合法')
+    /**
+     * V9.55 修：日期框认 `2026/1/5`、`2026.1.5`，但 `new Date('2026/1/5T12:00:00')` 是 Invalid
+     * Date → `at: NaN` 落库 → 回补批次 buyDate 变 `NaN-NaN-NaN`，而且导出的备份里 NaN 经
+     * JSON 变 null，恢复时会被 `validateBackup` 判「缺 at」整包拒绝（自己导的备份自己恢复不了）。
+     * 统一先用 serialToIso 补零再拼时间，并兜一道有限性检查。
+     */
+    const dayIso=serialToIso(serial)
+    const atNoon=dayIso===null?NaN:new Date(`${dayIso}T12:00:00`).getTime()
+    if(!Number.isFinite(atNoon))throw new Error('成交日期不合法')
     await db.transaction('rw',LEDGER_TX_TABLES(),async()=>{
       const {records:r,ledger:l}=await currentLedger()
       const next=buildNextRoundBuyRows({...l,merges:[],consumed:consumedNextRounds(r)})
@@ -638,7 +729,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           const baseLeft=Math.max(0,o.baseQty-(o.execQty-o.doneRewardQty))
           const reward=Math.max(0,q-baseLeft)
           validateExecutionInput(q,priceCents,reward,o.remainingQty,Math.max(0,o.rewardQty-o.doneRewardQty))
-          const e:RebuyExecution={id:`exec:${o.id}:${timestamp}:${row++}`,orderId:o.id,sellExecId:o.sellExecId,stockId:o.stockId,stockName:o.stockName,qty:q,priceCents,rewardQty:reward,groupKeyAtExecution:o.groupKey,at:new Date(date+'T12:00:00').getTime()}
+          const e:RebuyExecution={id:`exec:${o.id}:${timestamp}:${row++}`,orderId:o.id,sellExecId:o.sellExecId,stockId:o.stockId,stockName:o.stockName,qty:q,priceCents,rewardQty:reward,groupKeyAtExecution:o.groupKey,at:atNoon}
           await db.rebuyExecutions.add(e)
           await db.auditLogs.add(audit(o.id,'记回补成交','',`${q} 股 @ ${priceCents/100}`,'rebuy','order'))
           left-=q
