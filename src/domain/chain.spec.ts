@@ -275,6 +275,33 @@ describe('V9.49 价位槽：同价买入全自动归链', () => {
     expect(led.totals.exposureQty).toBe(500)
   })
 
+  it('用户结束链之后，新的同价再卖与同价买入不再自动归链', () => {
+    // Excel 序列号 46020 = 2025-12-29、46021 = 2025-12-30、46030 = 2026-01-08
+    const closedAt = new Date('2026-01-01T12:00:00').getTime()
+    const led = buildLedger(
+      [
+        rec(2, { buy: 1000, qty: 1000, sell: 700, soldQty: 1000, sellDate: 46010 }),
+        rec(3, { sell: 700, soldQty: 500, sellDate: 46020, p: 500 }), // 结束前的再卖 → 仍是槽根
+        rec(4, { sell: 700, soldQty: 500, sellDate: 46030, p: 500 }), // 结束后的再卖 → 不归链
+        rec(5, { buy: 500, qty: 500, sell: 700, soldQty: 500, buyDate: 46021, sellDate: 46040 }), // 结束前买 → 归槽
+        rec(6, { buy: 500, qty: 500, sell: 700, soldQty: 500, buyDate: 46030, sellDate: 46040 }), // 结束后买 → 不归
+      ],
+      [STOCK],
+      {
+        chainLinks: [{ id: 'chainlink:2', anchorRow: 2, stockName: '柳工', memberRows: [], closedAt, at: 0 }],
+      },
+    )
+    const c = led.repairChains[0]
+    const slots = c.branches.filter((b) => b.kind === 'sell')
+    expect(slots).toHaveLength(1)
+    expect(slots[0].rootSellRow).toBe(3)
+    expect(slots[0].memberRows).toEqual([3, 5])
+    expect(c.relatedSellRows).toEqual([3])
+    // 结束前那笔已被同价买回盖住 → 待买归零；结束后的那笔照旧欠 500
+    expect(led.orders.find((o) => o.sourceRow === 3)?.baseQty).toBe(0)
+    expect(led.orders.find((o) => o.sourceRow === 4)?.baseQty).toBe(500)
+  })
+
   it('买入日期早于那笔再卖的，不算回补、不归链', () => {
     const led = buildLedger(
       [

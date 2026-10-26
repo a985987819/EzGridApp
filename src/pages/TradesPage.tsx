@@ -234,11 +234,17 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     return Math.max(0, lot.remainingQty - used)
   }
   const buySplitLeftOf = (sellRow: number): number => {
-    const s = ledger.sells.find((x) => x.sourceRow === sellRow)
-    if (!s) return 0
-    const base = Math.max(0, s.qty - (s.ownLotCoverQty ?? 0))
+    // 上限与账务一致：用待买单的 baseQty（已扣本行买入与回本链同价回补覆盖的量）
+    const o = ledger.orders.find((x) => x.sourceRow === sellRow)
+    if (!o) return 0
     const used = buyTargets.filter((t) => t.sellRow === sellRow).reduce((a, t) => a + t.qty, 0)
-    return Math.max(0, base - used)
+    return Math.max(0, o.baseQty - used)
+  }
+  /** 还没回补的基础股（不含组池奖励，和拆分上限同一口径） */
+  const rebuyLeftOf = (sellRow: number): number => {
+    const o = ledger.orders.find((x) => x.sourceRow === sellRow)
+    if (!o) return 0
+    return Math.max(0, o.baseQty - o.execQty)
   }
 
   // 外部跳转 / 浏览器前进后退：hash 变了就把筛选整体换过去（跨数据跳转的落点）
@@ -1160,7 +1166,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                       <strong>买入拆分</strong>
                       <div className="spacer" />
                       <span className="sec-sub">
-                        还没回补 {qty(current.sell?.rebuyRemainingQty ?? current.sell?.qty ?? 0)} 股
+                        还没回补 {qty(rebuyLeftOf(current.rec.sourceRow))} 股
                       </span>
                     </div>
                     <div className="data-block">

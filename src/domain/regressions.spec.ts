@@ -170,6 +170,12 @@ describe('V9.50 卖单拆买',()=>{
   expect(withExec.buySplits.map((b)=>b.qty)).toEqual([100,1000])
   expect(withExec.buySplits.map((b)=>b.executedQty)).toEqual([300,0])
  })
+ it('成交按价格落到对应档，不会错位冲抵',()=>{
+  const targets=[{id:'bt1',sellRow:9,priceCents:600,qty:400,at:1},{id:'bt2',sellRow:9,priceCents:500,qty:600,at:2}]
+  const l=buildLedger([{...sell(9,700,1000),earlyBuyPriceCents:700}],[stock],{buyTargets:targets,executions:[ex(9,600,500)]})
+  expect(l.buySplits.map((b)=>[b.priceCents,b.qty])).toEqual([[600,400],[500,0]])
+  expect(l.buySplits.map((b)=>b.executedQty)).toEqual([0,600])
+ })
  it('拆分合计超过欠量按欠量截断并标 buyTargetOverflow',()=>{
   const l=buildLedger([sell(9,700,500)],[stock],{buyTargets:[
    {id:'bt1',sellRow:9,priceCents:600,qty:400,at:1},

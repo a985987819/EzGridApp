@@ -48,6 +48,8 @@ interface PriceSlot {
   lots: Lot[]
   /** 根卖出的最早日期（买入日期早于它的不算回补） */
   date: string | null
+  /** 用户结束这条链的本地日期（ISO）；之后的再卖 / 买入不再自动归进来 */
+  endedIso: string | null
 }
 
 function sum<T>(arr: readonly T[], f: (x: T) => number): number {
@@ -155,11 +157,22 @@ function collectPriceSlots(opts: {
   executions: readonly RebuyExecution[]
   memberOwner: Map<number, RepairChainLink>
   anchorRows: Set<number>
-}): { slots: PriceSlot[]; autoLotIds: Set<string>; cover: Map<number, number> } {
-  const { seeds, lots, sells, executions, memberOwner, anchorRows } = opts
+  linkByAnchor: Map<number, RepairChainLink>
+}): { slots: PriceSlot[]; autoLotIds: Set<string>; cover: Map<number, number>; pending: Map<number, number> } {
+  const { seeds, lots, sells, executions, memberOwner, anchorRows, linkByAnchor } = opts
   const slots: PriceSlot[] = []
   const autoLotIds = new Set<string>()
   const cover = new Map<number, number>()
+  /** 每条链「槽里还没买回来」的股数（已成交的不算欠） */
+  const pending = new Map<number, number>()
+
+  /** 用户结束这条链的本地日期：之后发生的再卖 / 买入都算独立交易，不再自动归链 */
+  const endedIsoOf = (anchorRow: number): string | null => {
+    const at = linkByAnchor.get(anchorRow)?.closedAt
+    if (!at) return null
+    const d = new Date(at)
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  }
 
   // 有挂钩合成成交的裸卖走 V9.36 那条路径，不重复进价位槽
   const hedgedRows = new Set<number>()
@@ -183,9 +196,12 @@ function collectPriceSlots(opts: {
         (x.closeDate === null || s.soldAt === null || s.soldAt >= x.closeDate),
     )
     if (!seed) continue
+    const ended = endedIsoOf(seed.anchorRow)
+    // 链已经被用户结束：之后再卖的算独立交易，不再挂回（历史槽根照旧保留）
+    if (ended !== null && s.soldAt !== null && s.soldAt > ended) continue
     let slot = slots.find((x) => x.chainAnchor === seed.anchorRow && x.priceCents === price)
     if (!slot) {
-      slot = { chainAnchor: seed.anchorRow, stockName: seed.stockName, priceCents: price, roots: [], lots: [], date: null }
+      slot = { chainAnchor: seed.anchorRow, stockName: seed.stockName, priceCents: price, roots: [], lots: [], date: null, endedIso: ended }
       slots.push(slot)
     }
     slot.roots.push(s)
@@ -206,7 +222,9 @@ function collectPriceSlots(opts: {
       (x) =>
         x.stockName === lot.stockName &&
         x.priceCents === lot.buyPriceCents &&
-        (x.date === null || lot.buyDate === null || lot.buyDate >= x.date),
+        (x.date === null || lot.buyDate === null || lot.buyDate >= x.date) &&
+        // 链结束之后的买入不再自动归链（和「结束后的算独立交易」同一口径）
+        (x.endedIso === null || lot.buyDate === null || lot.buyDate <= x.endedIso),
     )
     if (!slot) continue
     slot.lots.push(lot)
@@ -220,16 +238,21 @@ function collectPriceSlots(opts: {
   }
   for (const slot of slots) {
     let left = sum(slot.lots, (l) => l.qty)
+    let slotPending = 0
     for (const root of slot.roots) {
       const need = Math.max(0, root.qty - (execBySell.get(root.id) ?? 0))
       const q = Math.min(need, left)
-      if (q <= 0) continue
-      cover.set(root.sourceRow, (cover.get(root.sourceRow) ?? 0) + q)
-      left -= q
+      if (q > 0) {
+        cover.set(root.sourceRow, (cover.get(root.sourceRow) ?? 0) + q)
+        left -= q
+      }
+      // 已成交的部分不再是欠账，只把「没买回来」的算进计划量
+      slotPending += Math.max(0, need - q)
     }
+    pending.set(slot.chainAnchor, (pending.get(slot.chainAnchor) ?? 0) + slotPending)
   }
 
-  return { slots, autoLotIds, cover }
+  return { slots, autoLotIds, cover, pending }
 }
 
 /** 价位槽 → 分支：根裸卖的空头收益 + 槽内锁仓批次自己的卖出盈亏 */
@@ -309,6 +332,7 @@ export function buildRepairChains(
     executions,
     memberOwner,
     anchorRows: new Set(seeds.keys()),
+    linkByAnchor,
   })
   if (coverOut) for (const [k, v] of auto.cover) coverOut.set(k, v)
 
@@ -469,12 +493,8 @@ export function buildRepairChains(
       const q = sum(slice(parts, execQty, Math.max(0, base - execQty)).filter((p) => p.anchor === seed.anchorRow), (p) => p.qty)
       return total + (s.rebuyStatus === 'pending' ? q : 0)
     }, 0)
-    // 价位槽里还没买回来的卖出量 = 这一轮还要买回的股数
-    const slotPending = sum(slots, (slot) => {
-      const sold = sum(slot.roots, (r) => r.qty)
-      const covered = sum(slot.roots, (r) => auto.cover.get(r.sourceRow) ?? 0)
-      return Math.max(0, sold - covered)
-    })
+    // 价位槽里还没买回来的卖出量 = 这一轮还要买回的股数（已成交的不算欠）
+    const slotPending = auto.pending.get(seed.anchorRow) ?? 0
     const netCents = seed.lossCents + profitCents
     const need = Math.abs(seed.lossCents)
     chains.push({
@@ -493,8 +513,8 @@ export function buildRepairChains(
       savingCents,
       holdingQty,
       // V9.49：锚点这一轮已经完成（A/B 视为已完成）——有价位槽时只看槽里还欠多少；
-      // 没有槽时沿用 V9.46「锚点股数 − 已归属买入」的提示。
-      plannedQty: slots.length > 0 ? pendingQty + slotPending : Math.max(pendingQty, Math.max(0, seed.qty - firstBoughtQty)),
+      // 没有槽时沿用 V9.46「锚点股数 − 已归属买入」的提示。用户结束链后不再提示计划买回。
+      plannedQty: link?.closedAt ? 0 : slots.length > 0 ? pendingQty + slotPending : Math.max(pendingQty, Math.max(0, seed.qty - firstBoughtQty)),
       unallocatedLossCents: seed.lossCents - allocated,
       closedByUserAt: link?.closedAt ?? null,
       relatedSellRows: [...new Set([...seed.relatedSellRows, ...slots.flatMap((s) => s.roots.map((r) => r.sourceRow))])],

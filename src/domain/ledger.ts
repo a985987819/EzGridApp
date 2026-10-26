@@ -586,7 +586,7 @@ export function buildLedger(
   }
 
   // V9.50：待买展示档——没拆分就是整单一条，拆了按 buyTargets 分段（记成交按档取价、取量）
-  const buySplits = buildBuySplits(orders, opts.buyTargets ?? [], anomalies)
+  const buySplits = buildBuySplits(orders, opts.buyTargets ?? [], sells, scopedExecs, anomalies)
 
   // 汇总（v9.20：回补批次已是派生批次计入 Σ买入，净持仓不再单独加回补量）
   // 暂记卖出（hedgedFromSellRow）不重复计入卖出量/金额/笔数——同一批股的另一种
@@ -743,12 +743,16 @@ export function buildLedger(
  * 待买展示档（V9.50 用户拍板）：卖单拆多笔买入后，挂单页/概览只显示拆出来的档，
  * 记成交也按档位取价、取量。
  * - 没拆 = 整单一条（价格取计划价 > P 列）；
- * - 拆了 = 按 at 顺序分段，合计不得超过这张单的欠量（超出截断并标 buyTargetOverflow）；
- * - 已成交的量按档位顺序冲抵，后面的档位还剩多少就挂多少。
+ * - 拆了 = 按 at 顺序分段，合计不得超过这张单**本来欠的量**（超出才标 buyTargetOverflow）；
+ * - 已成交优先按**成交价落到对应档**（价格对不上再按顺序补），避免 6 元档吞掉 5 元的成交；
+ * - 每档还要买回的量受整单 `remainingQty` 约束——回本链同价买回盖住的那截不会再挂出来，
+ *   多出来的额度（组池奖励）并到最后一档。
  */
 function buildBuySplits(
   orders: RebuyOrder[],
   targets: readonly ExtraBuyTarget[],
+  sells: readonly SellExecution[],
+  executions: readonly RebuyExecution[],
   anomalies: Anomaly[],
 ): BuySplit[] {
   const bySell = new Map<number, ExtraBuyTarget[]>()
@@ -757,6 +761,14 @@ function buildBuySplits(
     if (list) list.push(t)
     else bySell.set(t.sellRow, [t])
   }
+  const sellByRow = new Map(sells.map((s) => [s.sourceRow, s]))
+  const execByOrder = new Map<string, RebuyExecution[]>()
+  for (const e of executions) {
+    const list = execByOrder.get(e.orderId)
+    if (list) list.push(e)
+    else execByOrder.set(e.orderId, [e])
+  }
+
   const out: BuySplit[] = []
   for (const o of orders) {
     const mine = (bySell.get(o.sourceRow) ?? []).slice().sort((a, b) => a.at - b.at)
@@ -776,48 +788,73 @@ function buildBuySplits(
       })
       continue
     }
-    const cap = Math.max(0, o.baseQty)
+    const sell = sellByRow.get(o.sourceRow)
+    /** 拆分上限 = 卖出量 − 本行买入盖住的量；用 baseQty 会把链覆盖误判成「拆多了」 */
+    const rawCap = sell ? Math.max(0, sell.qty - (sell.ownLotCoverQty ?? 0)) : Math.max(0, o.baseQty)
     const total = mine.reduce((a, t) => a + t.qty, 0)
-    if (total > cap) {
+    if (total > rawCap) {
       anomalies.push({
         kind: 'buyTargetOverflow',
         sourceRow: o.sourceRow,
         stockName: o.stockName,
-        detail: `拆分买单合计 ${total} 股 > 还没回补 ${cap} 股，已按欠量截断`,
+        detail: `拆分买单合计 ${total} 股 > 还没回补 ${rawCap} 股，已按欠量截断`,
       })
     }
     let planned = 0
-    let execLeft = o.execQty
-    const rows: BuySplit[] = []
-    mine.forEach((t, i) => {
-      const qty = Math.min(t.qty, Math.max(0, cap - planned))
-      planned += qty
-      const used = Math.min(qty, Math.max(0, execLeft))
-      execLeft -= used
-      rows.push({
-        key: `${o.id}#${i + 1}`,
+    const rows = mine.map((t, i) => {
+      const plan = Math.min(t.qty, Math.max(0, rawCap - planned))
+      planned += plan
+      return { key: `${o.id}#${i + 1}`, t, plan, exec: 0, qty: 0 }
+    })
+    // 已成交优先按价格落到对应档（用户拆了两档、只成交便宜的这档时不会错位）
+    const byPrice = new Map<number, number>()
+    for (const e of execByOrder.get(o.id) ?? []) {
+      byPrice.set(e.priceCents, (byPrice.get(e.priceCents) ?? 0) + e.qty)
+    }
+    let matched = 0
+    for (const r of rows) {
+      const hit = Math.min(r.plan, byPrice.get(r.t.priceCents) ?? 0)
+      byPrice.set(r.t.priceCents, (byPrice.get(r.t.priceCents) ?? 0) - hit)
+      r.exec = hit
+      matched += hit
+    }
+    let fallback = Math.max(0, o.execQty - matched)
+    for (const r of rows) {
+      if (fallback <= 0) break
+      const take = Math.min(r.plan - r.exec, fallback)
+      r.exec += take
+      fallback -= take
+    }
+    for (const r of rows) r.qty = Math.max(0, r.plan - r.exec)
+    const sumQty = rows.reduce((a, r) => a + r.qty, 0)
+    const diff = o.remainingQty - sumQty
+    if (diff > 0) {
+      // 多出来的额度是组池奖励（额外买入），按最后一档的价格一起挂
+      rows[rows.length - 1].qty += diff
+    } else if (diff < 0) {
+      // 少的那截是被回本链同价买回盖住了，从后往前削，前面的档位优先保留
+      let over = -diff
+      for (let i = rows.length - 1; i >= 0 && over > 0; i -= 1) {
+        const cut = Math.min(rows[i].qty, over)
+        rows[i].qty -= cut
+        over -= cut
+      }
+    }
+    for (const r of rows) {
+      out.push({
+        key: r.key,
         orderId: o.id,
         sellExecId: o.sellExecId,
         sourceRow: o.sourceRow,
         stockName: o.stockName,
-        priceCents: t.priceCents,
-        qty: Math.max(0, qty - used),
-        plannedQty: qty,
-        executedQty: used,
+        priceCents: r.t.priceCents,
+        qty: r.qty,
+        plannedQty: r.plan,
+        executedQty: r.exec,
         split: true,
-        targetId: t.id,
+        targetId: r.t.id,
       })
-    })
-    // 组池奖励股是额外买入，按最后一个拆分段的价格一起挂（总量才和整单 remainingQty 对齐）
-    const rewardQty = Math.max(0, o.rewardQty - o.doneRewardQty)
-    if (rewardQty > 0 && rows.length > 0) {
-      const last = rows[rows.length - 1]
-      const used = Math.min(rewardQty, Math.max(0, execLeft))
-      last.qty += rewardQty - used
-      last.plannedQty += rewardQty
-      last.executedQty += used
     }
-    out.push(...rows)
   }
   return out
 }
