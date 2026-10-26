@@ -142,12 +142,10 @@ export function buildNextRoundBuyRows(opts: {
       hit.qty += l.qty
       hit.amountCents += l.buyPriceCents * l.qty
       if (!hit.rows.includes(l.sourceRow)) hit.rows.push(l.sourceRow)
-      if (l.buyDate && (!hit.earliestBuyDate || l.buyDate < hit.earliestBuyDate || (l.buyDate===hit.earliestBuyDate && l.sourceRow<hit.anchorRow))) hit.anchorRow=l.sourceRow
       hit.earliestBuyDate = earlier(hit.earliestBuyDate, l.buyDate)
       hit.lastSoldAt = latest(hit.lastSoldAt, soldAtByRow.get(l.sourceRow) ?? null)
-      if (l.buyDate && (!hit.earliestBuyDate || l.buyDate <= hit.earliestBuyDate) && l.sourceRow < hit.anchorRow) {
-        hit.anchorRow = l.sourceRow
-      }
+      // 锚 = 最早买入日、同日取小行号（原两段等价更新合并成一段，V9.64 审计清理）
+      if (l.buyDate && (l.buyDate < hit.earliestBuyDate || (l.buyDate === hit.earliestBuyDate && l.sourceRow < hit.anchorRow))) hit.anchorRow = l.sourceRow
       if (repaidRows.has(l.sourceRow)) hit.repaid = true
       continue
     }
