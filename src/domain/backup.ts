@@ -34,6 +34,9 @@ function checkRecords(records: unknown[]): string | null {
     const rec = records[i] as Obj | null
     if (!isObj(rec)) return `records[${i}] 不是对象`
     if (typeof rec.sourceRow !== 'number' || !Number.isInteger(rec.sourceRow)) return `records[${i}] 缺 sourceRow（行号）`
+    if(rec.excelRow!==undefined && !isRow(rec.excelRow))return `records[${i}] Excel 行号不合法`
+    if(rec.soldLotId!==undefined && (typeof rec.soldLotId!=='string'||!rec.soldLotId.startsWith('lot:')))return `records[${i}] 关联批次不合法`
+    if(rec.nextRoundOfRow!==undefined && !isRow(rec.nextRoundOfRow))return `records[${i}] 下一轮来源不合法`
     if (typeof rec.importKey !== 'string' || rec.importKey === '') return `records[${i}] 缺 importKey`
     if (typeof rec.stockName !== 'string' || rec.stockName === '') return `records[${i}] 缺 stockName`
   }

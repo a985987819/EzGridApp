@@ -94,10 +94,11 @@ describe('mergeTargetRows（挂单提醒的合并显示）', () => {
     expect(r.targets).toHaveLength(2)
   })
 
-  it('没有关联时逐笔返回', () => {
+  it('没有手工关联时同价也自动汇总', () => {
     const rows = mergeTargetRows({ targets, lots, merges: [] })
-    expect(rows).toHaveLength(2)
-    expect(rows.every((r) => !r.merged)).toBe(true)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].qty).toBe(800)
+    expect(rows[0].merged).toBe(true)
   })
 
   it('组内目标价不同 → 各自单列，不跨价合并', () => {
@@ -114,7 +115,7 @@ describe('mergeTargetRows（挂单提醒的合并显示）', () => {
       { id: 'plan:target:lot:16', kind: 'sell', refId: 'target:lot:16', priceCents: 1060, qty: 200, at: 1 },
     ]
     const rows = mergeTargetRows({ targets, lots: half, merges: [merge], plans })
-    expect(rows.map((r) => r.merged)).toEqual([false, false])
+    expect(rows.map((r) => r.merged)).toEqual([false])
     const first = rows.find((r) => r.key === 'target:lot:16')
     expect(first?.planPriceCents).toBe(1060)
   })
@@ -140,9 +141,9 @@ describe('mergeTargetRows（挂单提醒的合并显示）', () => {
       { ...targets[0], planPriceCents: 1065, planQty: 200 },
       { ...targets[1], planPriceCents: 1070, planQty: 600 },
     ]
-    const [r] = mergeTargetRows({ targets: planned, lots, merges: [merge] })
-    expect(r.planPriceCents).toBeNull()
-    expect(r.planQty).toBeNull()
+    const rows = mergeTargetRows({ targets: planned, lots, merges: [merge] })
+    expect(rows.map((r)=>r.priceCents)).toEqual([1065,1070])
+    expect(rows.map((r)=>r.qty)).toEqual([200,600])
   })
 
   it('沙盒批次永远不合并', () => {

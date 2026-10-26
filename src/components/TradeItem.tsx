@@ -50,8 +50,11 @@ export function TradeItem({
    * done = 刚完成洗一层青。样式全在 styles.css 的 `[data-anim=…]` 里。
    */
   anim?: 'new' | 'leaving' | 'done'
-  /** V9.46 回本链身份：anchor = 亏着清仓的那笔（链的锚点），member = 归进别人链里的一笔 */
-  chain?: 'anchor' | 'member'
+  /**
+   * V9.46 回本链身份：anchor = 亏着清仓的那笔（链的锚点），member = 归进别人链里的一笔；
+   * V9.49：branch = 价位槽里那笔「同价再卖 / 同价买回」，点开能看到整条链的账。
+   */
+  chain?: 'anchor' | 'member' | 'branch'
 }) {
   const { rec, lot, sell } = row
   const deleted = Boolean(rec.deletedAt)
@@ -128,7 +131,7 @@ export function TradeItem({
         )}
         {awaitingBuy && (
           <span className="order-chip buy">
-            挂买 {price(rec.earlyBuyPriceCents)} × {qty(sell?.qty ?? 0)}
+            挂买 {price(sell?.rebuyPriceCents ?? rec.earlyBuyPriceCents)} × {qty(sell?.rebuyRemainingQty ?? sell?.qty ?? 0)}
           </span>
         )}
       </div>

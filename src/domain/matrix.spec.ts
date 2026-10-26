@@ -82,12 +82,13 @@ describe('§09 测试矩阵', () => {
     expect(l.orders.every((o) => o.exposure)).toBe(true)
   })
 
-  it('#04 买入价与 P 均空 → 不出建议', () => {
+  it('#04 买入价与 P 均空 → 推导建议、不捏造盈利', () => {
     const l = buildLedger([rec({ stockName: '柳工', soldQty: 500, targetPriceCents: 868 })], DEFAULT_STOCKS)
     expect(l.sells[0].costCents).toBeNull()
     expect(l.sells[0].profitCents).toBeNull()
     expect(l.sells[0].costComplete).toBe(false)
-    expect(l.orders).toHaveLength(0)
+    expect(l.orders).toHaveLength(1)
+    expect(l.orders[0].rebuyPriceCents).toBe(811)
     expect(l.anomalies.some((a) => a.kind === 'needsCost')).toBe(true)
   })
 

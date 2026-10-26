@@ -7,11 +7,12 @@
 
 ```bash
 npm run dev        # 127.0.0.1:5173
-npm test           # vitest，237 条（domain 纯函数 + 真实 xlsx fixture 回归）
+npm test           # vitest，263 条（domain 纯函数 + 真实 xlsx fixture 回归）
 npm run lint       # eslint
 npm run build      # tsc --noEmit && vite build；GITHUB_PAGES=true 时启用 /EzGridApp/ 子路径 base
 node e2e/smoke.mjs http://127.0.0.1:5173   # 无头 Chrome CDP，458 项断言，需先起 dev
                    # 数据种子 = tests/fixtures 经 CDP DOM.setFileInputFiles 塞进上传框（站点不带示例数据）
+node e2e/accounting.mjs http://127.0.0.1:5173 # 独立浏览器：真实 IndexedDB、多轮回补/卖出/分链/防重复
 ```
 
 Windows 坑：后台起的 vite 在 TaskStop 后会留僵尸进程占 5173/5174，跑 e2e 前先
@@ -59,6 +60,7 @@ store/useApp（唯一写库入口，全部动作写 auditLogs）
 | 回补成交 R6 | 记成交 → **自动生成回补批次**（v9.20 用户决策 B，取代旧 D5「不新增批次」）：虚拟批次不落库、撤销成交即消失；目标价 = 成交价 + 该股间隔，自动出现在待卖清单/价格树；缺间隔配置 → 待补价格异常。id 形如 `lot:exec:*`，sourceRow 用 200000+ 段位避开 Excel/手动行号；明细页看不到该行（它不是 record），挂单/树/概览都可见 |
 | 先卖后买挂钩 H | V9.26（2026-10-25 决策 E）：裸卖（无批次卖出）**人工指定**挂到一只或多只**未卖的高位批次**，合计股数 = 卖出量（`hedges` 表 `hedge:<sellRow>`，Dexie v6）。**纯派生**（ledger.ts）：活跃 = 裸卖未回补——被挂份额退出待卖、按（卖价−买价）暂记负盈利挂到批次行（synthetic sell `sell:hedged:*`，`hedgedFromSellRow` 标记，不重复计卖出量/金额/笔数、不进组池）；裸卖自身盈利暂缓（`hedgedHold`，profitCents null）；敞口按差额计（挂住的股已交割）。**记回补成交 → 买回那截永久了结（V9.36 用户拍板）**：被挂份额按卖出价兑现（synthetic sell `sell:closed:*` + `hedgeClosed`），批次**不再复活**、退出待卖，亏损留在合计盈利里；回补批次成为唯一实盘批次。撤销成交 / 删掉回补又自动回到「挂住」状态——不写任何解除记录。一直不买回 = 暂记负盈利即真实亏损（计入合计盈利）。候选批次限定：同股票、真实未卖出、有剩余、扣除其它活跃挂钩占用；超挂截断（hedgeOverflow）、挂不满（hedgeMismatch）、挂错行（hedgeInvalid）都标异常。**UI（V9.30）**：绑定面板抽成 `components/HedgeBinder.tsx`（逻辑 + 校验 + 保存/解除），两处部署——明细抽屉内联、行上标签点开的 `HedgeSheet` 弹层；入口标签 「裸卖待挂钩」/「已挂钩 · 改挂」（明细行 `[data-hedge=<row>]`、挂单页待买行 `.hedge-entry`）；能不能挂统一走 `domain/hedge.ts` 的 `isHedgeable(rec, execQty)`（V9.32：**不看有没有待买订单**，没填 P 列的裸卖也有入口）。挂单页判断可挂**不能看 `o.exposure`**（全额挂住后它已置否），要看「记录没买入价 + soldQty>0 + execQty=0」。面板默认只列**高位买单**（买价 > 卖价，挂上去才是亏损），可切「显示全部」；行上按买价降序、列表自己滚（max-height 42vh），底部固定「已分配 x/y 股 · 记亏 ¥z」+ 保存/解除。**V9.32 修 bug**：`cap` 原来写的是 `remainingQty − used`，而 `remainingQty` 在前面每挂一条时已经扣过 → 同一批次被两张裸卖挂时第二张可用量被重复扣减（500 股挂 200+300 只挂上 300）。现在 `cap` 直接用当前 `remainingQty`，`hedge.spec.ts` 有对应用例。**V9.33/V9.36 部分买回**：可挂量按「还没买回 = 卖出量 − 已回补」算；已买回那截永久了结（份额不再回来），剩下继续挂着；被挂那部分不再按 P 列算盈利（整笔挂住才是 `hedgedHold` + profit null，行上显示「暂缓」）。挂钩按 `at` 先后应用（先挂先占）。`exposureExecBaseQty` 改成按「记录是不是裸卖」判定（部分买回 + 剩余全挂住时 exposure 已置否，但买回那截仍是空头回补基础股）。新增检查「Σ已买回的奖励手数 ≤ Σ组容量」（`doneRewardQty` 折手，容量按组池，池没了按 0 → 缩水会亮黄灯）。面板：异常红条（`hedgeInvalid/Overflow/Mismatch` 就地显示）、缺成交价拦保存、可切「允许挂不满」、一键「自动挂满」、清空=解除。**V9.36 回本链**（`ledger.repairChains` + `components/RepairChainCard.tsx`）：了结时的亏损 Σ(卖价−成本)×股数 记在 `chain:<锚行>` 上，回补价差 Σ(卖价−回补价)×股数 逐轮累加为 `recoveredCents`；`effectiveCostCents`（成本 − 回血/股）与 `gapCents`（还差多少，归零 = `done`）给界面用。**回血不进「已实现盈利」**——回补批次的成本本来就是回补价，再记一次等于双算。界面：明细行标「高位已了结 · 还差 ¥x」、抽屉与概览渲染进度卡（`[data-testid="chain-section"]` / `overview-chains`）——**这套 V9.36 口径已在 V9.46 整体重写，见下一行**。`exposureExecBaseQty` 再改一次：已了结那截不再扣（批次份额已不在待卖，没有双算） |
 | 回本链 V9.46 | **主口径**：一条链的累计盈亏 = 最初高位卖出的亏损 + **归属于它的后续买卖已实现净盈利**。链在**亏着清仓那笔成交当场成立**（`domain/chain.ts` 的 `collectSeeds`：真实批次 `remainingQty === 0` 且按成本算出亏损 `< 0`；来源两种——`hedgeClosed` 的合成卖出、正常卖出把批次卖光），一直不买回亏损也留在账上。**只累计已完成的买卖**：买回后还没卖出 → 只进「当前持仓」，不算回本；**回补节省**（Σ(高位卖价 − 回补价) × 股数，`RepairBranch.savingCents`）**只展示、绝不计入进度**——「卖 7 买 5 省的 1000」和「5 买 7 卖赚的 1000」一起算，界面会显示已回本而现金仍少 500（用户明确要求，别改回去）。字段：`lossCents` 原始亏损 / `profitCents` 后续净盈利（= Σ归属交易已实现盈利，含回补虚拟批次**后来卖出**那截，走 `branchOf()`）/ `netCents = loss + profit` / `gapCents = max(0, −net)` / `done = net >= 0` / `covered ∈ [0,1]`（进度条宽）/ `holdingQty`（Σ分支剩余）/ `plannedQty = max(0, 锚点股数 − Σ分支股数)` / `unallocatedLossCents`。**每份盈亏只归属一次**：`chainLinks` 的 memberRows 收编独立交易，`chain.ts` 把亏损按股数摊到各分支（`raw = round(loss × 分支股数 / 锚点股数)`，夹在 `[loss, 0]` 防超分）得 `netCents = 分摊亏损 + 已实现盈利`；**全局「已实现盈利」仍每笔只算一次**（`ledger.totals` 不动，链卡只展示归属）。**归属可人工指定 / 自动继承**：`components/ChainBinder.tsx` 在锚点抽屉里勾选同股票真实批次 → `setChainMembers`（一笔只进一条链，抢占时从旧链移出）；「＋ 新增一笔归入本链」由 `TradesPage.startAddIntoChain` 记 `pendingChainAnchor`，落库后立刻并进 memberRows。用户「结束这条链」写 `closedAt`（历史与归属都留着，之后再做的算独立交易）、「重新打开」清掉。**只存关联**：`chainLinks` 表 `chainlink:<锚行>`（Dexie v9、备份 schemaVersion 9、`validateBackup.checkChainLinks`），records 一分不动、派生每次重算；审计 `entity: 'chain'`。界面：`RepairChainCard` 四个数字（原始亏损 / 后续净盈利 / 链累计盈亏 / 还差多少）+ 进度条 +「当前持有 x 股 · 计划再买回 y 股」+ 分支列表（`本笔回本` 标签、回补批次那支标「回补批次」、节省额单独一行并注明不计入）；明细行 `TradeItem` 加 `data-chain="anchor|member"`（标签「回本链 · 还差 ¥x」/「已回本」/「归入回本链」），**锚点与归属行不再被默认 hideDone 隐藏**（还欠着账不算完成 → 62 行里可见从 33 变 35，e2e 已钉）；概览只渲染未结束且未回本的链（`overview-chains`），已结束/已回本的折成一行提示（`overview-chains-closed`）。单测 `domain/chain.spec.ts`（13 条，含用户「10 买 7 卖 / 5 买 7 卖」的例子与回补节省），e2e `[10]`/`[11]` 覆盖建链 → 归属 → 撤销 → 结束 → 重开 |
+| 回本链 V9.49 价位槽 | **全自动归属、不落库、不用手动勾**（V9.46 的人工归属退成可选项，`chainLinks` 仍保留）。链之后**同股、同卖出价**的裸卖（先卖后买订单 C/D）自动挂回这条链，按它的 P 列各开一个**价位槽**；之后所有同股、**买入价正好等于该档**的买入（回补成交的虚拟批次、明细新增、导入）自动进槽，盈亏一路累加——用户原话「之后的每个 5 买都自动关联到 10 买 7 卖」。根裸卖的盈利按 P 列（空头回补）算、槽内批次按自己卖出时算，**各算一次不重复**；根的空头收益本身就是回补节省，不再另记 `savingCents`。槽的 `cover` 量直接扣待买单 `baseQty` → 回补完成自动 `repaid`、敞口自动关（用户拍板「不手动关」），会连带影响待买剩余金额 / 组池奖励 / 守恒式输入。`plannedQty` 有槽时只看槽里还欠多少（A/B 视为已完成）；没槽时沿用 V9.46 的「锚点股数 − 已归属买入」。多链共享同一价位 → 归给**锚点卖出日期最近**的那条；锚点批次不被别的链收编；有挂钩合成成交的裸卖走 V9.36 老路。`sell.rebuyPriceCents` 在 ledger 里提前算好（P 列 > 卖出价 − 间隔），链与待买共用同一口径。UI：`RepairBranch.kind='sell'`（`rootSellRow` / `cycles` / `memberRows`），链卡分支行写「7.00 卖 → 5.00 买回 · 卖了 x 次」，完成态文案 **【已不亏钱】**；明细行 `data-chain="branch"` 标「回本链 · 同价回补」并豁免 `hideDone`；挂单页待买行加 `[data-testid="rebuy-of"]`「回补 第 N 笔」+ `rebuy-chain`。单测 `chain.spec.ts` 新增 3 条（用户完整例 → 累计 +500 已不亏钱 / 未回补仍挂单欠 500 / 买入日期早于再卖不归链），baseline 19 条不动 |
 | 守恒式 R7 | `Σ待卖 − 待补敞口 − 空头回补基础股 = 净持仓`；`净持仓 = Σ买入(含回补批次) − Σ卖出`。空头回补基础股 = 空头单成交里 (qty−rewardQty) 部分——既抵了敞口又以批次进了待卖，扣回防双算 |
 | 导入幂等 | v9.20 决策 C：`domain/importPlan.ts` 按行身份（股票+买入日期+买入价+有效份额，D 列派生值折算）匹配——同 key 跳过、身份命中则**更新卖出侧字段**（importKey/nanoId 不变）、身份对不上才新增。审计走 import-update 来源。改这个逻辑先跑 `importPlan.spec.ts` |
 | 账户 | **V9.32 已删除**（只按一个账户做）：没有 accounts 表/账户筛选/顶部选择器，`records` 就是全部数据；`accounts` 表在 Dexie v7 里整表丢弃，老备份带 `accounts` 段直接忽略（schemaVersion 7） |
@@ -82,6 +84,18 @@ store/useApp（唯一写库入口，全部动作写 auditLogs）
 | 明细吸顶 V9.42 | **删除明细页搜索框**（原「搜股票名 / 行号」）：连带 `TradesPage` 的 keyword 过滤、搜索条件 chip、URL `q` 参数一起删（`TradesQuery` 不再有 `q`）。下滑超过 96px 把股票 tab / 状态筛选 / 条件 chips 整块用 `.trades-filters[hidden]` 收掉，只留「明细 x / y 行」标题（吸顶高 42px）；回到 24px 内恢复。排序 / 导出 / 新增仍在那张卡里，随页面自然滚走，回顶一起回来。e2e `[6.1]` 钉了搜索框不存在、收起与恢复、排序离开视野、标题仍吸顶 |
 | 动效 V9.37 | 统一缓动 `--ease-soft / --ease-back` + 三档时长（`--dur-1/2/3`）；只动 transform / opacity / 色彩，不动 layout（唯一例外是删除那一行用 max-height 收高度）。**切页带方向**：`.app-main[data-dir=forward\|back]` → `page-in-forward / page-in-back`，方向由 App.tsx 比较 tab 序号得出。**明细行三态**用 `data-anim` 属性驱动（样式在 styles.css）：`new` = 新增落位 + 微光（承接「弹窗收成一条明细」）、`leaving` = 删除向右滑出并收高度（**先播 300ms 动画再真删**，别直接消失）、`done` = 刚完成洗一层青。通用 hook：`ui/motion.ts` 的 `useFlashOnAppear(keys)`（首帧不闪、依赖用 key 签名避免每帧重跑）。底部导航短横线常驻 + scaleX 过渡、图标弹跳；挂单页回补成交的那行同样会闪。`prefers-reduced-motion: reduce` 时全部退化为瞬切。 |
 
+## 记账与挂单完整性 V9.49（覆盖上文旧描述）
+
+- 导入时 `sourceRow` 是永久内部 ID；新买单碰到旧行号时分配未占用 ID，原 Excel 行号存 `excelRow`（老记录回退 `sourceRow`）。已有后续成交的行不允许被导入改写；已回补订单不允许导入减少卖出量至已回补量以下或清空回补价。
+- 挂单支持「记卖出」：新行 `soldLotId` 指向原真实/回补批次，只扣来源库存，不重复创建买入。后续买回继续产生虚拟批次，多轮自动继承回本链。父成交已有后续卖出时，修改关键买侧字段、删除、撤销回补、回滚外部依赖所在批次均拒绝；先撤销后续成交。恢复关联卖出检查来源剩余量。
+- 已卖份额出现净亏损即建链，包含部分卖出、尚未回补的挂钩亏损，无须等清仓/回补。后续盈利仍只计已完成买卖；回补节省不计进度。同一回补跨多个锚点时按实际归属股数分配，每份库存/盈利只能进一条链，多次卖出按 FIFO 消耗归属份额。`plannedQty` 取当前欠回补量与初始未回补份额的较大值，不把多轮累计买入误当初始回补。结束后的新回补不自动归入已结束的链。
+- 明细按行汇总全部关联卖出，不再被最后一笔覆盖；抽屉列出来源与关联成交。回本链锚点、成员和相关裸卖不被「隐藏已完成」挡住。
+- 待卖缺目标价按买入价+间隔推导；裸卖缺 P 且未明确标已回补时按卖价−间隔推导待买。缺真实成交价仍报缺失，不能捏造成交价。
+- 待卖按股票+有效挂单价自动合并（不同买入成本也合并）；待买将待回补和下一轮建议按同价汇总，保留来源可追溯。计划价、计划量、区间过滤、复制/CSV、金额统计使用同一口径；拆分/计划限量后的来源贡献量同时截断。
+- 下一轮建议成交落一笔真实买入，`nextRoundOfRow` 标明来源，部分成交只消耗相应份额；软删后额度恢复，恢复时防止重复占用。回补/合并成交在事务内重新读账校验额度，失败整笔回滚。
+- **第三项策略待用户重新定义，保持现状**：原单已回补、回补批次尚未卖出时，原单是否继续出现「下一轮」仍沿用旧候选规则。本次不改裸卖基于 P 列的既有盈利口径。
+- 备份 `schemaVersion: 10`，新增可选行字段的结构校验，兼容旧备份。无新增表或索引，Dexie 仍为 v9。回归覆盖 `regressions.spec.ts` 与 `e2e/accounting.mjs`。
+
 ## 弹窗默认值 V9.48
 
 - 有明确数值/日期默认值的输入留空（含纯空格）时，保存使用框内默认值；手填非空值优先，非法值和显式 0 仍走原校验，不能悄悄回退。
@@ -98,7 +112,7 @@ store/useApp（唯一写库入口，全部动作写 auditLogs）
 `merge:<锚行号>`（V9.45 同价买单合并组；`merge:<组 id>@<目标价分>` 是合并行的计划 ref）
 `chainlink:<锚行号>`（V9.46 回本链归属，只存 memberRows + closedAt；派生链 id 是 `chain:<锚行号>`，不落库）
 `sandbox:<seq>:<ts>`（V9.39 仅预览；预览行号 = 300000 + seq，绝不落库）。备份
-schemaVersion 9（V9.46 加 chainLinks；V9.45 加 merges；V9.32 去掉 accounts）。`validateBackup` 现在逐表校验 records / stocks / 回补成交 / 计划 / 拆分目标 / **挂钩** / **合并组** / **回本链归属**（V9.32 起；之前只查前两张，`hedges: [{}]` 能过校验、恢复后 `for..of h.items` 直接白屏）。Dexie schema 改动必须递增 `db.ts` 里的 version()（老库
+schemaVersion 10（V9.49 加行级成交来源；V9.46 加 chainLinks；V9.45 加 merges；V9.32 去掉 accounts）。`validateBackup` 现在逐表校验 records / stocks / 回补成交 / 计划 / 拆分目标 / **挂钩** / **合并组** / **回本链归属**（V9.32 起；之前只查前两张，`hedges: [{}]` 能过校验、恢复后 `for..of h.items` 直接白屏）。Dexie schema 改动必须递增 `db.ts` 里的 version()（老库
 自动升级，不写迁移）。
 
 ## 已知取舍 / 已知坑（设计如此，别当 bug 修）
@@ -141,3 +155,7 @@ schemaVersion 9（V9.46 加 chainLinks；V9.45 加 merges；V9.32 去掉 account
 - **G 先卖后买看份额不看日期**（2026-10-26 拍板，V9.47.1）：卖出日期早于买入日期是**合法记法**，不是数据错误；
   只要本行买入份额盖得住卖出份额，就视为已回补 = 已完成（撤掉待买单、不再标待回补，随即成为 V9.47 的
   下一轮应买档）。别再拿 `sellBeforeBuy` 当异常报，也别为了日期顺序把这类行留在待买里。
+- **H 回本链价位槽**（2026-10-26 拍板，V9.49）：C/D 这类「同价再卖」的先卖后买订单**自动挂回**那条
+  高买低卖的链，按 P 列开价位槽；之后**所有**同股、同价的买入（回补成交 / 明细新增 / 导入，不分入口）
+  自动归槽、累计盈亏，不用手动关联；回补完成即视为已完成、待买单自动关（用户原话「不手动关」）。
+  多链共享同一价位时归给锚点卖出日期最近的那条；锚点批次自己永远不会被别的链收编。

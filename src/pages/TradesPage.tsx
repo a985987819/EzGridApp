@@ -5,6 +5,7 @@ import { useApp } from '../store/useApp'
 import { serialToIso } from '../domain/defaults'
 import { EDITABLE, fieldText, type EditableKey } from '../domain/edit'
 import { activeStocks } from '../domain/stocks'
+import { sellsByRecord } from '../domain/suggestions'
 import { isHedgeable } from '../domain/hedge'
 import type { ManualInput } from '../domain/manual'
 import { inputOrDefault, manualFormDefaults, resolveManualForm } from '../domain/formDefaults'
@@ -136,13 +137,14 @@ function blankForm(stockName: string): ManualInput {
 
 /** 先卖后买：没有买入批次的卖出行（这类行补买入侧时有一堆可复用的数据） */
 function isNakedSell(rec: RawRecord): boolean {
-  return rec.buyPriceCents === null && (rec.soldQty ?? 0) > 0
+  return !rec.soldLotId && rec.buyPriceCents === null && (rec.soldQty ?? 0) > 0
 }
 
 export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   const {
     ledger,
     records,
+    executions,
     recordNo,
     stocks,
     editRecord,
@@ -256,7 +258,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
 
   const rows = useMemo<Row[]>(() => {
     const lotMap = new Map(ledger.lots.map((l) => [l.sourceRow, l]))
-    const sellMap = new Map(ledger.sells.map((s) => [s.sourceRow, s]))
+    const sellMap = sellsByRecord(ledger)
     return records.map((rec) => ({
       rec,
       lot: lotMap.get(rec.sourceRow) ?? null,
@@ -270,11 +272,13 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     /**
      * V9.46 回本链的锚点（亏着清仓的那笔）与归属成员：它们都还「欠着账」，
      * 不是真的完成——默认 hideDone 也留着，否则用户找不到那笔 10 元买入去哪了。
+     * V9.49：价位槽里每一笔同价买入（根卖单 + 槽内真实批次）同样保留——点开能看到整条链的账。
      */
     const chainRows = new Set<number>()
     for (const c of ledger.repairChains) {
       chainRows.add(c.anchorRow)
-      for (const b of c.branches) if (b.row !== null) chainRows.add(b.row)
+      for (const row of c.relatedSellRows) chainRows.add(row)
+      for (const b of c.branches) for (const row of b.memberRows) chainRows.add(row)
     }
     const list = rows.filter((r) => {
       // nanoId 深链要能命中已软删的行，showDeleted 的门对目标行放行
@@ -447,15 +451,23 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     () => new Map(ledger.repairChains.map((c) => [c.anchorRow, c])),
     [ledger.repairChains],
   )
-  /** 归属成员行 → 它归进去的那条链 */
+  /** 归属成员行 → 它归进去的那条链（V9.49：价位槽里每一笔同价买入都算，点开就能看整条链） */
   const repairByMember = useMemo(() => {
     const m = new Map<number, RepairChain>()
     for (const c of ledger.repairChains) {
       for (const b of c.branches) {
-        if (b.row !== null) m.set(b.row, c)
+        for (const r of b.memberRows) m.set(r, c)
       }
     }
     return m
+  }, [ledger.repairChains])
+  /** V9.49 价位槽的行（同价再卖 / 同价买回）：行上单独标「回本链 · 同价回补」 */
+  const branchRows = useMemo(() => {
+    const s = new Set<number>()
+    for (const c of ledger.repairChains) {
+      for (const b of c.branches) if (b.kind === 'sell') for (const r of b.memberRows) s.add(r)
+    }
+    return s
   }, [ledger.repairChains])
   /** 回本链的另一个入口：这笔裸卖（先卖后买）自己身上也能看到它牵连的那条链 */
   const repairBySell = useMemo(() => {
@@ -518,7 +530,11 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     // V9.37：先让这一行滑出、高度收掉，再真删——否则列表会「啪」地跳一下
     setLeaving((s) => new Set(s).add(row))
     await new Promise((r) => window.setTimeout(r, 280))
-    await softDelete(row)
+    try {await softDelete(row)} catch(e){
+      setLeaving((s)=>{const n=new Set(s);n.delete(row);return n})
+      notificationOpen({message:'无法删除',description:e instanceof Error?e.message:String(e),type:'error'})
+      return
+    }
     setLeaving((s) => {
       const n = new Set(s)
       n.delete(row)
@@ -532,8 +548,10 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   }
 
   async function onRestore(row: number) {
-    await restore(row)
-    notificationOpen({ message: `${recordNoLabelOf(row)}已恢复`, type: 'success' })
+    try {
+      await restore(row)
+      notificationOpen({ message: `${recordNoLabelOf(row)}已恢复`, type: 'success' })
+    }catch(e){notificationOpen({message:'无法恢复',description:e instanceof Error?e.message:String(e),type:'error'})}
   }
 
   function recordNoLabelOf(row: number): string {
@@ -587,7 +605,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     const head = ['序号', 'Excel行号', '股票', '买入日期', '买入价', '买入份额', '已卖', '剩余', '目标售价', '回补价', '卖出日期', '成交价', '实现盈利', '标记']
     const body = visible.map((r) => [
       recordNo.of(r.rec.sourceRow) ?? '',
-      r.rec.origin === 'excel' ? r.rec.sourceRow : '',
+      r.rec.origin === 'excel' ? r.rec.excelRow ?? r.rec.sourceRow : '',
       r.rec.stockName,
       r.lot ? isoDate(r.lot.buyDate) : serialToIso(r.rec.buyDateSerial) ?? '',
       r.rec.buyPriceCents === null ? '' : (r.rec.buyPriceCents / 100).toFixed(2),
@@ -773,7 +791,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
             hedgeTag = r.sell.hedgeClosed ? (
               <Tag size="small" variant="soft" color={chain?.done ? 'app-green' : 'app-red'}>
                 {chain?.done
-                  ? '回本链 · 已回本'
+                  ? '回本链 · 已不亏钱'
                   : chain
                     ? `回本链 · 还差 ${money(chain.gapCents)}`
                     : '高位已了结'}
@@ -787,18 +805,19 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
           // V9.46：这笔买入被归进某条回本链 → 行上标出来，点进抽屉能「移出回本链」
           const anchorChain = repairByAnchor.get(r.rec.sourceRow)
           const memberChain = repairByMember.get(r.rec.sourceRow)
+          const isBranch = branchRows.has(r.rec.sourceRow)
           const chainTag: ReactNode = hedgeTag
             ? null
             : anchorChain
               ? (
                 <Tag size="small" variant="soft" color={anchorChain.done ? 'app-green' : 'app-red'}>
-                  {anchorChain.done ? '回本链 · 已回本' : `回本链 · 还差 ${money(anchorChain.gapCents)}`}
+                  {anchorChain.done ? '回本链 · 已不亏钱' : `回本链 · 还差 ${money(anchorChain.gapCents)}`}
                 </Tag>
               )
               : memberChain
                 ? (
                   <Tag size="small" variant="soft" color="app-teal">
-                    归入回本链
+                    {isBranch ? '回本链 · 同价回补' : '归入回本链'}
                   </Tag>
                 )
                 : null
@@ -815,9 +834,10 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
               row={r}
               no={recordNo.of(r.rec.sourceRow)}
               onClick={() => open(r)}
-              extraTag={hedgeTag ?? chainTag}
+              // V9.49：价位槽的行先亮回本链（它已经是这条链的一环，不必再提示「裸卖待挂钩」）
+              extraTag={isBranch && memberChain ? chainTag : (hedgeTag ?? chainTag)}
               anim={anim}
-              chain={anchorChain ? 'anchor' : memberChain ? 'member' : undefined}
+              chain={anchorChain ? 'anchor' : memberChain ? (isBranch ? 'branch' : 'member') : undefined}
             />
           )
         })
@@ -985,7 +1005,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                   )}
                   {current.sell?.sellBeforeBuy && <Tag size="small" variant="soft" color="app-teal">先卖后买</Tag>}
                   {current.rec.origin === 'excel' && (
-                    <Tag size="small" variant="soft">Excel 第 {current.rec.sourceRow} 行</Tag>
+                    <Tag size="small" variant="soft">Excel 第 {current.rec.excelRow ?? current.rec.sourceRow} 行</Tag>
                   )}
                   {current.sell?.dateMissing && <Tag size="small" variant="soft" color="app-yellow">缺日期</Tag>}
                   {current.sell && current.sell.priceCents === null && <Tag size="small" variant="soft" color="app-red">缺价格</Tag>}
@@ -1111,6 +1131,12 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                   </div>
                 )}
 
+                <div className="divider-top" data-testid="related-executions">
+                  <strong>关联成交</strong>
+                  {ledger.sells.filter((v)=>v.lotId===current.lot?.id || v.sourceRow===current.rec.sourceRow).map((v)=><div key={v.id} className="line tiny"><span>{v.soldAt??'未填日期'} · 卖 {price(v.priceCents)} × {qty(v.qty)}{v.hedgedFromSellRow!==undefined?' · 挂钩分配':''}</span><span>{signedMoney(v.profitCents)}</span></div>)}
+                  {executions.filter((e)=>e.sellExecId===`sell:${current.rec.sourceRow}`).map((e)=><div key={e.id} className="line tiny"><span>回补 {price(e.priceCents)} × {qty(e.qty)}</span><span>{new Date(e.at).toLocaleDateString()}</span></div>)}
+                  {current.rec.soldLotId && <p className="tiny muted">来源批次：{current.rec.soldLotId.startsWith('lot:exec:')?'回补批次':recordNoLabelOf(Number(current.rec.soldLotId.replace('lot:','')))}</p>}
+                </div>
                 <div className="divider-top">
                   <div className="sec-head sm">
                     <strong>变更历史</strong>

@@ -26,7 +26,7 @@ export function RepairChainCard({
       <div className="chain-head">
         <strong>回本链</strong>
         <Tag size="small" variant="soft" color={chain.done ? 'app-green' : 'app-yellow'}>
-          {chain.done ? '已回本' : `还差 ${money(chain.gapCents)}`}
+          {chain.done ? '已不亏钱' : `还差 ${money(chain.gapCents)}`}
         </Tag>
         {chain.closedByUserAt !== null && (
           <Tag size="small" variant="soft" color="default">
@@ -41,7 +41,7 @@ export function RepairChainCard({
 
       <p className="tiny muted chain-line">
         {rowLabel(chain.anchorRow)}
-        {chain.closedAtCents !== null && <> 已于 <b>{price(chain.closedAtCents)}</b> 清仓了结</>}；
+        {chain.closedAtCents !== null && <> 已于 <b>{price(chain.closedAtCents)}</b> 卖出了结</>}；
         之后归属它的交易每实现一笔净盈利就往这里累加，一直不买回这笔亏损也留在账上。
       </p>
 
@@ -60,7 +60,7 @@ export function RepairChainCard({
         </div>
         <div className="chain-num">
           <span className="tiny muted">还差多少</span>
-          <b className="num">{chain.done ? '已回本' : money(chain.gapCents)}</b>
+          <b className="num">{chain.done ? '已不亏钱' : money(chain.gapCents)}</b>
         </div>
       </div>
 
@@ -99,27 +99,46 @@ export function RepairChainCard({
       {!dense && chain.branches.length > 0 && (
         <div className="data-block chain-cycles">
           {chain.branches.map((b) => (
-            <div key={b.key} className="line">
+            <div key={b.key} className="line" data-branch={b.kind}>
               <div className="left">
                 <div className="t1 num">
-                  {price(b.buyPriceCents)} 买 → {b.sellPriceCents === null ? '未卖出' : price(b.sellPriceCents)} 卖
-                  <span className="muted">
-                    {' '}
-                    · {qty(b.sellQty > 0 ? b.sellQty : b.qty)} 股
-                    {b.remainingQty > 0 && `（手持 ${qty(b.remainingQty)}）`}
-                  </span>
-                  {b.netCents >= 0 && b.sellQty > 0 && (
+                  {b.kind === 'sell' ? (
+                    <>
+                      {b.sellPriceCents === null ? '—' : price(b.sellPriceCents)} 卖 → {price(b.buyPriceCents)} 买回
+                      <span className="muted"> · 卖了 {b.cycles} 次</span>
+                    </>
+                  ) : (
+                    <>
+                      {price(b.buyPriceCents)} 买 → {b.sellPriceCents === null ? '未卖出' : price(b.sellPriceCents)} 卖
+                      <span className="muted">
+                        {' '}
+                        · {qty(b.sellQty > 0 ? b.sellQty : b.qty)} 股
+                        {b.remainingQty > 0 && `（手持 ${qty(b.remainingQty)}）`}
+                      </span>
+                    </>
+                  )}
+                  {b.netCents >= 0 && b.profitCents > 0 && (
                     <Tag size="small" variant="soft" color="app-green" style={{ marginLeft: 6 }}>
-                      本笔回本
+                      本支回本
                     </Tag>
                   )}
                 </div>
                 <div className="t2">
-                  {b.kind === 'rebuy' ? '回补批次' : b.row !== null ? rowLabel(b.row) : '后续买入'}
-                  {b.buyDate ? ` · ${b.buyDate} 买入` : ''}
-                  {b.soldAt ? ` · ${b.soldAt} 卖出` : ''}
-                  {b.allocatedLossCents !== 0 && ` · 分摊亏损 ${money(b.allocatedLossCents)}`}
-                  {b.savingCents !== 0 && ` · 回补省 ${money(b.savingCents)}`}
+                  {b.kind === 'sell' ? (
+                    <>
+                      价位槽 · 根 {b.rootSellRow !== null ? rowLabel(b.rootSellRow) : '—'}
+                      {b.remainingQty > 0 ? ` · 手持 ${qty(b.remainingQty)}` : ''}
+                      {b.allocatedLossCents !== 0 && ` · 分摊亏损 ${money(b.allocatedLossCents)}`}
+                    </>
+                  ) : (
+                    <>
+                      {b.kind === 'rebuy' ? '回补批次' : b.row !== null ? rowLabel(b.row) : '后续买入'}
+                      {b.buyDate ? ` · ${b.buyDate} 买入` : ''}
+                      {b.soldAt ? ` · ${b.soldAt} 卖出` : ''}
+                      {b.allocatedLossCents !== 0 && ` · 分摊亏损 ${money(b.allocatedLossCents)}`}
+                      {b.savingCents !== 0 && ` · 回补省 ${money(b.savingCents)}`}
+                    </>
+                  )}
                 </div>
               </div>
               <span className={`num ${tone(b.netCents)}`}>

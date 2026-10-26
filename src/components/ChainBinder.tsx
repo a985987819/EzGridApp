@@ -46,12 +46,18 @@ export function ChainBinder({
     const ownedElsewhere = new Set(
       chainLinks.filter((l) => l.anchorRow !== row).flatMap((l) => l.memberRows),
     )
+    /** V9.49：已经被价位槽自动收编的行不再列出——它们已经在链里，勾进来只会打乱自动归属 */
+    const autoRows = new Set(
+      ledger.repairChains.flatMap((c) => c.branches.filter((b) => b.kind === 'sell').flatMap((b) => b.memberRows)),
+    )
     return ledger.lots
       .filter((l) => l.id === `lot:${l.sourceRow}`)
       .filter((l) => l.stockName === chain.stockName && l.sourceRow !== chain.anchorRow)
       .filter((l) => !ownedElsewhere.has(l.sourceRow))
+      .filter((l) => !autoRows.has(l.sourceRow))
+      .filter((l) => !chainLinks.some((link)=>link.anchorRow===l.sourceRow && link.memberRows.length>0))
       .sort((a, b) => (b.buyDate ?? '').localeCompare(a.buyDate ?? '') || b.sourceRow - a.sourceRow)
-  }, [chain, ledger.lots, chainLinks, rec, row])
+  }, [chain, ledger.lots, ledger.repairChains, chainLinks, rec, row])
 
   if (memberOf) {
     return (
@@ -59,7 +65,7 @@ export function ChainBinder({
         <div className="row nowrap" style={{ gap: 6 }}>
           <span className="tiny muted grow">
             本笔归入 <b>{recordNoLabel(memberOf.anchorRow, recordNo)}</b> 的回本链
-            {memberOf.done ? '（已回本）' : ` · 那条链还差 ${money(memberOf.gapCents)}`}
+            {memberOf.done ? '（已不亏钱）' : ` · 那条链还差 ${money(memberOf.gapCents)}`}
           </span>
           <Button size="small" data-action="chain-leave" onClick={() => void removeFromChain(row)}>
             移出回本链
@@ -108,7 +114,7 @@ export function ChainBinder({
         <strong>回本链归属</strong>
         <div className="spacer" />
         <span className="sec-sub">
-          {chain.done ? '已回本' : `还差 ${money(chain.gapCents)}`} · 持仓 {qty(chain.holdingQty)} 股
+          {chain.done ? '已不亏钱' : `还差 ${money(chain.gapCents)}`} · 持仓 {qty(chain.holdingQty)} 股
         </span>
       </div>
 

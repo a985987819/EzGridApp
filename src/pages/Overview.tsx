@@ -216,7 +216,7 @@ export function Overview({
               ))}
               {closedChainCount > 0 && (
                 <p className="tiny muted" style={{ margin: 0 }} data-testid="overview-chains-closed">
-                  另有 {closedChainCount} 条已结束的回本链（含已回本），历史留在明细页那笔买入的抽屉里
+                  另有 {closedChainCount} 条已结束的回本链（含已不亏钱），历史留在明细页那笔买入的抽屉里
                 </p>
               )}
             </div>

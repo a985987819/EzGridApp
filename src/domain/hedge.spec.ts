@@ -283,11 +283,11 @@ describe('先卖后买挂钩（V9.26）', () => {
     // 链只认「已了结」的 100 股：亏 −300；回补的 100 股还没再卖出 → 进度 0，节省 +50
     const chain = led.repairChains[0]
     expect(chain).toMatchObject({
-      anchorQty: 100,
-      lossCents: -30000,
+      anchorQty: 500,
+      lossCents: -150000,
       profitCents: 0,
       savingCents: 5000,
-      gapCents: 30000,
+      gapCents: 150000,
       holdingQty: 100,
     })
   })

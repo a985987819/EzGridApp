@@ -5,6 +5,7 @@
 
 import { mulCents } from './money'
 import { deriveBuyQty } from './qty'
+import { deriveRebuyPrice } from './manual'
 import { serialToIso, stockIdOf } from './defaults'
 import { buildRepairChains } from './chain'
 import { type Anomaly, type ExtraTarget, type HedgeLink, type RebuyExecution, type TradePlan, type CheckResult, type GroupPool, type Ledger, type Lot, type DayBucket, type MonthlyBucket, type RawRecord, type RebuyOrder, type RepairChain, type RepairChainLink, type SellExecution, type SellTarget, type StockConfig, type StockSummary } from './types'
@@ -70,9 +71,25 @@ export function buildLedger(
   const stockMap = new Map(stocks.map((s) => [s.name, s]))
   const anomalies: Anomaly[] = []
   const lots: Lot[] = []
+  const execByLotId = new Map(executions.map((e) => [`lot:exec:${e.id}`, e]))
+  const lotCost = (id: string): number | null => execByLotId.get(id)?.priceCents ??
+    byRow.get(Number(id.replace('lot:', '')))?.buyPriceCents ?? null
+  // 父交易软删后，后续成交和回补也不参与派生，恢复后整条恢复。
+  const reachable = new Set(live.filter((r) => !r.soldLotId).map((r) => r.sourceRow))
+  let grew = true
+  while (grew) {
+    grew = false
+    for (const r of live) {
+      if (!r.soldLotId || reachable.has(r.sourceRow)) continue
+      const parent = execByLotId.get(r.soldLotId)
+      const parentRow = parent ? Number(parent.sellExecId.replace('sell:', '')) : Number(r.soldLotId.replace('lot:', ''))
+      if (reachable.has(parentRow)) { reachable.add(r.sourceRow); grew = true }
+    }
+  }
   const sells: SellExecution[] = []
 
   for (const r of live) {
+    if (!reachable.has(r.sourceRow)) continue
     const cfg = stockMap.get(r.stockName)
     const stockId = cfg?.id ?? stockIdOf(r.stockName)
     const interval = cfg?.intervalCents ?? 0
@@ -86,13 +103,13 @@ export function buildLedger(
     // E 列：公式无缓存值 → 买入价 + 该股默认间隔（D1）
     // 已成交行默认不推定成交价（见 BuildOptions.deriveSellPrice）
     let target = r.targetPriceCents
-    if (target === null && r.targetNeedsDerive && r.buyPriceCents && interval > 0) {
+    if (target === null && (soldQty === 0 || r.targetNeedsDerive) && r.buyPriceCents && interval > 0) {
       if (soldQty === 0 || deriveSellPrice) target = r.buyPriceCents + interval
     }
 
     const buyDate = serialToIso(r.buyDateSerial)
     const soldAt = serialToIso(r.sellDateSerial)
-    const isLot = r.buyPriceCents !== null && qty !== null && qty > 0
+    const isLot = !r.soldLotId && r.buyPriceCents !== null && qty !== null && qty > 0
     const isSell = soldQty > 0
 
     if (isLot) {
@@ -133,7 +150,7 @@ export function buildLedger(
 
     if (isSell) {
       // 成本：买入价优先，无批次时取 P 列（R4 / D5）
-      const cost = r.buyPriceCents ?? r.earlyBuyPriceCents
+      const cost = r.soldLotId ? lotCost(r.soldLotId) : r.buyPriceCents ?? r.earlyBuyPriceCents
       const price = target
       const costComplete = cost !== null && price !== null
       const profit = costComplete ? mulCents(price! - cost!, soldQty) : null
@@ -154,6 +171,13 @@ export function buildLedger(
       const ownLotCoverQty = isLot && soldFirst ? Math.min(qty!, soldQty) : 0
       const needRebuyQty = Math.max(0, soldQty - ownLotCoverQty)
       const groupKey = cost !== null ? groupKeyOf(stockId, cost) : null
+      /**
+       * V9.49：回补价提前在这里定好（P 列 > 裸卖的推导价 = 卖出价 − 该股间隔）。
+       * 回本链的「价位槽」靠它认「同股、同价买入」，待买单也复用它，口径只算一次。
+       */
+      const nakedRebuyPrice =
+        !isLot && !r.soldLotId && r.rebuyPriceSource !== 'repaid' ? deriveRebuyPrice(r, interval).cents : null
+      const rebuyPriceCents = r.earlyBuyPriceCents ?? nakedRebuyPrice
 
       const sell: SellExecution = {
         id: `sell:${r.sourceRow}`,
@@ -167,13 +191,14 @@ export function buildLedger(
         soldAt,
         dateMissing: soldAt === null,
         priceSource: price === null ? 'missing' : 'target',
-        rebuyStatus: r.earlyBuyPriceCents !== null && needRebuyQty > 0 ? 'pending' : 'repaid',
+        rebuyStatus: rebuyPriceCents !== null && needRebuyQty > 0 ? 'pending' : 'repaid',
+        rebuyPriceCents,
         ownLotCoverQty,
         sellBeforeBuy,
         groupKey,
         costComplete,
         // §7.1：卖出挂回买入批次；先卖后买（无批次）留 null
-        lotId: isLot ? `lot:${r.sourceRow}` : null,
+        lotId: r.soldLotId ?? (isLot ? `lot:${r.sourceRow}` : null),
         // 自动目标在下面生成后再回填
         targetId: null,
       }
@@ -251,11 +276,11 @@ export function buildLedger(
   for (const h of hedgeLinks) {
     const rec = byRow.get(h.sellRow)
     const naked =
-      rec && rec.buyPriceCents === null && (rec.soldQty ?? 0) > 0 ? sellByRow.get(h.sellRow) : undefined
+      rec && !rec.soldLotId && rec.buyPriceCents === null && (rec.soldQty ?? 0) > 0 ? sellByRow.get(h.sellRow) : undefined
     if (!rec || !naked) continue // 行没了 / 不是裸卖 → 挂钩失效
     // 还没买回的股数 = 卖出量 − 已回补量：这部分还能挂；买回光了就整笔永久了结（V9.36）
     const execs = execByOrder.get(`rb:${naked.id}`) ?? []
-    const execQty = execs.reduce((a, e) => a + e.qty, 0)
+    const execQty = execs.reduce((a, e) => a + e.qty - e.rewardQty, 0)
     const unrepaid = Math.max(0, naked.qty - execQty)
     if (naked.priceCents === null) {
       anomalies.push({
@@ -388,6 +413,33 @@ export function buildLedger(
     if (closedTotal > 0) hedgeClosedByRow.set(h.sellRow, (hedgeClosedByRow.get(h.sellRow) ?? 0) + closedTotal)
   }
 
+  // 回补批次是唯一实盘买入，关联卖出只扣库存。
+  let virtualIndex = 0
+  for (const e of scopedExecs) {
+    const parent = byRow.get(Number(e.sellExecId.replace('sell:', '')))
+    if (!parent || !reachable.has(parent.sourceRow)) continue
+    const interval = stockMap.get(parent.stockName)?.intervalCents ?? 0
+    const d = new Date(e.at)
+    lots.push({
+      id: `lot:exec:${e.id}`, sourceRow: 200000 + virtualIndex++,
+      stockId: stockMap.get(parent.stockName)?.id ?? stockIdOf(parent.stockName), stockName: parent.stockName,
+      buyDate: `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`,
+      buyPriceCents: e.priceCents, qty: e.qty, soldQty: 0, remainingQty: e.qty,
+      targetPriceCents: interval > 0 ? e.priceCents + interval : null, needsPrice: interval <= 0, importKey: e.id,
+    })
+    if (interval <= 0) anomalies.push({kind:'needsPrice',sourceRow:parent.sourceRow,stockName:parent.stockName,detail:'回补批次缺该股间隔配置，无法生成待卖目标'})
+  }
+  const allLotById = new Map(lots.map((l) => [l.id, l]))
+  for (const r of live) {
+    if (!r.soldLotId || !reachable.has(r.sourceRow)) continue
+    const lot = allLotById.get(r.soldLotId)
+    if (!lot) continue
+    const q = r.soldQty ?? 0
+    if (q > lot.remainingQty) anomalies.push({kind:'oversell',sourceRow:r.sourceRow,stockName:r.stockName,detail:'关联卖出量超过批次剩余'})
+    lot.soldQty += q
+    lot.remainingQty = Math.max(0, lot.remainingQty - q)
+  }
+
   // R1 待卖：有剩余持仓的批次 × E；手动拆分的先占额度，剩下的才走自动目标
   const targets: SellTarget[] = []
   for (const lot of lots) {
@@ -452,104 +504,64 @@ export function buildLedger(
     if (sell.lotId !== null) sell.targetId = autoTargetByLot.get(sell.lotId) ?? null
   }
 
+  const allLots = lots
+
+  // V9.49 回本链先算：价位槽会把「同股、同价买入」自动认作回补，输出每笔裸卖的覆盖量，
+  // 待买单据此自动关掉（用户拍板「不手动关」）。链本身仍是纯派生，不落库。
+  const chainCover = new Map<number, number>()
+  const repairChains: RepairChain[] = buildRepairChains(
+    {
+      lots: allLots,
+      sells,
+      executions: scopedExecs,
+      links: opts.chainLinks ?? [],
+    },
+    chainCover,
+  )
+
   // R2 待买：只认 P 列（D3）
   const orders: RebuyOrder[] = []
   for (const sell of sells) {
     if (sell.rebuyStatus !== 'pending') continue
     const rec = byRow.get(sell.sourceRow)
-    if (!rec || rec.earlyBuyPriceCents === null) continue
+    if (!rec) continue
+    const rebuyPrice = sell.rebuyPriceCents ?? null
+    if (rebuyPrice === null) continue
     const orderId = `rb:${sell.id}`
     const myExecs = execByOrder.get(orderId) ?? []
     const execQty = myExecs.reduce((a, e) => a + e.qty, 0)
     const doneRewardQty = myExecs.reduce((a, e) => a + e.rewardQty, 0)
     // V9.47.1：本行买入批次已经盖住的那部分不再挂单，只剩真欠的
-    const needQty = Math.max(0, sell.qty - (sell.ownLotCoverQty ?? 0))
+    // V9.49：回本链价位槽里同价买回的股数同样算「已完成」，直接从待买里扣掉
+    const needQty = Math.max(0, sell.qty - (sell.ownLotCoverQty ?? 0) - (chainCover.get(sell.sourceRow) ?? 0))
     orders.push({
       id: orderId,
       sellExecId: sell.id,
       sourceRow: sell.sourceRow,
       stockId: sell.stockId,
       stockName: sell.stockName,
-      rebuyPriceCents: rec.earlyBuyPriceCents,
+      rebuyPriceCents: rebuyPrice,
       baseQty: needQty,
       rewardQty: 0,
       execQty,
       doneRewardQty,
       remainingQty: Math.max(0, needQty - execQty),
       status: execQty <= 0 ? 'open' : 'partial',
-      groupKey: groupKeyOf(sell.stockId, rec.earlyBuyPriceCents),
+      groupKey: groupKeyOf(sell.stockId, rebuyPrice),
       grossProfitCents: 0,
       hands: 0,
       createdAt: sell.sourceRow,
       // 全额挂住的裸卖不算敞口：交割股由挂的高位批次提供（V9.26）
-      exposure: rec.buyPriceCents === null && !fullyHedgedRows.has(rec.sourceRow),
+      // V9.49：已被回本链同价买回盖满的也不算敞口（空头已经平了）
+      exposure:
+        needQty > 0 &&
+        (!sell.lotId || ((sell.ownLotCoverQty ?? 0) > 0 && sell.qty > (sell.ownLotCoverQty ?? 0))) &&
+        !fullyHedgedRows.has(rec.sourceRow),
       planPriceCents: planByRef.get(orderId)?.priceCents ?? null,
       planQty: planByRef.get(orderId)?.qty ?? null,
       rewardSourceOrderIds: [],
     })
   }
-
-  // R6（v9.20 用户决策）：回补成交自动生成「回补批次」——买回的股回到待卖清单，
-  // 目标价 = 成交价 + 该股间隔。纯派生对象不落库，撤销成交即消失。
-  const orderById = new Map(orders.map((o) => [o.id, o]))
-  const virtualLots: Lot[] = []
-  for (const e of scopedExecs) {
-    const o = orderById.get(e.orderId)
-    if (!o) continue
-    const interval = stockMap.get(e.stockName)?.intervalCents ?? 0
-    const target = interval > 0 ? e.priceCents + interval : null
-    const d = new Date(e.at)
-    virtualLots.push({
-      id: `lot:exec:${e.id}`,
-      // 200000 段位：不与 Excel 行号 / 手动行（100000+）相撞的派生行号
-      sourceRow: 200000 + virtualLots.length,
-      stockId: o.stockId,
-      stockName: o.stockName,
-      buyDate: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`,
-      buyPriceCents: e.priceCents,
-      qty: e.qty,
-      soldQty: 0,
-      remainingQty: e.qty,
-      targetPriceCents: target,
-      needsPrice: target === null,
-      importKey: e.id,
-    })
-    if (target === null) {
-      anomalies.push({
-        kind: 'needsPrice',
-        sourceRow: o.sourceRow,
-        stockName: o.stockName,
-        detail: `回补批次（${e.qty} 股 @ ${(e.priceCents / 100).toFixed(2)}）缺该股间隔配置，无法生成待卖目标`,
-      })
-    }
-  }
-  // 回补批次与真实批次走同一套 R1 语义：自动目标挂在批次上，手动拆分也可用
-  for (const vl of virtualLots) {
-    if (vl.targetPriceCents === null) continue
-    const plan = planByRef.get(`target:${vl.id}`)
-    targets.push({
-      id: `target:${vl.id}`,
-      lotId: vl.id,
-      stockId: vl.stockId,
-      stockName: vl.stockName,
-      priceCents: vl.targetPriceCents,
-      qty: vl.remainingQty,
-      autoGenerated: true,
-      expectProfitCents: mulCents(vl.targetPriceCents - vl.buyPriceCents, vl.remainingQty),
-      amountCents: mulCents(vl.targetPriceCents, vl.remainingQty),
-      planPriceCents: plan?.priceCents ?? null,
-      planQty: plan?.qty ?? null,
-    })
-  }
-  const allLots = [...lots, ...virtualLots]
-
-  // V9.46 回本链：亏着清仓那笔成交即成链；进度只累计归属交易的已实现净盈利
-  const repairChains: RepairChain[] = buildRepairChains({
-    lots: allLots,
-    sells,
-    executions: scopedExecs,
-    links: opts.chainLinks ?? [],
-  })
 
   // R4/R5 组池与奖励
   const groups = computeGroups(sells, orders, scopedExecs)
@@ -563,6 +575,12 @@ export function buildLedger(
     const planQty = o.baseQty + o.rewardQty
     o.remainingQty = Math.max(0, planQty - o.execQty)
     o.status = o.execQty <= 0 ? 'open' : o.remainingQty === 0 ? 'closed' : 'partial'
+    const sell = sells.find((s) => s.id === o.sellExecId)
+    if (sell) {
+      sell.rebuyStatus = o.remainingQty > 0 ? 'pending' : 'repaid'
+      sell.rebuyRemainingQty = o.remainingQty
+      sell.rebuyPriceCents = o.rebuyPriceCents
+    }
   }
 
   // 汇总（v9.20：回补批次已是派生批次计入 Σ买入，净持仓不再单独加回补量）
@@ -597,7 +615,9 @@ export function buildLedger(
     exposureExecBaseQty: (() => {
       let sum = 0
       for (const o of orders) {
-        if (byRow.get(o.sourceRow)?.buyPriceCents !== null) continue
+        const parent=byRow.get(o.sourceRow)
+        const sale=sells.find((s)=>s.id===o.sellExecId)
+        if (parent?.soldLotId || (parent?.buyPriceCents!==null && !(sale?.ownLotCoverQty))) continue
         const base = Math.max(0, o.execQty - o.doneRewardQty)
         sum += Math.max(0, base - (hedgeClosedByRow.get(o.sourceRow) ?? 0))
       }

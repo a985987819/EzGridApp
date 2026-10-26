@@ -77,19 +77,31 @@ export function planImport(existing: RawRecord[], incoming: RawRecord[]): Import
   // 身份 → 本地行队列：同一身份多行（例如同价同日多笔买入）按出现次序配对，不串行
   const byIdentity = new Map<string, RawRecord[]>()
   for (const r of existing) {
+    if (r.soldLotId) continue
     const k = identityKeyOf(r)
     const list = byIdentity.get(k)
     if (list) list.push(r)
     else byIdentity.set(k, [r])
   }
 
+  const used = new Set(existing.map((r) => r.sourceRow))
+  const reserved = new Set(incoming.map((r) => r.sourceRow))
+  let nextId = Math.max(0, ...existing.filter((r) => r.sourceRow < 100000).map((r) => r.sourceRow),
+    ...incoming.map((r) => r.sourceRow)) + 1
   const fresh: RawRecord[] = []
   const updates: ImportUpdate[] = []
   let unchanged = 0
   for (const r of incoming) {
     const local = byIdentity.get(identityKeyOf(r))?.shift()
     if (!local) {
-      fresh.push(r)
+      let id = r.sourceRow
+      if (used.has(id)) {
+        while (used.has(nextId) || reserved.has(nextId)) nextId++
+        if (nextId >= 100000) throw new Error('导入记录 ID 空间已满')
+        id = nextId++
+      }
+      used.add(id)
+      fresh.push({ ...r, sourceRow: id, excelRow: r.excelRow ?? r.sourceRow })
       continue
     }
     const merged: RawRecord = {

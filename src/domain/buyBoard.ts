@@ -28,6 +28,7 @@ export interface NextRoundBuyRow {
   amountCents: number
   /** 涉及的明细行号（升序） */
   rows: number[]
+  sourceQty?: Record<number, number>
   merged: boolean
   /** 点击跳转用：合并行取最早买入的那笔 */
   anchorRow: number
@@ -56,10 +57,11 @@ export function buildNextRoundBuyRows(opts: {
   orders: readonly RebuyOrder[]
   sells: readonly SellExecution[]
   merges: readonly LotMergeLink[]
+  consumed?: ReadonlyMap<number, number>
   /** 沙盒模拟行（300000 段）：只活在预览里，不给它排下一轮 */
   sandboxRows?: ReadonlySet<number>
 }): NextRoundBuyRow[] {
-  const { lots, orders, sells, merges, sandboxRows } = opts
+  const { lots, orders, sells, merges, sandboxRows, consumed } = opts
 
   /** 还有没回补完的卖单 → 那张 P 列待买已经在提醒，这里不再给一档 */
   const openRows = new Set(orders.filter((o) => o.remainingQty > 0).map((o) => o.sourceRow))
@@ -76,7 +78,7 @@ export function buildNextRoundBuyRows(opts: {
     !openRows.has(l.sourceRow) &&
     !sandboxRows?.has(l.sourceRow)
 
-  const candidates = lots.filter(isCandidate)
+  const candidates = lots.filter(isCandidate).map((l) => ({...l, qty: Math.max(0,l.qty-(consumed?.get(l.sourceRow)??0))})).filter((l)=>l.qty>0)
   const byRow = new Map(candidates.map((l) => [l.sourceRow, l]))
 
   /** 行号 → 同价合并组（组内 ≥2 笔候选才合） */
@@ -101,6 +103,7 @@ export function buildNextRoundBuyRows(opts: {
       qty: l.qty,
       amountCents: l.buyPriceCents * l.qty,
       rows: [l.sourceRow],
+      sourceQty: {[l.sourceRow]:l.qty},
       merged: false,
       anchorRow: l.sourceRow,
       earliestBuyDate: l.buyDate,
@@ -110,16 +113,23 @@ export function buildNextRoundBuyRows(opts: {
   }
 
   for (const l of candidates) {
-    const group = groupByRow.get(l.sourceRow)
-    if (!group) {
+    const samePrice = candidates.filter((x) => x.stockName === l.stockName && x.buyPriceCents === l.buyPriceCents)
+    const legacy = groupByRow.get(l.sourceRow)
+    const group = legacy && samePrice.every((x) => groupByRow.get(x.sourceRow)?.id === legacy.id)
+      ? legacy
+      : { id: `auto:${l.stockName}:${l.buyPriceCents}`, stockName: l.stockName, priceCents: l.buyPriceCents,
+          at: 0, rows: samePrice.map((x) => x.sourceRow) }
+    if (group.rows.length < 2) {
       pushSingle(l)
       continue
     }
     const hit = groupIndex.get(group.id)
     if (hit) {
+      hit.sourceQty = {...hit.sourceQty,[l.sourceRow]:l.qty}
       hit.qty += l.qty
       hit.amountCents += l.buyPriceCents * l.qty
       if (!hit.rows.includes(l.sourceRow)) hit.rows.push(l.sourceRow)
+      if (l.buyDate && (!hit.earliestBuyDate || l.buyDate < hit.earliestBuyDate || (l.buyDate===hit.earliestBuyDate && l.sourceRow<hit.anchorRow))) hit.anchorRow=l.sourceRow
       hit.earliestBuyDate = earlier(hit.earliestBuyDate, l.buyDate)
       hit.lastSoldAt = latest(hit.lastSoldAt, soldAtByRow.get(l.sourceRow) ?? null)
       if (l.buyDate && (!hit.earliestBuyDate || l.buyDate <= hit.earliestBuyDate) && l.sourceRow < hit.anchorRow) {
@@ -135,6 +145,7 @@ export function buildNextRoundBuyRows(opts: {
       qty: l.qty,
       amountCents: l.buyPriceCents * l.qty,
       rows: [l.sourceRow],
+      sourceQty: {[l.sourceRow]:l.qty},
       merged: true,
       anchorRow: l.sourceRow,
       earliestBuyDate: l.buyDate,

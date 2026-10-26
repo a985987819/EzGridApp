@@ -12,6 +12,7 @@ import { isoToSerial } from '../domain/edit'
 import { serialToIso } from '../domain/defaults'
 import { sandboxRowOf, type SandboxItem, type SandboxKind } from '../domain/sandbox'
 import { mergeTargetRows, type TargetRow } from '../domain/merge'
+import { buildBuySuggestions, consumedNextRounds, type BuySuggestion } from '../domain/suggestions'
 import { buildNextRoundBuyRows, type NextRoundBuyRow } from '../domain/buyBoard'
 import { buildNanoIdIndex } from '../ui/nanoid'
 import { downloadText, toCsv } from '../ui/csv'
@@ -59,6 +60,8 @@ export function OrdersPage({
     ordersSession,
     patchOrdersSession,
     recordRebuy,
+    recordLotSales,
+    recordBuySuggestion,
     removeRebuy,
     setPlan,
     clearPlan,
@@ -178,11 +181,10 @@ export function OrdersPage({
     [view.targets, view.lots, effectiveStock, merges, plans, sandboxByRow],
   )
 
-  const buyToday = range ? orders.filter((o) => within(o.rebuyPriceCents) && o.remainingQty > 0) : []
+  const buyToday = range ? orders.filter((o) => within(o.planPriceCents ?? o.rebuyPriceCents) && o.remainingQty > 0) : []
   const sellToday = range ? targetRows.filter((r) => within(r.priceCents)) : []
-  const buyOut = range ? orders.filter((o) => !within(o.rebuyPriceCents) && o.remainingQty > 0).length : 0
+  const buyOut = range ? orders.filter((o) => !within(o.planPriceCents ?? o.rebuyPriceCents) && o.remainingQty > 0).length : 0
   const sellOut = range ? targetRows.filter((r) => !within(r.priceCents)).length : 0
-  const buyTodayAmount = buyToday.reduce((a, o) => a + o.rebuyPriceCents * o.remainingQty, 0)
   const sellTodayAmount = sellToday.reduce((a, r) => a + r.amountCents, 0)
 
   /**
@@ -196,13 +198,57 @@ export function OrdersPage({
         orders: view.orders,
         sells: view.sells,
         merges,
+        consumed: consumedNextRounds(records),
         sandboxRows: new Set(sandboxByRow.keys()),
       }).filter((r) => r.stockName === effectiveStock),
-    [view.lots, view.orders, view.sells, merges, sandboxByRow, effectiveStock],
+    [view.lots, view.orders, view.sells, merges, sandboxByRow, effectiveStock, records],
+  )
+  const buySuggestions=buildBuySuggestions(orders,nextRound,plans)
+  const suggestionsToday=range?buySuggestions.filter((r)=>within(r.priceCents)):[]
+  const buyTodayAmount=suggestionsToday.reduce((a,r)=>a+r.amountCents,0)
+  const [trade,setTrade]=useState<{side:'buy'|'sell';buy?:BuySuggestion;sell?:TargetRow}|null>(null)
+  const [tradePrice,setTradePrice]=useState('')
+  const [tradeQty,setTradeQty]=useState('')
+  const [tradeDate,setTradeDate]=useState(todayIso())
+  const [savingTrade,setSavingTrade]=useState(false)
+  function openTrade(side:'buy'|'sell',row:BuySuggestion|TargetRow){
+    setTrade(side==='buy'?{side,buy:row as BuySuggestion}:{side,sell:row as TargetRow})
+    setTradePrice(centsToYuan(row.priceCents));setTradeQty(String(row.qty));setTradeDate(todayIso())
+  }
+  async function saveTrade(){
+    if(!trade||savingTrade)return
+    const r=trade.buy??trade.sell!
+    setSavingTrade(true)
+    try{
+      const p=toCents(inputOrDefault(tradePrice,centsToYuan(r.priceCents)))
+      const q=Number(inputOrDefault(tradeQty,String(r.qty)))
+      if(p===null)throw new Error('成交价不合法')
+      if(q>r.qty)throw new Error(`本次最多记录 ${r.qty} 股`)
+      if(trade.buy)await recordBuySuggestion(trade.buy.sources,q,p,tradeDate||todayIso())
+      else {
+        const sources=new Map<string,number>()
+        for(const t of trade.sell!.targets)sources.set(t.lotId,(sources.get(t.lotId)??0)+t.qty)
+        await recordLotSales([...sources].map(([lotId,qty])=>({lotId,qty})),q,p,tradeDate||todayIso())
+      }
+      setTrade(null)
+      notificationOpen({message:'成交已记录',description:'已按来源分配数量，更新持仓与回本链',type:'success'})
+    }catch(e){notificationOpen({message:'记录失败',description:e instanceof Error?e.message:String(e),type:'error'})}
+    finally{setSavingTrade(false)}
+  }
+  const buySuggestionLine=(r:BuySuggestion)=>(
+    <div key={r.key} className="line wrap-row pending-buy" data-testid="buy-suggestion" data-row={r.sources[0]?.row} data-price={r.priceCents}>
+      <div className="left"><div className="t1 num">买 {price(r.priceCents)} × {qty(r.qty)}</div>
+        <details><summary className="tiny muted">{r.sources.length} 笔来源 · 查看明细</summary>
+          {r.sources.map((v)=><div key={v.kind+v.row} className="tiny"><Button type="text" size="small" onClick={()=>goTrades({id:idFor(v.row),stock:r.stockName})}>{recordNoLabel(v.row,recordNo)}</Button> · {v.kind==='next'?'下一轮':'待回补'} {qty(v.qty)} 股</div>)}
+        </details>
+      </div>
+      <div className="right num">{money(r.amountCents)}</div>
+      <Button size="small" data-action="suggestion-buy" onClick={()=>{const source=r.sources[0];const order=source?.kind==='order'?orders.find((o)=>o.id===source.id):null;if(r.sources.length===1&&order)openExec(order,{qty:r.qty,priceCents:r.priceCents});else openTrade('buy',r)}}>记成交</Button>
+    </div>
   )
   const levelToday = range ? nextRound.filter((r) => within(r.priceCents)) : []
   /** 越界计数把下一轮档也算进来（今日挂单列了它们，口径要一致） */
-  const outCount = buyOut + sellOut + nextRound.length - levelToday.length
+  const outCount = sandbox.active ? buyOut + sellOut + nextRound.length - levelToday.length : buySuggestions.filter((r)=>!within(r.priceCents)).length + sellOut
 
   /** 下一轮应买的一行：没有对应的待买单，所以不给「记成交」，点行跳明细 */
   const levelLine = (r: NextRoundBuyRow, inToday: boolean) => {
@@ -247,12 +293,6 @@ export function OrdersPage({
     )
   }
 
-  /** 下一轮应买在清单里的身份（复制 / CSV 共用） */
-  const levelShort = (r: NextRoundBuyRow) =>
-    r.merged
-      ? `合并 ${r.rows.length} 笔（${r.rows.map((row) => recordNoLabel(row, recordNo)).join(' + ')}）`
-      : recordNoLabel(r.anchorRow, recordNo)
-
   /** 待卖行的身份文案：合并行报「合并 N 笔 + 最早买入日期」，单笔行还是「第 N 笔 · 买入价」 */
   const sellRowLabel = (r: TargetRow) =>
     r.merged
@@ -263,6 +303,13 @@ export function OrdersPage({
     r.merged
       ? `合并 ${r.lotRows.length} 笔（${r.lotRows.map((row) => recordNoLabel(row, recordNo)).join(' + ')}）`
       : lotLabel(r.targets[0].lotId, recordNo)
+
+  /** V9.49：卖单行 → 它所属的回本链（待买行上标「回本链 第 N 笔」） */
+  const chainOfSell = useMemo(() => {
+    const m = new Map<number, (typeof view.repairChains)[number]>()
+    for (const c of view.repairChains) for (const row of c.relatedSellRows) m.set(row, c)
+    return m
+  }, [view])
 
   const rebuyTotal = orders.reduce((a, o) => a + o.rebuyPriceCents * o.remainingQty, 0)
   const rewardTotal = orders.reduce((a, o) => a + o.rebuyPriceCents * Math.max(0, o.rewardQty - o.doneRewardQty), 0)
@@ -287,6 +334,7 @@ export function OrdersPage({
   const [execQty, setExecQty] = useState('')
   const [execPrice, setExecPrice] = useState('')
   const [execReward, setExecReward] = useState('')
+  const [execDefaults,setExecDefaults]=useState({qty:0,priceCents:0,reward:0})
 
   // 沙盒：新增模拟待买 / 待卖（只活在内存，刷新即清空）
   const [sbKind, setSbKind] = useState<SandboxKind | null>(null)
@@ -327,20 +375,23 @@ export function OrdersPage({
     }
   }
 
-  function openExec(o: RebuyOrder) {
+  function openExec(o: RebuyOrder, suggestion?: {qty:number;priceCents:number}) {
     setExecOrder(o)
-    setExecQty(String(o.remainingQty))
-    setExecPrice((o.rebuyPriceCents / 100).toFixed(2))
-    setExecReward(String(Math.max(0, o.rewardQty - o.doneRewardQty)))
+    const baseLeft=Math.max(0,o.baseQty-o.execQty+o.doneRewardQty)
+    const defaults={qty:suggestion?.qty??o.remainingQty,priceCents:suggestion?.priceCents??o.rebuyPriceCents,reward:suggestion?Math.max(0,suggestion.qty-baseLeft):Math.max(0,o.rewardQty-o.doneRewardQty)}
+    setExecDefaults(defaults)
+    setExecQty(String(defaults.qty))
+    setExecPrice(centsToYuan(defaults.priceCents))
+    setExecReward(String(defaults.reward))
   }
 
   async function saveExec() {
     if (!execOrder) return
     try {
-      const q = Number(inputOrDefault(execQty, String(execOrder.remainingQty)))
-      const priceText = inputOrDefault(execPrice, centsToYuan(execOrder.rebuyPriceCents))
+      const q = Number(inputOrDefault(execQty, String(execDefaults.qty)))
+      const priceText = inputOrDefault(execPrice, centsToYuan(execDefaults.priceCents))
       const p = toCents(priceText)
-      const r = Number(inputOrDefault(execReward, String(Math.max(0, execOrder.rewardQty - execOrder.doneRewardQty))))
+      const r = Number(inputOrDefault(execReward, String(execDefaults.reward)))
       if (!Number.isInteger(q) || q <= 0) throw new Error('股数要填正整数')
       if (p === null || p <= 0) throw new Error('回补价不合法')
       if (!Number.isInteger(r) || r < 0) throw new Error('奖励股数不合法')
@@ -363,8 +414,10 @@ export function OrdersPage({
     const last = list[0]
     if (!last) return
     if (!window.confirm(`撤销最后一笔回补成交（${last.qty} 股 @ ${(last.priceCents / 100).toFixed(2)}）？`)) return
-    await removeRebuy(last.id)
-    notificationOpen({ message: '已撤销', type: 'info' })
+    try {
+      await removeRebuy(last.id)
+      notificationOpen({ message: '已撤销', type: 'info' })
+    }catch(e){notificationOpen({message:'无法撤销',description:e instanceof Error?e.message:String(e),type:'error'})}
   }
 
   function openSandboxForm(kind: SandboxKind) {
@@ -477,16 +530,9 @@ export function OrdersPage({
         `昨收 ${(confirmed.closeCents / 100).toFixed(2)} · 区间 ${(range.downCents / 100).toFixed(2)}~${(range.upCents / 100).toFixed(2)}`,
       )
     }
-    if (buyToday.length) {
+    if(suggestionsToday.length){
       lines.push('【今日可挂买】')
-      for (const o of buyToday) {
-        lines.push(`  ${recordNoLabel(o.sourceRow, recordNo)}  ${price(o.planPriceCents ?? o.rebuyPriceCents)} × ${o.planQty ?? o.remainingQty} 股`)
-      }
-    }
-    // V9.47：卖完的老批次排在同一份清单里，标一下是「下一轮」
-    if (levelToday.length) {
-      lines.push('【今日可挂买 · 已完成批次下一轮】')
-      for (const r of levelToday) lines.push(`  ${levelShort(r)}  ${price(r.priceCents)} × ${r.qty} 股`)
+      for(const r of suggestionsToday)lines.push(`  ${price(r.priceCents)} × ${r.qty} 股（${r.sources.length} 笔来源）`)
     }
     if (sellToday.length) {
       lines.push('【今日可挂卖】')
@@ -496,8 +542,7 @@ export function OrdersPage({
     }
     if (!range) {
       lines.push('（未确认昨收价，以下是全部待买/待卖）')
-      for (const o of orders) lines.push(`  待买 ${price(o.rebuyPriceCents)} × ${o.remainingQty}`)
-      for (const r of nextRound) lines.push(`  应买（下一轮） ${price(r.priceCents)} × ${r.qty}`)
+      for (const r of buySuggestions) lines.push(`  待买 ${price(r.priceCents)} × ${r.qty}`)
       for (const r of targetRows) lines.push(`  待卖 ${sellRowShort(r)} ${price(r.priceCents)} × ${r.qty}`)
     }
     void navigator.clipboard?.writeText(lines.filter(Boolean).join('\n'))
@@ -506,29 +551,7 @@ export function OrdersPage({
 
   function exportCsv() {
     const rows: (string | number)[][] = [['类型', '序号', '价格', '股数', '金额', '区间']]
-    for (const o of orders) {
-      const p = o.planPriceCents ?? o.rebuyPriceCents
-      const q = o.planQty ?? o.remainingQty
-      const sim = sandboxByRow.has(o.sourceRow)
-      rows.push([
-        sim ? '待买（模拟）' : '待买',
-        recordNoLabel(o.sourceRow, recordNo),
-        price(p),
-        q,
-        ((p * q) / 100).toFixed(2),
-        zone(p),
-      ])
-    }
-    for (const r of nextRound) {
-      rows.push([
-        '应买（下一轮）',
-        levelShort(r),
-        price(r.priceCents),
-        r.qty,
-        ((r.priceCents * r.qty) / 100).toFixed(2),
-        zone(r.priceCents),
-      ])
-    }
+    for (const r of buySuggestions) rows.push(['待买',r.sources.map((v)=>recordNoLabel(v.row,recordNo)).join(' + '),price(r.priceCents),r.qty,(r.amountCents/100).toFixed(2),zone(r.priceCents)])
     for (const r of targetRows) {
       const p = r.planPriceCents ?? r.priceCents
       const q = r.planQty ?? r.qty
@@ -801,7 +824,7 @@ export function OrdersPage({
           <strong>今日挂单</strong>
           {range && (
             <>
-              <Tag size="small" variant="soft" color="app-teal">可挂买 {buyToday.length}</Tag>
+              <Tag size="small" variant="soft" color="app-teal">可挂买 {sandbox.active ? buyToday.length+levelToday.length : suggestionsToday.length}</Tag>
               <Tag size="small" variant="soft" color="app-orange">可挂卖 {sellToday.length}</Tag>
             </>
           )}
@@ -834,10 +857,13 @@ export function OrdersPage({
               </div>
             </div>
 
-            {buyToday.length + levelToday.length === 0 && sellToday.length === 0 ? (
+            {(sandbox.active ? buyToday.length+levelToday.length : suggestionsToday.length) === 0 && sellToday.length === 0 ? (
               <div className="empty-box">这个区间里没有可挂的单（{outCount} 条越界）</div>
             ) : (
               <>
+                {!sandbox.active ? <>
+                  {suggestionsToday.length>0 && <><div className="group-label">可挂买 · {suggestionsToday.length} 档</div><div className="data-block">{suggestionsToday.map(buySuggestionLine)}</div></>}
+                </> : <>
                 {buyToday.length + levelToday.length > 0 && (
                   <>
                     <div className="group-label">
@@ -873,6 +899,17 @@ export function OrdersPage({
                                   </Tag>
                                 </div>
                               )}
+                              {/* V9.49：这笔待买的身份——回补哪一笔卖出；属于回本链的再标出来 */}
+                              <div className="tag-row" style={{ marginTop: 4 }}>
+                                <Tag size="small" variant="soft" color="app-teal" data-testid="rebuy-of">
+                                  回补 {recordNoLabel(o.sourceRow, recordNo)}
+                                </Tag>
+                                {chainOfSell.has(o.sourceRow) && (
+                                  <Tag size="small" variant="soft" color="app-yellow" data-testid="rebuy-chain">
+                                    回本链 {recordNoLabel(chainOfSell.get(o.sourceRow)!.anchorRow, recordNo)}
+                                  </Tag>
+                                )}
+                              </div>
                             </div>
                             <div className="right num" style={{ fontWeight: 600 }}>
                               {money(o.rebuyPriceCents * o.remainingQty)}
@@ -910,6 +947,7 @@ export function OrdersPage({
                     </div>
                   </>
                 )}
+                </>}
 
                 {sellToday.length > 0 && (
                   <>
@@ -971,7 +1009,7 @@ export function OrdersPage({
                                   <Button size="small" onClick={stopWith(() => removeSandbox(sim))}>删除</Button>
                                 </>
                               ) : (
-                                <Button
+                                <><Button size="small" data-action="sell-execution" onClick={stopWith(()=>openTrade('sell',r))}>记卖出</Button><Button
                                   size="small"
                                   onClick={stopWith(() =>
                                     openPlan(
@@ -986,7 +1024,7 @@ export function OrdersPage({
                                   )}
                                 >
                                   计划
-                                </Button>
+                                </Button></>
                               )}
                             </div>
                           </div>
@@ -1016,6 +1054,8 @@ export function OrdersPage({
             </Button>
           )}
         </div>
+        {!sandbox.active && <div className="data-block">{buySuggestions.map(buySuggestionLine)}</div>}
+        <details open><summary className="tiny muted">逐笔回补状态与撤销</summary>
         {orders.length === 0 ? (
           <div className="empty-box">
             {sandbox.active ? '该股没有待买单，点右上「＋ 模拟待买」加一条' : '该股没有待买单'}
@@ -1067,6 +1107,7 @@ export function OrdersPage({
                       >
                         {z}
                       </Tag>
+                      {!sim && o.remainingQty > 0 && <Button size="small" data-action="rebuy-execution" onClick={stopWith(()=>openExec(o))}>记成交</Button>}
                       {!sim && o.execQty > 0 && (
                         <Button size="small" type="text" onClick={stopWith(() => void undoExec(o.id))}>撤销最后一笔</Button>
                       )}
@@ -1117,9 +1158,11 @@ export function OrdersPage({
             })}
           </div>
         )}
+        </details>
         {/* V9.47：卖完的老批次也排下一轮，价格回到成本档就再提醒买一次 */}
         {nextRound.length > 0 && (
-          <div className="divider-top" data-testid="next-round-buy">
+          <details className="divider-top" data-testid="next-round-buy"><summary className="tiny muted">下一轮建议来源</summary>
+          <div>
             <div className="sec-head sm">
               <strong>下一轮应买</strong>
               <div className="spacer" />
@@ -1128,9 +1171,9 @@ export function OrdersPage({
             <div className="data-block">{nextRound.map((r) => levelLine(r, false))}</div>
             <p className="tiny muted" style={{ margin: '6px 0 0' }}>
               这些批次已经卖完（明细里算「已完成」）。股价回到买入价那一档时同样提醒买一次；
-              只做提醒——不计进下面的待买剩余金额，也不参与组池奖励。
+              可在上方同价汇总中记成交；下一轮建议不参与组池奖励。
             </p>
-          </div>
+          </div></details>
         )}
         <p className="tiny muted" style={{ margin: '10px 0 0' }}>
           待买剩余 {money(rebuyTotal)}（其中奖励 {money(rewardTotal)}） · 待补敞口{' '}
@@ -1197,6 +1240,7 @@ export function OrdersPage({
                       {r.merged && (
                         <Tag size="small" variant="soft" color="purple">同价 {r.lotRows.length} 笔</Tag>
                       )}
+                      {!sim && <Button size="small" data-action="sell-execution" onClick={stopWith(()=>openTrade('sell',r))}>记卖出</Button>}
                       {sim && (
                         <>
                           <Button
@@ -1241,6 +1285,16 @@ export function OrdersPage({
         </Card>
       )}
 
+      <Modal open={trade!==null} title={trade?.side==='sell'?'记卖出成交':'记买入成交'} typewriter={false} onClose={()=>!savingTrade&&setTrade(null)}
+        footer={<div className="row"><Button type="primary" disabled={savingTrade} onClick={()=>void saveTrade()}>保存成交</Button><Button disabled={savingTrade} onClick={()=>setTrade(null)}>取消</Button></div>}>
+        <div className="form-grid">
+          <label><span>实际成交价</span><Input value={tradePrice} onChange={(e)=>setTradePrice(e.target.value)} data-field="tradePrice" /></label>
+          <label><span>实际成交量</span><Input value={tradeQty} onChange={(e)=>setTradeQty(e.target.value)} data-field="tradeQty" /></label>
+          <label><span>成交日期</span><DateField value={tradeDate} onChange={setTradeDate} /></label>
+        </div>
+        <p className="tiny muted">同价来源按列表顺序分配，部分成交仅扣减本次成交的数量。</p>
+      </Modal>
+
       <Modal
         open={planRef !== null}
         title="挂单计划"
@@ -1257,7 +1311,7 @@ export function OrdersPage({
           <div className="stack tight">
             <p className="hint-block" style={{ margin: 0 }}>
               {planRef.title} · 建议 {price(planRef.suggestPrice)}。计划价只用于显示和导出，
-              <b>不参与盈亏、清单与守恒式的任何计算</b>。
+              <b>不改真实盈亏与守恒式；今日挂单按计划价校验区间</b>。
             </p>
             <div className="form-grid">
               <label>
@@ -1307,15 +1361,15 @@ export function OrdersPage({
             <div className="form-grid">
               <label>
                 <span>本次回补股数</span>
-                <Input value={execQty} placeholder={String(execOrder.remainingQty)} onChange={(e) => setExecQty(e.target.value)} data-field="execQty" />
+                <Input value={execQty} placeholder={String(execDefaults.qty)} onChange={(e) => setExecQty(e.target.value)} data-field="execQty" />
               </label>
               <label>
                 <span>成交价</span>
-                <Input value={execPrice} placeholder={centsToYuan(execOrder.rebuyPriceCents)} onChange={(e) => setExecPrice(e.target.value)} data-field="execPrice" />
+                <Input value={execPrice} placeholder={centsToYuan(execDefaults.priceCents)} onChange={(e) => setExecPrice(e.target.value)} data-field="execPrice" />
               </label>
               <label>
                 <span>其中奖励股数（已成交不可撤）</span>
-                <Input value={execReward} placeholder={String(Math.max(0, execOrder.rewardQty - execOrder.doneRewardQty))} onChange={(e) => setExecReward(e.target.value)} data-field="execReward" />
+                <Input value={execReward} placeholder={String(execDefaults.reward)} onChange={(e) => setExecReward(e.target.value)} data-field="execReward" />
               </label>
             </div>
             <p className="tiny muted" style={{ margin: 0 }}>

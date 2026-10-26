@@ -1,12 +1,6 @@
 /**
- * 同价买单合并的展示层（V9.45）。
- *
- * 关联只存在 `merges` 表里（records 一分不改）：几笔同股票、同买入价、还没卖完的
- * 批次绑成一组。挂单页的「待卖」提醒按（组 + 目标价）合成一条：数量、金额、
- * 预期盈利相加，日期取组内最早的那笔买入日期；解除关联立刻恢复逐笔显示。
- *
- * 只有组里还有 ≥2 笔在卖（未删除、有剩余）时才合并；卖到只剩一笔就自动散开，
- * 但关联本身保留（重新买回/恢复后又能合上）。
+ * 挂单按股票和有效售价自动汇总，保留每个来源实际贡献的数量。
+ * merges 仅兼容旧关联与计划引用；解除手工关联不再取消同价自动汇总。
  */
 import type { Lot, LotMergeLink, SellTarget, TradePlan } from './types'
 
@@ -74,95 +68,67 @@ export function mergeTargetRows(opts: {
   sandboxRows?: ReadonlySet<number>
 }): TargetRow[] {
   const { targets, lots, merges, plans = [], sandboxRows } = opts
-  const lotById = new Map(lots.map((l) => [l.id, l]))
-  const groupOf = activeMergeGroupOf(merges, lots)
-  const rows: TargetRow[] = []
-  const mergedIndex = new Map<string, TargetRow>()
-
-  for (const t of targets) {
-    const lot = lotById.get(t.lotId) ?? null
-    const sandbox = Boolean(lot && sandboxRows?.has(lot.sourceRow))
-    const group = lot && !sandbox ? groupOf.get(lot.sourceRow) ?? null : null
-
-    if (!group || !lot) {
-      const plan = plans.find((p) => p.kind === 'sell' && p.refId === t.id)
-      rows.push({
-        key: t.id,
-        targets: [t],
-        lotRows: lot ? [lot.sourceRow] : [],
-        lotIds: [t.lotId],
-        priceCents: t.priceCents,
-        qty: t.qty,
-        amountCents: t.amountCents,
-        expectProfitCents: t.expectProfitCents,
-        merged: false,
-        anchorRow: lot?.sourceRow ?? Number(t.lotId.replace('lot:', '')),
-        earliestBuyDate: lot?.buyDate ?? null,
-        buyPriceCents: lot?.buyPriceCents ?? null,
-        planPriceCents: t.planPriceCents ?? plan?.priceCents ?? null,
-        planQty: t.planQty ?? plan?.qty ?? null,
-        sandbox,
-      })
-      continue
+  const byId = new Map(lots.map((l)=>[l.id,l]))
+  const groups = activeMergeGroupOf(merges,lots)
+  const groupBudget = new Map<string, number>()
+  const rows: TargetRow[]=[]
+  for(const t of targets) {
+    const l=byId.get(t.lotId)
+    if(!l || l.remainingQty<=0) continue
+    const sandbox=Boolean(sandboxRows?.has(l.sourceRow))
+    const legacy=groups.get(l.sourceRow)
+    const ref=legacy ? `${legacy.id}@${t.priceCents}` : t.id
+    const autoRef=`sell:${t.stockName}:${t.priceCents}`
+    const singlePlan=plans.find((p)=>p.kind==='sell' && p.refId===t.id)
+    const groupPlans: TradePlan[]=[]
+    const groupPlan=plans.find((p)=>p.kind==='sell' && p.refId===autoRef) ??
+      (ref!==t.id ? plans.find((p)=>p.kind==='sell' && p.refId===ref) : undefined)
+    if(groupPlan)groupPlans.push(groupPlan)
+    let p=groupPlan?.priceCents ?? singlePlan?.priceCents ?? t.planPriceCents ?? t.priceCents
+    // 计划改价后可能与另一档合并；随后对这档设置的更新计划也必须覆盖所有来源。
+    for(let i=0;i<plans.length;i++) {
+      const next=plans.find((v)=>v.kind==='sell' && v.refId===`sell:${t.stockName}:${p}` &&
+        !groupPlans.includes(v) && v.at>=(groupPlans.at(-1)?.at??0))
+      if(!next)break
+      groupPlans.push(next)
+      p=next.priceCents
     }
-
-    const key = `${group.id}@${t.priceCents}`
-    const hit = mergedIndex.get(key)
-    if (hit) {
-      hit.targets.push(t)
-      hit.lotIds.push(t.lotId)
-      if (!hit.lotRows.includes(lot.sourceRow)) hit.lotRows.push(lot.sourceRow)
-      hit.qty += t.qty
-      hit.amountCents += t.amountCents
-      hit.expectProfitCents += t.expectProfitCents
-      hit.earliestBuyDate = earlier(hit.earliestBuyDate, lot.buyDate)
-      if (lot.sourceRow < hit.anchorRow) hit.anchorRow = lot.sourceRow
-    } else {
-      const row: TargetRow = {
-        key,
-        targets: [t],
-        lotRows: [lot.sourceRow],
-        lotIds: [t.lotId],
-        priceCents: t.priceCents,
-        qty: t.qty,
-        amountCents: t.amountCents,
-        expectProfitCents: t.expectProfitCents,
-        merged: true,
-        anchorRow: lot.sourceRow,
-        earliestBuyDate: lot.buyDate,
-        buyPriceCents: lot.buyPriceCents,
-        planPriceCents: null,
-        planQty: null,
-        sandbox: false,
-      }
-      mergedIndex.set(key, row)
-      rows.push(row)
-    }
+    let q=Math.min(t.qty,singlePlan?.qty ?? t.planQty ?? t.qty)
+    // 先限制来源组，再按有效价格归组；不能让组限量吞掉同价的其它批次。
+    for(const plan of groupPlans)q=Math.min(q,groupBudget.get(plan.refId)??plan.qty)
+    if(q<=0)continue
+    for(const plan of groupPlans)groupBudget.set(plan.refId,(groupBudget.get(plan.refId)??plan.qty)-q)
+    const hasPlan=groupPlans.length>0 || Boolean(singlePlan) || t.planPriceCents!=null
+    const key=sandbox ? t.id : `sell:${t.stockName}:${p}`
+    const hit=rows.find((r)=>r.key===key)
+    if(hit) {
+      hit.targets.push({...t,qty:q}); hit.lotIds.push(t.lotId)
+      if(!hit.lotRows.includes(l.sourceRow))hit.lotRows.push(l.sourceRow)
+      hit.qty+=q;hit.amountCents+=p*q;hit.expectProfitCents+=(p-l.buyPriceCents)*q
+      if(l.buyDate && (!hit.earliestBuyDate || l.buyDate<hit.earliestBuyDate || (l.buyDate===hit.earliestBuyDate && l.sourceRow<hit.anchorRow)))hit.anchorRow=l.sourceRow
+      hit.earliestBuyDate=earlier(hit.earliestBuyDate,l.buyDate)
+      hit.merged=true
+      if(hasPlan)hit.planPriceCents=p
+      if(hit.buyPriceCents!==l.buyPriceCents)hit.buyPriceCents=null
+    } else rows.push({key,targets:[{...t,qty:q}],lotRows:[l.sourceRow],lotIds:[l.id],priceCents:p,qty:q,amountCents:p*q,
+      expectProfitCents:(p-l.buyPriceCents)*q,merged:false,anchorRow:l.sourceRow,earliestBuyDate:l.buyDate,
+      buyPriceCents:l.buyPriceCents,planPriceCents:hasPlan ? p : null,planQty:null,sandbox})
   }
-
-  for (const row of rows) {
-    if (!row.merged) continue
-    // 同价只有一笔（其它成员的目标被拆到别的价位）：退回单笔显示
-    if (row.lotRows.length < 2) {
-      const t = row.targets[0]
-      row.key = t.id
-      row.merged = false
-      row.planPriceCents = t.planPriceCents ?? null
-      row.planQty = t.planQty ?? null
-      continue
-    }
-    const plan = plans.find((p) => p.kind === 'sell' && p.refId === row.key)
-    if (plan) {
-      row.planPriceCents = plan.priceCents
-      row.planQty = plan.qty
-    } else if (row.targets.every((t) => t.planPriceCents != null)) {
-      // 合并前每笔都设过计划价：同价就把数量加起来当合并行的计划；不同价就没法合成一张单
-      const prices = new Set(row.targets.map((t) => t.planPriceCents))
-      if (prices.size === 1) {
-        row.planPriceCents = row.targets[0].planPriceCents ?? null
-        row.planQty = row.targets.reduce((a, t) => a + (t.planQty ?? t.qty), 0)
-      }
-    }
+  for(const r of rows) {
+    const legacy=groups.get(r.lotRows[0])
+    const sameOriginalPrice=r.targets.every((t)=>t.priceCents===r.targets[0].priceCents)
+    r.key=r.merged && sameOriginalPrice && legacy && r.lotRows.every((row)=>groups.get(row)?.id===legacy.id)
+      ? `${legacy.id}@${r.targets[0].priceCents}` : r.merged ? `sell:${r.targets[0].stockName}:${sameOriginalPrice?r.targets[0].priceCents:r.priceCents}` : r.targets[0].id
+    r.amountCents=r.priceCents*r.qty
+    let left=r.qty
+    r.expectProfitCents=0
+    for(const t of r.targets){const q=Math.min(left,t.qty);t.qty=q;r.expectProfitCents+=(r.priceCents-(byId.get(t.lotId)?.buyPriceCents??r.priceCents))*q;left-=q}
+    r.targets=r.targets.filter((t)=>t.qty>0)
+    if(r.planPriceCents!==null)r.planQty=r.qty
   }
-  return rows
+  // 同一原价可能被各笔计划拆到多个新价，行身份必须与实际汇总档一一对应。
+  const keyCounts=new Map<string,number>()
+  for(const r of rows)keyCounts.set(r.key,(keyCounts.get(r.key)??0)+1)
+  for(const r of rows)if((keyCounts.get(r.key)??0)>1)r.key=`sell:${r.targets[0].stockName}:${r.priceCents}`
+  return rows.filter((r)=>r.qty>0)
 }

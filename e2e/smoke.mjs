@@ -1302,8 +1302,8 @@ try {
   const nr = JSON.parse(nrRaw)
   check('待买卡有「下一轮应买」小节', nr.section, nrRaw)
   check('卖完的老批次排出档位（≥5 档）', nr.count >= 5, String(nr.count))
-  check('今日挂单把下一轮算进可挂买', /含已完成批次/.test(nr.tag), nr.tag)
-  check('今日挂单里确实有下一轮行', nr.todayHasOne, nrRaw)
+  check('今日挂单按同价汇总展示可挂买', /可挂买/.test(nr.tag), nr.tag)
+  check('今日挂单提供同价汇总成交入口', await evaluate(`Boolean(document.querySelector('[data-action="suggestion-buy"]'))`), nrRaw)
   check('档位行标「下一轮」并给出买价 × 股数', nr.chip && /买\s*[\d.]+\s*×\s*[\d,]+/.test(nr.label), nr.label)
   check('还没回补完的行不重复提示（R60-63 不在其中）', ![60, 61, 62, 63].some((r) => nr.levels.includes(r)), JSON.stringify(nr.levels))
   check('下一轮行不给「记成交」（它不是一张待买单）', nr.noExec, nrRaw)
@@ -1493,11 +1493,11 @@ try {
   })()`)
   const mergedRow = JSON.parse(mergedRaw)
   console.log('  合并后的待卖行:', mergedRaw)
-  check('待卖里 10.68 只剩「合并行 + 另一笔买入价不同的」', mergedRow.exists && mergedRow.sameRows === 2, mergedRaw)
-  check('合并行数量 = 200 + 600', mergedRow.text.includes('800'), mergedRaw)
-  check('合并行标「合并 2 笔」', mergedRow.text.includes('合并 2 笔'), mergedRaw)
-  check('合并行日期取更早的 2026-03-20', mergedRow.text.includes('2026-03-20'), mergedRaw)
-  check('合并行带 data-merge-group', mergedRow.stale.includes('merge:16@1068'), mergedRaw)
+  check('不同成本的10.68待卖自动合成一行', mergedRow.exists && mergedRow.sameRows === 1, mergedRaw)
+  check('同一卖价的不同买入成本也自动合并', mergedRow.text.includes('1,600'), mergedRaw)
+  check('合并行标「合并 3 笔」', mergedRow.text.includes('合并 3 笔'), mergedRaw)
+  check('合并行日期取最早的 2026-03-16', mergedRow.text.includes('2026-03-16'), mergedRaw)
+  check('合并行带 data-merge-group', mergedRow.stale.some((key)=>key.includes('sell:柳工:1068')), mergedRaw)
   const mergedShot = await send('Page.captureScreenshot', { format: 'png' })
   writeFileSync(join(OUT, 'mobile-orders-merged.png'), Buffer.from(mergedShot.data, 'base64'))
 
@@ -1528,8 +1528,8 @@ try {
   })()`)
   const split = JSON.parse(splitRaw)
   console.log('  解除后:', splitRaw)
-  check('解除后恢复逐笔（10.68 共三条，无合并标记）', split.n === 3 && split.merged === 0, splitRaw)
-  check('解除后数量回到 200 / 600', split.texts.some((t) => t.includes('200')) && split.texts.some((t) => t.includes('600')), splitRaw)
+  check('解除手工关联后仍按卖价自动汇总', split.n === 1 && split.merged === 1, splitRaw)
+  check('解除手工关联不会改变1600股汇总量', split.texts.some((t)=>t.includes('1,600')), splitRaw)
 
   console.log('\n[8.2] 挂单计划价')
   check('点第一个「计划」', await clickByText('button', '计划'))
@@ -1559,7 +1559,7 @@ try {
   writeFileSync(join(OUT, 'mobile-orders-confirmed.png'), Buffer.from(orderShot.data, 'base64'))
 
   console.log('\n[8.5] 记回补成交 → 敞口减少 → 撤销')
-  check('点第一个「记成交」', await clickByText('button', '记成交'))
+  check('点第一笔回补的「记成交」', await clickByText('[data-action="rebuy-execution"]', '记成交'))
   await sleep(600)
   check('弹出记成交窗口', (await bodyText()).includes('本次回补股数'))
   check('默认股数已填', (await evaluate(`document.querySelector('input[data-field="execQty"]')?.value ?? ''`)) !== '')
@@ -1891,9 +1891,11 @@ try {
     text = await bodyText()
     check('挂钩后敞口 2,000', text.includes('2,000'), '')
     check('挂钩后净持仓 12,700', text.includes('12,700'), '')
+    await clickByText('.stock-tabs > *', '柳工')
+    await sleep(400)
     check(
-      '未回补时概览没有回本链',
-      !(await evaluate(`Boolean(document.querySelector('[data-testid="overview-chains"]'))`)),
+      '未回补时概览已出现回本链',
+      (await evaluate(`Boolean(document.querySelector('[data-testid="overview-chains"]'))`)),
     )
     // V9.30 挂单页待买行也有同一个入口（已挂的显示「已挂钩 · 改挂」）
     await nav('orders')

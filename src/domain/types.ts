@@ -24,6 +24,12 @@ export interface StockConfig {
 export interface RawRecord {
   /** Excel 行号，可回溯；手动新增的行从 100000 起（origin='manual'） */
   sourceRow: number
+  /** 原始 Excel 行号；内部 ID 永久不变。 */
+  excelRow?: number
+  /** 本次卖出消耗的既有批次，本行不重复创建买入。 */
+  soldLotId?: string
+  /** 本次买入消耗的下一轮建议来源。 */
+  nextRoundOfRow?: number
   stockName: string
   buyDateSerial: number | null
   buyPriceCents: number | null
@@ -112,6 +118,8 @@ export interface SellExecution {
   soldAt: string | null
   dateMissing: boolean
   priceSource: PriceSource
+  rebuyRemainingQty?: number
+  rebuyPriceCents?: number | null
   rebuyStatus: RebuyStatus
   /**
    * V9.47.1：本行自己的买入批次盖住这次卖出的股数（先卖后买份额匹配即视为已回补）。
@@ -182,14 +190,16 @@ export interface HedgeLink {
  * 回本链的后续分支（V9.46）：一笔归属进链的买入批次。
  *   - record = 真实明细行（买回后再卖出，盈亏进链）；
  *   - rebuy  = 「记成交」产生的回补批次（虚拟，未卖前只有持仓与「回补节省」）。
+ *   - sell   = **V9.49 价位槽**：一个回补价位（先卖后买订单的 P 列）为一支，
+ *              根是那笔「同价再卖」的裸卖，之后所有同股、同价的买入都自动归进来。
  * 原始亏损按买入份额分摊到各分支：分摊额 = 原始亏损 × 本支买入股数 / 锚点股数。
  */
 export interface RepairBranch {
-  /** 真实行号；回补批次用 exec:<成交 id> */
+  /** 真实行号；回补批次用 exec:<成交 id>；价位槽用 branch:<锚点>:<价位分> */
   key: string
   /** 真实行号；回补批次为 null */
   row: number | null
-  kind: 'record' | 'rebuy'
+  kind: 'record' | 'rebuy' | 'sell'
   buyDate: string | null
   buyPriceCents: number
   qty: number
@@ -205,6 +215,18 @@ export interface RepairBranch {
   netCents: number
   /** 回补批次：相对锚点卖出价省下的资金（只展示，不计入回本进度） */
   savingCents: number
+  /**
+   * V9.49 价位槽分支：根「先卖后买」订单的行号（普通归属批次为 null）。
+   * 明细里靠它在裸卖行上标「本笔是回本链的回补价位」。
+   */
+  rootSellRow: number | null
+  /** V9.49：这一支已完成的卖出次数（根卖出 + 支内批次卖出），界面显示「卖了 x 次」 */
+  cycles: number
+  /**
+   * V9.49：这一支牵连的明细行（价位槽 = 根卖单 + 槽内每一笔真实买入）。
+   * 明细里靠它把整支的行都标上回本链、能在抽屉里看到整条链的账。
+   */
+  memberRows: number[]
 }
 
 /**

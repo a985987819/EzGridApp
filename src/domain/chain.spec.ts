@@ -73,7 +73,7 @@ describe('回本链建链时机', () => {
     })
   })
 
-  it('没卖完、或卖盈利的批次不成链', () => {
+  it('部分亏损卖出立即成链，盈利批次不成链', () => {
     const led = buildLedger(
       [
         rec(2, { buy: 1000, qty: 1000, sell: 700, soldQty: 500, sellDate: 46010 }), // 亏损但还剩 500 股
@@ -81,7 +81,8 @@ describe('回本链建链时机', () => {
       ],
       [STOCK],
     )
-    expect(led.repairChains).toHaveLength(0)
+    expect(led.repairChains).toHaveLength(1)
+    expect(led.repairChains[0]).toMatchObject({anchorQty:500,lossCents:-150000})
   })
 })
 
@@ -211,6 +212,84 @@ describe('回本进度＝归属交易的已实现净盈利（用户原例）', (
     })
     expect(after[0]).toMatchObject({ profitCents: 50000, savingCents: 50000, netCents: -100000, gapCents: 100000, holdingQty: 0 })
     expect(after[0].branches[0]).toMatchObject({ kind: 'rebuy', sellPriceCents: 700, profitCents: 50000 })
+  })
+})
+
+describe('V9.49 价位槽：同价买入全自动归链', () => {
+  /**
+   * 用户原例（全自动，不用手动关联）：
+   *   10 买 1000（A）→ 7 卖 1000（B，亏 −3,000）→ 7 卖 500 ×2（C/D，先卖后买）
+   *   → 5 买 500（E，回补 C）→ 6 买 500（F，回补 D）
+   *   → E 7 卖、F 8 卖。
+   */
+  const autoExample = (): RawRecord[] => [
+    rec(2, { buy: 1000, qty: 1000, sell: 700, soldQty: 1000, sellDate: 46010 }),
+    rec(3, { sell: 700, soldQty: 500, sellDate: 46020, p: 500 }),
+    rec(4, { sell: 700, soldQty: 500, sellDate: 46021, p: 600 }),
+    rec(5, { buy: 500, qty: 500, sell: 700, soldQty: 500, buyDate: 46030, sellDate: 46040 }),
+    rec(6, { buy: 600, qty: 500, sell: 800, soldQty: 500, buyDate: 46031, sellDate: 46050 }),
+  ]
+
+  it('C/D 自动挂链、E/F 自动回补，两轮做完显示【已不亏钱】', () => {
+    const led = buildLedger(autoExample(), [STOCK])
+    expect(led.repairChains).toHaveLength(1)
+    const c = led.repairChains[0]
+    expect(c).toMatchObject({
+      anchorRow: 2,
+      lossCents: -300000,
+      // C +1,000、D +500、E 卖出 +1,000、F 卖出 +1,000
+      profitCents: 350000,
+      netCents: 50000,
+      done: true,
+      gapCents: 0,
+      plannedQty: 0,
+      holdingQty: 0,
+      unallocatedLossCents: 0,
+    })
+    // 两支价位槽：5 元、6 元，根都是那笔 7 卖 500
+    const slots = c.branches.filter((b) => b.kind === 'sell')
+    expect(slots.map((b) => b.buyPriceCents)).toEqual([500, 600])
+    expect(slots[0]).toMatchObject({ rootSellRow: 3, qty: 500, profitCents: 200000, cycles: 2 })
+    expect(slots[1]).toMatchObject({ rootSellRow: 4, qty: 500, profitCents: 150000, cycles: 2 })
+    // C/D 的待买被同价买回盖满 → 自动完成，不再欠股、不算敞口
+    expect(led.orders.find((o) => o.sourceRow === 3)?.baseQty).toBe(0)
+    expect(led.orders.find((o) => o.sourceRow === 4)?.baseQty).toBe(0)
+    expect(led.totals.exposureQty).toBe(0)
+    // 每份盈亏只算一次：全局盈利仍按原始成交走
+    expect(led.totals.profitCents).toBe(-300000 + 50000 + 100000 + 100000 + 100000)
+  })
+
+  it('还没买回时：槽里欠多少就是计划买回多少，待买单照旧挂着', () => {
+    const led = buildLedger(
+      [
+        rec(2, { buy: 1000, qty: 1000, sell: 700, soldQty: 1000, sellDate: 46010 }),
+        rec(3, { sell: 700, soldQty: 500, sellDate: 46020, p: 500 }),
+      ],
+      [STOCK],
+    )
+    const c = led.repairChains[0]
+    expect(c.plannedQty).toBe(500)
+    expect(c.profitCents).toBe(100000) // C 自己的空头收益（7 卖、按 5 的回补价）
+    expect(c.done).toBe(false)
+    expect(led.orders.find((o) => o.sourceRow === 3)?.baseQty).toBe(500)
+    expect(led.totals.exposureQty).toBe(500)
+  })
+
+  it('买入日期早于那笔再卖的，不算回补、不归链', () => {
+    const led = buildLedger(
+      [
+        rec(2, { buy: 1000, qty: 1000, sell: 700, soldQty: 1000, sellDate: 46010 }),
+        rec(3, { sell: 700, soldQty: 500, sellDate: 46020, p: 500 }),
+        // 5 元买在 C 卖出之前 → 不是回补
+        rec(4, { buy: 500, qty: 500, sell: 700, soldQty: 500, buyDate: 46005, sellDate: 46006 }),
+      ],
+      [STOCK],
+    )
+    const c = led.repairChains[0]
+    expect(c.branches.filter((b) => b.kind === 'sell')).toHaveLength(1)
+    expect(c.branches.find((b) => b.kind === 'sell')?.profitCents).toBe(100000)
+    expect(led.orders.find((o) => o.sourceRow === 3)?.baseQty).toBe(500)
+    expect(c.holdingQty).toBe(0)
   })
 })
 
