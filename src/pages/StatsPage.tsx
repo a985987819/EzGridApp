@@ -339,7 +339,19 @@ function CalendarCard({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
   const today = new Date()
   // 本地时区的今天：toISOString 是 UTC，东八区早上 8 点前会落到昨天
   const localIso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
-  const [panel, setPanel] = useState(`${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`)
+  // V9.65：翻过的年月记在 localStorage——切页回来不重置（数据保持稳定，少一次重新翻）
+  const CAL_KEY = 'ezgrid.statsCal'
+  const [panel, setPanelState] = useState(
+    () => localStorage.getItem(CAL_KEY) ?? `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`,
+  )
+  const setPanel = (m: string) => {
+    setPanelState(m)
+    try {
+      localStorage.setItem(CAL_KEY, m)
+    } catch {
+      /* 隐私模式写不进就算了 */
+    }
+  }
   const [selected, setSelected] = useState(localIso)
 
   // 年 / 月累计盈利跟随日历面板（V9.10）：翻月 / 翻年就重算，不再钉死今天。

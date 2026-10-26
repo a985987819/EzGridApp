@@ -20,6 +20,7 @@ import { useFlashOnAppear } from '../ui/motion'
 import { todayIso, money, price, qty, signedMoney, tone } from '../ui/format'
 import { DateField } from '../ui/DateField'
 import { useScrollHold } from '../ui/scrollHold'
+import { enterSubmit } from '../ui/enterSave'
 import type { TradesQuery } from '../ui/nav'
 import type { BuySplit, RebuyOrder } from '../domain/types'
 import { HedgeSheet } from '../components/HedgeBinder'
@@ -1414,6 +1415,7 @@ export function OrdersPage({
 
       <Modal open={trade!==null} title={trade?.side==='sell'?'记卖出成交':'记买入成交'} typewriter={false} onClose={()=>!savingTrade&&setTrade(null)}
         footer={<div className="row"><Button type="primary" disabled={savingTrade} onClick={()=>void saveTrade()}>保存成交</Button><Button disabled={savingTrade} onClick={()=>setTrade(null)}>取消</Button></div>}>
+        <div onKeyDown={enterSubmit(() => void saveTrade())}>
         <div className="form-grid">
           <label><span>实际成交价</span><Input value={tradePrice} onChange={(e)=>setTradePrice(e.target.value)} data-field="tradePrice" /></label>
           <label><span>实际成交量</span><Input value={tradeQty} onChange={(e)=>setTradeQty(e.target.value)} data-field="tradeQty" /></label>
@@ -1428,6 +1430,7 @@ export function OrdersPage({
           )}
           同价来源按列表顺序分配，部分成交仅扣减本次成交的数量。
         </p>
+        </div>
       </Modal>
 
       <Modal
@@ -1443,7 +1446,7 @@ export function OrdersPage({
         }
       >
         {planRef && (
-          <div className="stack tight">
+          <div className="stack tight" onKeyDown={enterSubmit(() => void savePlan())}>
             <p className="hint-block" style={{ margin: 0 }}>
               {planRef.title} · 建议 {price(planRef.suggestPrice)}。改单只硬改这一条推荐：
               <b>计划价只用于显示和导出</b>，不回写明细、不改待买/待卖来源，也不动真实盈亏与守恒式；
@@ -1505,7 +1508,7 @@ export function OrdersPage({
         }
       >
         {execOrder && (
-          <div className="stack tight">
+          <div className="stack tight" onKeyDown={enterSubmit(() => void saveExec())}>
             <p className="hint-block" style={{ margin: 0 }}>
               {execOrder.stockName} · {recordNoLabel(execOrder.sourceRow, recordNo)} · 计划 {execOrder.baseQty}
               {execOrder.rewardQty > 0 && ` + 奖励 ${execOrder.rewardQty}`} 股，还能回补 {execOrder.remainingQty} 股。
@@ -1548,7 +1551,7 @@ export function OrdersPage({
         }
       >
         {sbKind && (
-          <div className="stack tight">
+          <div className="stack tight" onKeyDown={enterSubmit(saveSandboxForm)}>
             <p className="hint-block" style={{ margin: 0 }}>
               {sbKind === 'sell'
                 ? `只做预览：${effectiveStock} 先按成交价卖出一笔，再按回补价留一张待买单；还能挂到未卖的高位批次上预演这笔亏损。`

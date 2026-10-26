@@ -19,6 +19,7 @@ import { exportRecordsWorkbook } from '../io/parseWorkbook'
 import { useFlashOnAppear } from '../ui/motion'
 import { useKeyboardInset } from '../ui/viewport'
 import { useScrollHold } from '../ui/scrollHold'
+import { enterSubmit } from '../ui/enterSave'
 import { DateField } from '../ui/DateField'
 import { TradeItem, buyDateOf, isDone, sellDateOf, type TradeRow } from '../components/TradeItem'
 import { HedgeBinder, HedgeSheet } from '../components/HedgeBinder'
@@ -1388,7 +1389,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
           </div>
         }
       >
-        <div className="stack tight">
+        <div className="stack tight" onKeyDown={enterSubmit(() => void onAdd())}>
           <div className="type-toggle">
             <Button
               type={form.kind === 'buy' ? 'primary' : 'default'}

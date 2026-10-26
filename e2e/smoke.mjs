@@ -302,6 +302,8 @@ try {
   check('dry-run 出现股票名', text.includes('柳工'))
   check('基准 16 项全中', text.includes('16 项全中'))
   check('dry-run 命中 15,200', text.includes('15,200'))
+  // V9.64/V9.65：标准模板给其他用户下载；回车可保存的确认弹窗
+  check('导入区有「下载 Excel 模板」', await evaluate(`Boolean(document.querySelector('[data-action="download-template"]'))`))
   check('点到「写入本地」', await clickByText('button', '写入本地'))
   await sleep(1600)
   await settle()
@@ -799,7 +801,7 @@ try {
         return wrap ? wrap.getBoundingClientRect().height < 1 && f && getComputedStyle(f).visibility === 'hidden' : null
       })(),
       sortOut: !sr || sr.bottom <= 0,
-      title: document.querySelector('[data-sticky="trades"] .page-title')?.textContent.replace(/\\s+/g, ' ').trim() ?? '',
+      title: document.querySelector('[data-sticky="trades"] .page-title')?.textContent.replace(/\s+/g, ' ').trim() ?? '',
       position: sticky ? getComputedStyle(sticky).position : 'missing',
       h: Math.round(sticky?.getBoundingClientRect().height ?? 0),
       y: Math.round(window.scrollY),
@@ -1399,7 +1401,7 @@ try {
     const barStyle = bar ? getComputedStyle(bar) : null
     return JSON.stringify({
       exists: Boolean(bar),
-      text: bar?.textContent.replace(/\\s+/g, ' ').trim() ?? '',
+      text: bar?.textContent.replace(/\s+/g, ' ').trim() ?? '',
       compact: sticky ? sticky.classList.contains('is-compact') : null,
       barVisible: barStyle ? Number(barStyle.opacity) > 0.9 && barStyle.visibility !== 'hidden' : false,
       setupHidden: setup ? getComputedStyle(setup).visibility === 'hidden' : null,
@@ -1526,7 +1528,7 @@ try {
     const same = [...document.querySelectorAll('.data-block .line')].filter((l) => l.textContent.includes('10.68'))
     return JSON.stringify({
       exists: Boolean(row),
-      text: row?.innerText.replace(/\\s+/g, ' ').trim() ?? '',
+      text: row?.innerText.replace(/\s+/g, ' ').trim() ?? '',
       sameRows: same.length,
       stale: same.map((l) => l.getAttribute('data-merge-group') ?? ''),
     })
@@ -1564,7 +1566,7 @@ try {
     return JSON.stringify({
       n: same.length,
       merged: same.filter((l) => l.getAttribute('data-merge-group')).length,
-      texts: same.map((l) => l.innerText.replace(/\\s+/g, ' ').trim()),
+      texts: same.map((l) => l.innerText.replace(/\s+/g, ' ').trim()),
     })
   })()`)
   const split = JSON.parse(splitRaw)
@@ -1611,6 +1613,20 @@ try {
   const planScrollAfter = await evaluate('window.scrollY')
   console.log('  滚动:', { planScrollBefore, planScrollOpen, planScrollAfter })
   check('改单弹窗关掉后回到原来的滚动位置', planScrollBefore > 100 && Math.abs(planScrollAfter - planScrollBefore) <= 4, `${planScrollBefore} → ${planScrollAfter}`)
+  await evaluate(`window.scrollTo(0, 0)`)
+
+  // V9.65：确认类弹窗（记成交/记卖出/改单/回补/沙盒/新增）按 Enter 直接触发保存
+  await clickByText('[data-action="sell-plan"]', '改单')
+  await sleep(450)
+  const enterFired = await evaluate(`(() => {
+    const input = document.querySelector('input[data-field="planPrice"]')
+    if (!input) return false
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    return true
+  })()`)
+  await sleep(700)
+  const enterClosed = await evaluate(`Boolean(document.querySelector('input[data-field="planPrice"]'))`) === false
+  check('弹窗内按 Enter 保存并关闭', enterFired && enterClosed, `${enterFired}/${enterClosed}`)
   await evaluate(`window.scrollTo(0, 0)`)
   await sleep(300)
 
@@ -1752,6 +1768,8 @@ try {
 
   console.log('\n[10] 新增一笔：卖出（先卖后买）')
   await nav('trades')
+  // V9.64：明细按【交易记录】表头导出 Excel（模板下载按钮在管理页 [3] 已查）
+  check('明细页有「导出 Excel」', await evaluate(`Boolean(document.querySelector('[data-action="export-excel"]'))`))
   check('点「新增一笔」', await clickByText('button', '新增一笔'))
   await sleep(600)
   check('弹窗立即可见（无打字机）', (await bodyText()).includes('买入份额') || (await bodyText()).includes('卖出数量'))
