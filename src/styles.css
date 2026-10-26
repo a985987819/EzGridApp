@@ -757,7 +757,23 @@ button { font-family: inherit; }
 .trades-sticky { transition: padding 0.18s var(--ease-soft); }
 .trades-sticky.is-condensed { padding: 4px 2px 6px; }
 .trades-sticky.is-condensed .page-title { margin-bottom: 0; }
-.trades-filters[hidden] { display: none; }
+/* V9.60：收起从 [hidden] 瞬切改成 grid-rows 连续收放（同挂单页 V9.44 模式），
+   内容淡出并不可点；文档高度连续变化，吸顶不再跳变 */
+.trades-collapse {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows var(--dur-3) var(--ease-soft);
+}
+.trades-collapse.closed { grid-template-rows: 0fr; }
+.trades-collapse-inner { overflow: hidden; min-height: 0; }
+.trades-filters {
+  transition: opacity var(--dur-2) var(--ease-soft), visibility var(--dur-2) var(--ease-soft);
+}
+.trades-sticky.is-condensed .trades-filters {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
 
 /* ---------- 明细抽屉：合并同价买单（V9.45，只做关联不改数据） ---------- */
 .merge-row { gap: 8px; cursor: pointer; }

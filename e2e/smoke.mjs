@@ -792,7 +792,12 @@ try {
     const sort = document.querySelector('.sort-chips')
     const sr = sort?.getBoundingClientRect()
     return JSON.stringify({
-      filtersHidden: filters ? getComputedStyle(filters).display === 'none' : null,
+      // V9.60：收起改 grid-rows 连续动画——容器高度收到 0 + 内容 visibility hidden
+      filtersHidden: (() => {
+        const wrap = document.querySelector('.trades-collapse')
+        const f = document.querySelector('.trades-filters')
+        return wrap ? wrap.getBoundingClientRect().height < 1 && f && getComputedStyle(f).visibility === 'hidden' : null
+      })(),
       sortOut: !sr || sr.bottom <= 0,
       title: document.querySelector('[data-sticky="trades"] .page-title')?.textContent.replace(/\\s+/g, ' ').trim() ?? '',
       position: sticky ? getComputedStyle(sticky).position : 'missing',
@@ -815,7 +820,12 @@ try {
     const sort = document.querySelector('.sort-chips')
     return JSON.stringify({
       y: Math.round(window.scrollY),
-      filtersShown: Boolean(filters && getComputedStyle(filters).display !== 'none'),
+      // V9.60：恢复 = 容器高度回来 + 内容重新可见
+      filtersShown: Boolean(
+        filters &&
+          getComputedStyle(filters).visibility !== 'hidden' &&
+          (document.querySelector('.trades-collapse')?.getBoundingClientRect().height ?? 0) > 40,
+      ),
       tabs: Boolean(document.querySelector('.stock-tabs')),
       sortShown: Boolean(sort && sort.getBoundingClientRect().top < innerHeight),
     })

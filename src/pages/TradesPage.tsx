@@ -663,7 +663,10 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
           <p>{filtered.length} / {rows.length} 笔</p>
         </div>
 
-        <div className="trades-filters" hidden={filtersHidden}>
+        {/* V9.60：收起改连续收放动画（grid-rows，同挂单页 V9.44）——[hidden] 瞬切会让吸顶高度跳变 */}
+        <div className={`trades-collapse${filtersHidden ? ' closed' : ''}`} aria-hidden={filtersHidden}>
+          <div className="trades-collapse-inner">
+            <div className="trades-filters">
         <div className="stock-tabs" style={{ marginBottom: 8 }}>
           <Tag
             size="medium"
@@ -733,6 +736,8 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
             </button>
           </div>
         )}
+            </div>
+          </div>
         </div>
       </div>
 
