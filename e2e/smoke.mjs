@@ -1078,6 +1078,8 @@ try {
 
   // 统计 · 月度成交 → 该月日期区间
   await nav('stats')
+  await evaluate(`window.scrollTo(0, 600)`)
+  await sleep(200)
   check(
     '点月度行「2026-02」',
     await evaluate(`(() => {
@@ -1090,6 +1092,12 @@ try {
   const monthHash = await evaluate('location.hash')
   check('落在明细并带该月区间', monthHash.startsWith('#/trades') && monthHash.includes('from=2026-02-01') && monthHash.includes('to=2026-02-28'), monthHash)
   check('该月行数 > 0', (await headCount()) > 0, String(await headCount()))
+  // V9.66：跨页深链落在页面顶部（筛选区展开，不用滚回去找）
+  const deepTop = await evaluate(`(() => JSON.stringify({
+    y: Math.round(window.scrollY),
+    filters: (document.querySelector('.trades-collapse')?.getBoundingClientRect().height ?? 0) > 40,
+  }))()`)
+  check('深链跳明细落在顶部且筛选展开', JSON.parse(deepTop).y < 60 && JSON.parse(deepTop).filters, deepTop)
 
   // 统计 · 按股票 → 该股明细
   await nav('stats')
@@ -1628,6 +1636,56 @@ try {
   const enterClosed = await evaluate(`Boolean(document.querySelector('input[data-field="planPrice"]'))`) === false
   check('弹窗内按 Enter 保存并关闭', enterFired && enterClosed, `${enterFired}/${enterClosed}`)
   await evaluate(`window.scrollTo(0, 0)`)
+
+  // V9.66 行内拆分：不用跳明细抽屉，默认价量点「拆分」即可，删除子档可恢复
+  await evaluate(`window.scrollTo(0, 0)`)
+  await sleep(300)
+  const splitOpened = await evaluate(`(() => {
+    const b = document.querySelector('[data-action="split-open"]')
+    if (!b) return false
+    b.click(); return true
+  })()`)
+  await sleep(600)
+  const inlineSplitRaw = await evaluate(`(() => {
+    const modal = document.querySelector('[data-testid="split-modal"]')
+    return JSON.stringify({
+      open: Boolean(modal),
+      pricePh: document.querySelector('input[aria-label="拆分买入价"], input[aria-label="拆分目标价"]')?.placeholder ?? '',
+      rows: modal ? modal.querySelectorAll('.data-block .line').length : -1,
+    })
+  })()`)
+  console.log('  行内拆分:', inlineSplitRaw)
+  const sp = JSON.parse(inlineSplitRaw)
+  check('行内拆分弹窗打开且价格有缺省', splitOpened && sp.open && sp.pricePh !== '', inlineSplitRaw)
+  check(
+    '默认价量点「拆分」生成子档',
+    await evaluate(`(() => {
+      const b = document.querySelector('[data-action="split-confirm"]')
+      if (!b) return false
+      b.click(); return true
+    })()`),
+  )
+  await sleep(800)
+  check(
+    '拆出的档出现在弹窗列表',
+    (await evaluate(`document.querySelectorAll('[data-testid="split-modal"] .data-block .line').length`)) >= 1,
+    inlineSplitRaw,
+  )
+  check(
+    '删除子档恢复原状',
+    await evaluate(`(() => {
+      const del = document.querySelector('[data-testid="split-modal"] .data-block button')
+      if (!del) return false
+      del.click(); return true
+    })()`),
+  )
+  await sleep(700)
+  check(
+    '子档删除后列表清空',
+    (await evaluate(`document.querySelectorAll('[data-testid="split-modal"] .data-block .line').length`)) === 0,
+  )
+  await clickByText('button', '取消')
+  await sleep(400)
   await sleep(300)
 
   console.log('\n[8.5] 记回补成交 → 敞口减少 → 撤销')

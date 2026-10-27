@@ -36,7 +36,12 @@ function Shell() {
     prevTabIdx.current = tabIdx
   }, [tabIdx])
 
-  const goTrades = (q: TradesQuery) => navigate('trades', q)
+  // V9.66：跨页深链（树/统计/挂单跳明细）落在页面顶部——筛选区是展开状态、不用再滚回去找；
+  // 明细页内部的筛选点击不走这里，不会把人顶上去
+  const goTrades = (q: TradesQuery) => {
+    if (route.tab !== 'trades') window.scrollTo({ top: 0 })
+    navigate('trades', q)
+  }
 
   // 底部导航：已在明细时只回顶部、不动筛选；从其他 tab 回明细时恢复上次离开时的筛选
   const lastTradesRef = useRef<TradesQuery>({})

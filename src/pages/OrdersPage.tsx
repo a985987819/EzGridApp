@@ -24,6 +24,7 @@ import { enterSubmit } from '../ui/enterSave'
 import type { TradesQuery } from '../ui/nav'
 import type { BuySplit, RebuyOrder } from '../domain/types'
 import { HedgeSheet } from '../components/HedgeBinder'
+import { SplitModal } from '../components/SplitModal'
 
 /** 行内按钮不让冒泡到整行的「跳明细」点击上 */
 function stopWith(fn: () => void) {
@@ -250,6 +251,8 @@ export function OrdersPage({
     return `${rows.length} 档 · ${qty(rows.reduce((a, r) => a + r.qty, 0))} 股（价 ${price(lo)}~${price(hi)}）`
   }
   const [trade,setTrade]=useState<{side:'buy'|'sell';buy?:BuySuggestion;sell?:TargetRow}|null>(null)
+  /** V9.66：行内拆分弹窗（免跳明细抽屉） */
+  const [splitTarget,setSplitTarget]=useState<{kind:'buy'|'sell';sellRow?:number;lotId?:string}|null>(null)
   const [tradePrice,setTradePrice]=useState('')
   const [tradeQty,setTradeQty]=useState('')
   const [tradeDate,setTradeDate]=useState(todayIso())
@@ -336,6 +339,16 @@ export function OrdersPage({
           改单
         </Button>
         <Button size="small" data-action="suggestion-buy" onClick={()=>{const source=r.sources[0];const order=source?.kind==='order'?orders.find((o)=>o.id===source.id):null;if(!order)return openTrade('buy',r);const split=buySplits.find((b)=>b.orderId===order.id&&(source.kind!=='order'||b.key===source.splitKey))??buySplits.find((b)=>b.orderId===order.id);openExec(order,{qty:split?execQtyOf(split,order):r.qty,priceCents:r.priceCents})}}>记成交</Button>
+        {(() => {
+          // V9.66：单一张订单的档可以直接行内拆分（撞价合并的行来源不唯一，去明细拆）
+          const src = r.sources.length === 1 ? r.sources[0] : null
+          const order = src?.kind === 'order' ? orders.find((o) => o.id === src.id) : null
+          return src?.kind === 'order' && order && order.remainingQty > 0 ? (
+            <Button size="small" data-action="split-open" onClick={() => setSplitTarget({ kind: 'buy', sellRow: src.row })}>
+              拆分
+            </Button>
+          ) : null
+        })()}
       </div>
     </div>
   )
@@ -567,7 +580,17 @@ export function OrdersPage({
               )}
             >
               改单
-            </Button></>
+            </Button>
+            {(() => {
+              // V9.66：单一批次的待卖可以行内拆分（合并行涉及多个批次，去明细拆）
+              const lotId = r.targets[0]?.lotId
+              const lot = view.lots.find((l) => l.id === lotId)
+              return !r.merged && lot && lot.remainingQty > 0 ? (
+                <Button size="small" data-action="split-open" onClick={stopWith(() => setSplitTarget({ kind: 'sell', lotId }))}>
+                  拆分
+                </Button>
+              ) : null
+            })()}</>
           )}
         </div>
       </div>
@@ -622,7 +645,7 @@ export function OrdersPage({
    * 关掉后把页面滚回原处——不然改完一笔要从顶上重新往下找。
    */
   useScrollHold(
-    trade !== null || planRef !== null || execOrder !== null || sbKind !== null || hedgeRow !== null || sandboxHedgeRow !== null,
+    trade !== null || planRef !== null || execOrder !== null || sbKind !== null || hedgeRow !== null || sandboxHedgeRow !== null || splitTarget !== null,
   )
 
   const sbDefaults = {
@@ -1600,6 +1623,11 @@ export function OrdersPage({
           </div>
         )}
       </Modal>
+
+      {/* V9.66 行内拆分弹层（免跳明细抽屉） */}
+      {splitTarget && (
+        <SplitModal kind={splitTarget.kind} sellRow={splitTarget.sellRow} lotId={splitTarget.lotId} onClose={() => setSplitTarget(null)} />
+      )}
 
       {/* V9.30 裸卖待挂钩弹层（与明细页同一个面板） */}
       <HedgeSheet sellRow={hedgeRow} onClose={() => setHedgeRow(null)} />
