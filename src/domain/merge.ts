@@ -139,5 +139,5 @@ export function mergeTargetRows(opts: {
   const keyCounts=new Map<string,number>()
   for(const r of rows)keyCounts.set(r.key,(keyCounts.get(r.key)??0)+1)
   for(const r of rows)if((keyCounts.get(r.key)??0)>1)r.key=`sell:${r.targets[0].stockName}:${r.priceCents}`
-  return rows.filter((r)=>r.qty>0)
+  return rows.filter((r)=>r.qty>0).sort((a,b)=>a.priceCents-b.priceCents || a.key.localeCompare(b.key))
 }

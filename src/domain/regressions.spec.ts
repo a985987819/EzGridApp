@@ -112,8 +112,8 @@ describe('挂单建议回归',()=>{
   const exposed=new Set(l.orders.filter((o)=>o.exposure).map((o)=>o.id))
   const {mustBuy,bonus}=splitBuySuggestions(board,exposed)
   expect(mustBuy.map((r)=>r.priceCents)).toEqual([500])
-  expect(bonus.map((r)=>r.priceCents)).toEqual([600,800])
-  expect(bonus[1].sources.every((s)=>s.kind==='order')).toBe(true)
+  expect(bonus.map((r)=>r.priceCents)).toEqual([800,600])
+  expect(bonus[0].sources.every((s)=>s.kind==='order')).toBe(true)
  })
  it('V9.58 先买后卖超卖行的 P 列再买归锦上添花（域内敞口只认先卖后买，拆分保留敞口判定防御）',()=>{
   const l=buildLedger([{...buy(5,500,300),soldQty:500,earlyBuyPriceCents:400,sellDateSerial:46020}],[stock])
@@ -179,6 +179,7 @@ describe('挂单建议回归',()=>{
   const l=buildLedger(records,[stock],{plans})
   const rows=mergeTargetRows({...l,merges:[]})
   expect(rows).toHaveLength(2);expect(new Set(rows.map((r)=>r.key)).size).toBe(2)
+  expect(rows.map((r)=>r.priceCents)).toEqual([800,900])
  })
  it('V9.53 推荐买单可以硬改价量，来源不变且数量不放大',()=>{
   const l=buildLedger([sell(9,700,500)],[stock])
@@ -211,13 +212,14 @@ describe('V9.54 先卖后买的待买排最前',()=>{
   expect(l.orders).toHaveLength(1)
   expect(l.orders[0]).toMatchObject({baseQty:200,rebuyPriceCents:450,sellFirst:true})
  })
- it('排序优先于价格：先卖后买那档排最前，其余仍按价升序',()=>{
-  // 先买后卖 450（普通回补） vs 裸卖 500（先卖后买）：500 要排在 450 前面
-  const normal=rec(3,{buyPriceCents:500,buyQtyRaw:500,targetPriceCents:700,soldQty:500,earlyBuyPriceCents:450})
+ it('买入建议按最终价降序，先卖后买标记不改变价格顺序',()=>{
+  const normal=rec(3,{buyPriceCents:500,buyQtyRaw:500,targetPriceCents:700,soldQty:500,earlyBuyPriceCents:650})
   const l=buildLedger([buy(2,1000,500),normal,sell(9,700,500)],[stock])
-  expect(l.orders.map((o)=>[o.rebuyPriceCents,o.sellFirst===true])).toEqual([[450,false],[500,true]])
+  expect(l.orders.map((o)=>[o.rebuyPriceCents,o.sellFirst===true])).toEqual([[650,false],[500,true]])
   const board=buildBuySuggestions(l.buySplits,[],[])
-  expect(board.map((r)=>[r.priceCents,r.sellFirst])).toEqual([[500,true],[450,false]])
+  expect(board.map((r)=>[r.priceCents,r.sellFirst])).toEqual([[650,false],[500,true]])
+  const edited=buildBuySuggestions(l.buySplits,[],[{id:'p',refId:'buy:T:500',kind:'buy',priceCents:700,qty:500,at:1}])
+  expect(edited.map((r)=>r.priceCents)).toEqual([700,650])
  })
  it('同价合并里有先卖后买来源 → 整条按先卖后买排/标',()=>{
   // 裸卖 9（P 500）+ 先买后卖 3 的 P 也是 500 → 合成一条，带先卖后买标记

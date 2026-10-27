@@ -12,7 +12,7 @@ import { isoToSerial } from '../domain/edit'
 import { serialToIso } from '../domain/defaults'
 import { sandboxRowOf, type SandboxItem, type SandboxKind } from '../domain/sandbox'
 import { mergeTargetRows, type TargetRow } from '../domain/merge'
-import { buildBuySuggestions, compareSellFirstOnly, consumedNextRounds, splitBuySuggestions, type BuySuggestion } from '../domain/suggestions'
+import { buildBuySuggestions, compareBuyPrice, consumedNextRounds, splitBuySuggestions, type BuySuggestion } from '../domain/suggestions'
 import { buildNextRoundBuyRows, type NextRoundBuyRow } from '../domain/buyBoard'
 import { buildNanoIdIndex } from '../ui/nanoid'
 import { downloadText, toCsv } from '../ui/csv'
@@ -146,12 +146,9 @@ export function OrdersPage({
   const justRebought = useFlashOnAppear(
     useMemo(() => orders.filter((o) => o.execQty > 0).map((o) => o.sourceRow), [orders]),
   )
-  /**
-   * V9.54：待买逐笔列表也把先卖后买排最前（欠的股是真欠，先看它）。
-   * sort 是稳定的，同组内保持账本原来的顺序，不用另设排序。
-   */
+  /** 台账逐笔列表按回补价从高到低，同价保持原顺序。 */
   const orderedRebuys = useMemo(
-    () => [...orders].sort(compareSellFirstOnly),
+    () => [...orders].sort((a, b) => b.rebuyPriceCents - a.rebuyPriceCents),
     [orders],
   )
   const summary = view.byStock.find((s) => s.stockName === effectiveStock)
@@ -210,7 +207,7 @@ export function OrdersPage({
         merges,
         consumed: consumedNextRounds(records),
         sandboxRows: new Set(sandboxByRow.keys()),
-      }).filter((r) => r.stockName === effectiveStock),
+      }).filter((r) => r.stockName === effectiveStock).sort(compareBuyPrice),
     [view.lots, view.orders, view.sells, merges, sandboxByRow, effectiveStock, records],
   )
   const buySuggestions = buildBuySuggestions(buySplits, nextRound, plans)
@@ -231,7 +228,7 @@ export function OrdersPage({
    * 沙盒预览不走 buildBuySuggestions（模拟行要保留自己的「记为成交/删除」按钮），按同一口径切两组：
    * 先卖后买单 → 应该买入；其余买单 + 下一轮档 → 锦上添花。
    */
-  const sbBuyAll = buySplits.filter((b) => b.qty > 0).sort((a, b) => Number(b.sellFirst === true) - Number(a.sellFirst === true))
+  const sbBuyAll = buySplits.filter((b) => b.qty > 0).sort(compareBuyPrice)
   const sbBuyIn = range ? sbBuyAll.filter((b) => within(b.priceCents)) : sbBuyAll
   const sbBuyOut = range ? sbBuyAll.filter((b) => !within(b.priceCents)) : []
   const sbMustIn = sbBuyIn.filter((b) => b.sellFirst === true)
@@ -240,6 +237,8 @@ export function OrdersPage({
   const sbBonusOut = sbBuyOut.filter((b) => b.sellFirst !== true)
   const levelIn = range ? nextRound.filter((r) => within(r.priceCents)) : nextRound
   const levelOut = range ? nextRound.filter((r) => !within(r.priceCents)) : []
+  const sbBonusRows = [...sbBonusIn, ...levelIn].sort(compareBuyPrice)
+  const sbBonusOutRows = [...sbBonusOut, ...levelOut].sort(compareBuyPrice)
   const sbMustAmount = sbMustIn.reduce((a, b) => a + b.priceCents * b.qty, 0)
   const sbBonusAmount =
     sbBonusIn.reduce((a, b) => a + b.priceCents * b.qty, 0) + levelIn.reduce((a, r) => a + r.amountCents, 0)
@@ -907,7 +906,7 @@ export function OrdersPage({
   function exportCsv() {
     const mustKeys = new Set(mustBuy.map((r) => r.key))
     const rows: (string | number)[][] = [['类型', '序号', '价格', '股数', '金额', '区间']]
-    for (const r of buySuggestions) rows.push([mustKeys.has(r.key) ? '应该买入' : '锦上添花',r.sources.map((v)=>recordNoLabel(v.row,recordNo)).join(' + '),price(r.priceCents),r.qty,(r.amountCents/100).toFixed(2),zone(r.priceCents)])
+    for (const r of [...mustBuy, ...bonus]) rows.push([mustKeys.has(r.key) ? '应该买入' : '锦上添花',r.sources.map((v)=>recordNoLabel(v.row,recordNo)).join(' + '),price(r.priceCents),r.qty,(r.amountCents/100).toFixed(2),zone(r.priceCents)])
     for (const r of targetRows) {
       const p = r.planPriceCents ?? r.priceCents
       const q = r.planQty ?? r.qty
@@ -1248,8 +1247,7 @@ export function OrdersPage({
             <div className="empty-box">区间里没有可再买一轮的档</div>
           ) : (
             <>
-              {sbBonusIn.length > 0 && <div className="data-block">{sbBonusIn.map(sbBuyLine)}</div>}
-              {levelIn.length > 0 && <div className="data-block">{levelIn.map((r) => levelLine(r, true))}</div>}
+              <div className="data-block">{sbBonusRows.map((r) => 'orderId' in r ? sbBuyLine(r) : levelLine(r, true))}</div>
             </>
           )
         ) : bonusToday.length === 0 ? (
@@ -1261,8 +1259,7 @@ export function OrdersPage({
           <details className="divider-top" data-testid="bonus-out">
             <summary className="tiny muted">区间外 · {outSummary([...sbBonusOut, ...levelOut])}</summary>
             <div className="data-block">
-              {sbBonusOut.map(sbBuyLine)}
-              {levelOut.map((r) => levelLine(r, false))}
+              {sbBonusOutRows.map((r) => 'orderId' in r ? sbBuyLine(r) : levelLine(r, false))}
             </div>
           </details>
         )}

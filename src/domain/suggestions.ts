@@ -23,8 +23,7 @@ export interface BuySuggestion {
   /** V9.53：这一条推荐被人工「改单」过（计划价/计划量只改显示，不动来源） */
   edited?: boolean
   /**
-   * V9.54：这一条推荐里含「先卖后买」的来源（欠的股是真欠）。排序时排在最前面，
-   * 界面上给出「先卖后买」标示。
+   * 这一条推荐里含「先卖后买」的来源，用于分组和界面标示。
    */
   sellFirst: boolean
   /**
@@ -38,17 +37,14 @@ export function consumedNextRounds(records: readonly RawRecord[]): Map<number,nu
   for(const r of records)if(!r.deletedAt && r.nextRoundOfRow!==undefined)out.set(r.nextRoundOfRow,(out.get(r.nextRoundOfRow)??0)+(r.buyQtyRaw??0))
   return out
 }
-/**
- * V9.57：先卖后买的排最前。挂单页的待买列表、可挂买档、推荐挂单三处共用这一个比较器，
- * 避免以后只改一处导致三个列表排序不一致。
- */
-export function compareSellFirstOnly<T extends { sellFirst?: boolean }>(a: T, b: T): number {
-  return Number(b.sellFirst === true) - Number(a.sellFirst === true)
+/** 挂单买入侧统一按最终价格从高到低排列。 */
+export function compareBuyPrice(a: { priceCents: number }, b: { priceCents: number }): number {
+  return b.priceCents - a.priceCents
 }
 
-/** 推荐行排序：先卖后买 → 价格升序 → key 兜底稳定 */
+/** 推荐行排序：最终价格降序 → key 兜底稳定。 */
 function compareBuySuggestion(a: BuySuggestion, b: BuySuggestion): number {
-  return compareSellFirstOnly(a, b) || a.priceCents - b.priceCents || a.key.localeCompare(b.key)
+  return compareBuyPrice(a, b) || a.key.localeCompare(b.key)
 }
 /**
  * 买入建议（V9.50）：输入改成「待买展示档」——卖单拆了几笔买入就按几档出建议，
@@ -64,7 +60,7 @@ export function buildBuySuggestions(splits: readonly BuySplit[], next: readonly 
       hit.qty+=source.qty
       hit.amountCents+=p*source.qty
       hit.sources.push(source)
-      // 同价合并后只要有一笔先卖后买，整条就按先卖后买排/标（欠的股跑不掉）
+      // 同价合并后只要有一笔先卖后买，整条就按先卖后买分组/标示。
       if(source.kind==='order'&&source.sellFirst)hit.sellFirst=true
     }
     else rows.set(key,{key,stockName,priceCents:p,qty:source.qty,amountCents:p*source.qty,sources:[source],sellFirst:source.kind==='order'&&source.sellFirst===true})
@@ -123,10 +119,7 @@ export function buildBuySuggestions(splits: readonly BuySplit[], next: readonly 
     if (hit.key !== natural && r.key === natural) hit.key = natural
   }
   const list = [...byPrice.values()]
-  /**
-   * V9.54：先卖后买的待买排最前（欠的股是真欠，先处理），其余仍按价格从低到高。
-   * 同组内价格升序，最后按 key 兜底保证顺序稳定（不吃 sort 的实现细节）。
-   */
+  // 改单和同价合并完成后再排序，确保使用实际显示价格。
   return list.sort(compareBuySuggestion)
 }
 /** 明细是按行聚合的视图，必须累计全部成交，不能 Map 覆盖上一笔。 */
