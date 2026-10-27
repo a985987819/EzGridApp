@@ -8,7 +8,7 @@
 
 ```bash
 npm run dev        # 127.0.0.1:5173
-npm test           # vitest，337 条（domain 纯函数 + 真实 xlsx fixture 回归）
+npm test           # vitest，352 条（domain 纯函数 + 真实 xlsx fixture 回归）
 npm run lint       # eslint
 npm run build      # tsc --noEmit && vite build；GITHUB_PAGES=true 时启用 /EzGridApp/ 子路径 base
 node e2e/smoke.mjs http://127.0.0.1:5173   # 无头 Chrome CDP，477 项断言，需先起 dev
@@ -215,3 +215,15 @@ schemaVersion 11（V9.50 加 buyTargets；V9.49 加行级成交来源；V9.46 �
   高买低卖的链，按 P 列开价位槽；之后**所有**同股、同价的买入（回补成交 / 明细新增 / 导入，不分入口）
   自动归槽、累计盈亏，不用手动关联；回补完成即视为已完成、待买单自动关（用户原话「不手动关」）。
   多链共享同一价位时归给锚点卖出日期最近的那条；锚点批次自己永远不会被别的链收编。
+
+
+## 完整台账 Excel（2026-10-27 用户确认）
+
+- 新入口在管理备份：全量 XLSX 导出与预览后整库恢复；普通导入也识别该格式。明细筛选导出、旧模板/CSV 增量导入、JSON 备份保留。
+- `domain/ledgerSnapshot.ts` 定义全量派生输入和只读核对视图，`io/ledgerWorkbook.ts` 负责版本化 Excel 编解码与严格校验。格式/计算口径版本均为 1；文档见 `docs/完整台账Excel.md`。
+- 固定 `sourceRow`/各表 id 是文件中的永久身份；物理行和界面序号不是外键。每表带原始顺序列，排序后仍按原顺序还原，避免同时间事件与派生虚拟批次变化。
+- 人工关系与成员规范化分表；**空 hedges 父行保留**（禁用自动挂钩）。自动有效挂钩/回本链/价位槽仅导出到 `核对_` 表，恢复绝不能写入人工表。
+- 核对表是可见快照，不在 Excel 内实现领域公式。恢复前重算并显示字段差异，可下载完整重算表；合法修改允许恢复。结构、重复身份、外键、类型/金额股数、循环批次引用等不合法则整包拒绝。
+- 唯一写库仍是 `useApp.restoreBackup`，多表+计算设置同事务替换；恢复前 UI 自动下载当前 JSON 快照。`deriveSellPrice` 现在持久化到 meta，JSON schemaVersion 11 新增可选 settings；原审计 ID 保留。设置切换同时写审计。
+- 沙盒、行情昨收/涨跌停会话、页面状态、字体偏好不进账务文件。无跨台账增量合并。
+- 回归：`io/ledgerWorkbook.spec.ts` 覆盖真实 62 行 CSV、排序、人工与自动关系、快照差异和非法文件；`e2e/accounting.mjs` 经真实 IndexedDB 验证空库恢复、重复恢复、来源/历史/虚拟批次与完整链一致。

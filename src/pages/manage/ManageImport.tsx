@@ -2,6 +2,8 @@ import { useMemo, useRef, useState } from 'react'
 import { Button, Card, Tag, notificationOpen } from 'animal-island-ui'
 import { useApp } from '../../store/useApp'
 import { buildTemplateWorkbook, parseWorkbookFile, parseCsvFile } from '../../io/parseWorkbook'
+import { parseLedgerWorkbook, type LedgerWorkbookPreview } from '../../io/ledgerWorkbook'
+import { LedgerRestorePreview } from '../../components/LedgerRestorePreview'
 import { buildLedger } from '../../domain/ledger'
 import { compareBaseline } from '../../domain/baseline'
 import { buildNanoIdIndex } from '../../ui/nanoid'
@@ -44,6 +46,7 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
     rollbackBatch,
   } = useApp()
   const [busy, setBusy] = useState(false)
+  const [ledgerPreview, setLedgerPreview] = useState<LedgerWorkbookPreview | null>(null)
   /** V9.59：独立模式兜底唤起要用（见 pickFile.ts 与 label 的 onClick） */
   const importInputRef = useRef<HTMLInputElement>(null)
   const [lastFile, setLastFile] = useState('导入文件.xlsx')
@@ -73,8 +76,14 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
 
   async function handleFile(file: File) {
     setBusy(true)
+    setLedgerPreview(null)
+    setPreview(null)
     try {
       const isCsv = /\.csv$/i.test(file.name)
+      if (!isCsv) {
+        const complete = await parseLedgerWorkbook(await file.arrayBuffer())
+        if (complete) { setLedgerPreview(complete); return }
+      }
       const p = isCsv ? await parseCsvFile(file) : await parseWorkbookFile(file)
       setPreview(p)
       setLastFile(file.name)
@@ -186,7 +195,7 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
           </div>
         </label>
         <p className="tiny muted" style={{ margin: '6px 0 0' }}>
-          支持 .xlsx / .xls / .csv；xlsx 只读第 1 个工作表「交易记录」，csv 整表读入，不改原文件。
+          支持 .xlsx / .xls / .csv；普通 xlsx 读取第 1 个工作表，CSV 整表读入；完整台账 Excel 自动进入整库恢复预览。
           还没有台账文件？点下面按钮下载标准模板，填好再选进来。
         </p>
         <div className="row" style={{ marginTop: 8 }}>
@@ -222,6 +231,7 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
         </p>
       </Card>
 
+      {ledgerPreview && <LedgerRestorePreview preview={ledgerPreview} onClose={() => setLedgerPreview(null)} />}
       {preview && previewLedger && (
         <>
           <Card>

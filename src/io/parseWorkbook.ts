@@ -1,5 +1,5 @@
 /**
- * 导入解析：xlsx 只读第 1 个工作表「交易记录」（D7）；CSV 天然只有一个表，整表读入。
+ * 普通导入：xlsx 只读第 1 个工作表「交易记录」（D7）；CSV 整表读入。完整台账由 ledgerWorkbook 识别与恢复。
  * 只负责把单元格原始状态读出来（值 / 是否公式 / 是否无缓存值），
  * 规则派生全部留给 domain/ledger.ts，这样改间隔能立即重算。
  */
@@ -18,7 +18,7 @@ type CellObject = import('xlsx').CellObject
  */
 let XLSX: XlsxModule
 let xlsxReady: Promise<XlsxModule> | null = null
-function loadXlsx(): Promise<XlsxModule> {
+export function loadXlsx(): Promise<XlsxModule> {
   xlsxReady ??= import('xlsx').then((m) => {
     XLSX = m
     return m
@@ -220,6 +220,9 @@ export async function parseWorkbook(buffer: ArrayBuffer | Uint8Array): Promise<P
     cellNF: false,
     cellDates: false,
   })
+  if (wb.SheetNames.some((n) => n === '台账说明' || n === '交易数据' || n.startsWith('核对_'))) {
+    throw new Error('这是完整台账，请使用完整台账恢复预览，不能按普通交易表导入')
+  }
   const sheetName = wb.SheetNames[0]
   if (!sheetName) throw new Error('工作簿里没有任何工作表')
   const sheet = wb.Sheets[sheetName]

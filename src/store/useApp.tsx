@@ -7,6 +7,7 @@ import {
   useState,
   type ReactNode,
 } from 'react'
+import { notificationOpen } from 'animal-island-ui'
 import { db, type ImportBatch } from './db'
 import { activeDependents, validateExecutionInput } from '../domain/dependencies'
 import { buildNextRoundBuyRows } from '../domain/buyBoard'
@@ -240,7 +241,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [merges, setMerges] = useState<LotMergeLink[]>([])
   const [chainLinks, setChainLinks] = useState<RepairChainLink[]>([])
   const [batches, setBatches] = useState<ImportBatch[]>([])
-  const [deriveSellPrice, setDeriveSellPrice] = useState(false)
+  const [deriveSellPrice, setDeriveSellPriceState] = useState(false)
+  const setDeriveSellPrice = useCallback((v: boolean) => {
+    setDeriveSellPriceState(v)
+    void db.transaction('rw', [db.meta, db.auditLogs], async () => {
+      const previous = (await db.meta.get('deriveSellPrice'))?.value === 'true'
+      await db.meta.put({ key: 'deriveSellPrice', value: String(v) })
+      if (previous !== v) await db.auditLogs.add(audit('deriveSellPrice', '成交价推定', String(previous), String(v), 'settings', 'order'))
+    }).then(async () => setAudits(await db.auditLogs.toArray())).catch((err: unknown) => {
+      setDeriveSellPriceState(deriveSellPrice)
+      notificationOpen({ message: '计算设置保存失败', description: err instanceof Error ? err.message : String(err), type: 'error' })
+    })
+  }, [deriveSellPrice])
   const [preview, setPreview] = useState<ParseResult | null>(null)
   const [basename, setBasename] = useState('—')
   const [lastBackupAt, setLastBackupAt] = useState<number | null>(null)
@@ -292,7 +304,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         await db.stocks.bulkPut(DEFAULT_STOCKS)
       }
       // 单一账户（V9.32：账户功能已删除）
-      const [sRaw, r, a, b, x, backupMeta, pl, et, fontMeta, hd, mg, cl, bt] = await Promise.all([
+      const [sRaw, r, a, b, x, backupMeta, pl, et, fontMeta, hd, mg, cl, bt, deriveMeta] = await Promise.all([
         db.stocks.toArray(),
         db.records.toArray(),
         db.auditLogs.toArray(),
@@ -306,6 +318,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         db.merges.toArray(),
         db.chainLinks.toArray(),
         db.buyTargets.toArray(),
+        db.meta.get('deriveSellPrice'),
       ])
       if (!alive) return
       // 老库补齐 order / enabled 并压平序号
@@ -313,6 +326,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const dirty = sRaw.some((x) => typeof x.order !== 'number' || typeof x.enabled !== 'boolean')
       if (dirty) await db.stocks.bulkPut(s)
       setStocks(s)
+      setDeriveSellPriceState(deriveMeta?.value === 'true')
       setRecords(r)
       setAudits(a)
       setExecutions(x)
@@ -1225,7 +1239,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const exportBackup = useCallback(async () => {
-    const [s, r, b, a, x, pl, et, hd, mg, cl, bt] = await Promise.all([
+    const [s, r, b, a, x, pl, et, hd, mg, cl, bt] = await db.transaction('r',
+      [db.stocks, db.records, db.batches, db.auditLogs, db.rebuyExecutions, db.plans, db.extraTargets, db.hedges, db.merges, db.chainLinks, db.buyTargets],
+      () => Promise.all([
       db.stocks.toArray(),
       db.records.toArray(),
       db.batches.toArray(),
@@ -1237,7 +1253,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       db.merges.toArray(),
       db.chainLinks.toArray(),
       db.buyTargets.toArray(),
-    ])
+    ]))
     const stamp = String(Date.now())
     await db.meta.put({ key: 'lastBackupAt', value: stamp })
     setLastBackupAt(Number(stamp))
@@ -1246,6 +1262,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // 版本 11：V9.50 加卖单拆买（buyTargets）；旧版本恢复时会丢掉这些分段。
         schemaVersion: 11,
         exportedAt: new Date().toISOString(),
+        settings: { deriveSellPrice },
         stocks: s,
         records: r,
         batches: b,
@@ -1261,12 +1278,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       null,
       2,
     )
-  }, [])
+  }, [deriveSellPrice])
 
   const restoreBackup = useCallback(
     async (json: string) => {
       const data = JSON.parse(json) as {
         schemaVersion?: number
+        settings?: { deriveSellPrice: boolean }
         stocks?: StockConfig[]
         records?: RawRecord[]
         batches?: ImportBatch[]
@@ -1279,6 +1297,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         merges?: LotMergeLink[]
         chainLinks?: RepairChainLink[]
       }
+      if (data.settings !== undefined && (typeof data.settings !== 'object' || data.settings === null || typeof data.settings.deriveSellPrice !== 'boolean')) throw new Error('备份计算设置不合法')
       const version = data.schemaVersion ?? 1
       if (version > 11) throw new Error('备份版本高于当前程序，拒绝导入（P11）')
       // P11 之外的第二道闸：结构坏掉的备份整包拒绝，不让半截 JSON 污染本地库
@@ -1286,8 +1305,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (problem) throw new Error(`备份内容校验失败：${problem}`)
       await db.transaction(
         'rw',
-        [db.stocks, db.records, db.batches, db.auditLogs, db.rebuyExecutions, db.plans, db.extraTargets, db.hedges, db.merges, db.chainLinks, db.buyTargets],
+        [db.stocks, db.records, db.batches, db.auditLogs, db.rebuyExecutions, db.plans, db.extraTargets, db.hedges, db.merges, db.chainLinks, db.buyTargets, db.meta],
         async () => {
+        if (data.settings) await db.meta.put({ key: 'deriveSellPrice', value: String(data.settings.deriveSellPrice) })
         if (data.stocks) {
           await db.stocks.clear()
           await db.stocks.bulkPut(data.stocks)
@@ -1322,21 +1342,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (data.chainLinks) await db.chainLinks.bulkPut(data.chainLinks)
         await db.auditLogs.clear()
         if (data.auditLogs) {
-          // 去掉自增 id，让 Dexie 重新分配
-          await db.auditLogs.bulkAdd(
-            data.auditLogs.map((a) => ({
-              entity: a.entity,
-              entityId: a.entityId,
-              field: a.field,
-              oldValue: a.oldValue,
-              newValue: a.newValue,
-              at: a.at,
-              source: a.source,
-            })),
-          )
+          // 保留审计身份；旧备份未带 id 时 Dexie 仍会自动分配。
+          await db.auditLogs.bulkAdd(data.auditLogs)
         }
         },
       )
+      if (data.settings) setDeriveSellPriceState(data.settings.deriveSellPrice)
+      setPreview(null)
+      setBasename('完整台账恢复')
       setStocks(await db.stocks.toArray())
       setBatches(await db.batches.toArray())
       await reloadRecords()

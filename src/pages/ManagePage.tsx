@@ -13,7 +13,7 @@ const SECTIONS: { key: Section; label: string; desc: string; Icon: typeof IconGr
   { key: 'stocks', label: '股票设置', desc: '网格间隔 · 涨跌幅规则 · 启用开关', Icon: IconGrid },
   { key: 'import', label: '导入数据', desc: 'Excel / CSV 批量写入本地台账', Icon: IconUpload },
   { key: 'checks', label: '校验', desc: '基准快照 · 数量守恒', Icon: IconChart },
-  { key: 'backup', label: '备份', desc: '导出 / 恢复 · 清空本地库', Icon: IconDownload },
+  { key: 'backup', label: '备份', desc: '完整 Excel / JSON 备份与恢复', Icon: IconDownload },
 ]
 
 export function ManagePage({ goTrades }: { goTrades: (q: TradesQuery) => void }) {

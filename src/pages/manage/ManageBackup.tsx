@@ -1,9 +1,13 @@
-import { useRef } from 'react'
+import { useRef, useState } from 'react'
 import { Button, Card, Collapse, Switch, Tag, notificationOpen } from 'animal-island-ui'
 import { useApp } from '../../store/useApp'
-import { downloadText } from '../../ui/csv'
+import { downloadText, downloadBytes } from '../../ui/csv'
 import { openFilePicker } from '../../ui/pickFile'
 import { IconDownload, IconUpload } from '../../ui/icons'
+
+import { exportLedgerWorkbook, parseLedgerWorkbook, type LedgerWorkbookPreview } from '../../io/ledgerWorkbook'
+import type { LedgerSnapshot } from '../../domain/ledgerSnapshot'
+import { LedgerRestorePreview } from '../../components/LedgerRestorePreview'
 
 export function ManageBackup() {
   const {
@@ -19,10 +23,54 @@ export function ManageBackup() {
     systemFont,
     setSystemFont,
   } = useApp()
+  const [excelPreview, setExcelPreview] = useState<LedgerWorkbookPreview | null>(null)
+  const [excelBusy, setExcelBusy] = useState(false)
+  const excelRef = useRef<HTMLInputElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
   return (
     <div className="stack">
+      <Card>
+        <div className="stack tight">
+          <strong>完整台账 Excel</strong>
+          <p className="hint-block">导出全部交易、成交、配置、人工关联与操作历史，以及自动关联和回本链的核对快照。可编辑数据后整库恢复；明细页的 Excel 仅为当前列表。</p>
+          <Button block type="primary" disabled={excelBusy} data-action="export-ledger" onClick={() => {
+            setExcelBusy(true)
+            void (async () => {
+              try {
+                const snapshot = JSON.parse(await exportBackup()) as LedgerSnapshot
+                const data = await exportLedgerWorkbook(snapshot)
+                downloadBytes(`网格完整台账-${new Date().toISOString().slice(0, 10)}.xlsx`, data, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+                notificationOpen({ message: '完整台账 Excel 已导出', type: 'success' })
+              } catch (e) { notificationOpen({ message: '导出失败', description: e instanceof Error ? e.message : String(e), type: 'error' }) }
+              finally { setExcelBusy(false) }
+            })()
+          }}><IconDownload /> 导出完整台账 Excel</Button>
+          <label htmlFor="ledger-file-input" style={{ display: 'block', position: 'relative', cursor: 'pointer' }} onClick={(e) => {
+            if (e.target === excelRef.current || excelBusy) return
+            e.preventDefault()
+            openFilePicker(excelRef.current)
+          }}>
+            <input ref={excelRef} id="ledger-file-input" type="file" disabled={excelBusy} accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/octet-stream" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: 0.01, zIndex: 1, cursor: 'pointer' }} onChange={(e) => {
+              const file = e.target.files?.[0]
+              e.currentTarget.value = ''
+              if (!file) return
+              setExcelPreview(null)
+              setExcelBusy(true)
+              void (async () => {
+                try {
+                  const result = await parseLedgerWorkbook(await file.arrayBuffer())
+                  if (!result) throw new Error('这不是完整台账，请到导入页使用普通 Excel/CSV 导入')
+                  setExcelPreview(result)
+                } catch (err) { notificationOpen({ message: '完整台账校验失败（当前数据未动）', description: err instanceof Error ? err.message : String(err), type: 'error' }) }
+                finally { setExcelBusy(false) }
+              })()
+            }} />
+            <div style={{ pointerEvents: 'none' }}><Button block disabled={excelBusy}><IconUpload /> {excelBusy ? '处理中…' : '从完整 Excel 恢复（先预览）'}</Button></div>
+          </label>
+        </div>
+      </Card>
+      {excelPreview && <LedgerRestorePreview preview={excelPreview} onClose={() => setExcelPreview(null)} />}
       <Card>
         <div className="sec-head">
           <strong>备份</strong>

@@ -192,6 +192,34 @@ try {
   await act(`await testApp.resetAll();await testApp.restoreBackup(${JSON.stringify(backup)})`)
   v=await state()
   check('备份恢复保留成交来源与链持仓',JSON.stringify(v.chains)===JSON.stringify(backupState.chains)&&v.totals.netQty===backupState.totals.netQty)
+  // 完整 XLSX 经真实 store 整库恢复两次：成交/虚拟批次/链/奖励/序号必须不变。
+  const excelRoundtrip=await act(`
+    const {exportLedgerWorkbook,parseLedgerWorkbook}=await import('/src/io/ledgerWorkbook.ts');
+    const {snapshotViews}=await import('/src/domain/ledgerSnapshot.ts');
+    const before=JSON.parse(await testApp.exportBackup());
+    const parsed=await parseLedgerWorkbook(await exportLedgerWorkbook(before));
+    const beforeViews=JSON.stringify(snapshotViews(before));
+    await testApp.resetAll();
+    await testApp.restoreBackup(JSON.stringify(parsed.snapshot));
+    await testApp.restoreBackup(JSON.stringify(parsed.snapshot));
+    const after=JSON.parse(await testApp.exportBackup());
+    const canon=v=>JSON.stringify(v,(_,x)=>x&&typeof x==='object'&&!Array.isArray(x)?Object.fromEntries(Object.entries(x).sort(([a],[b])=>a.localeCompare(b))):x);
+    return {differences:parsed.differences,viewsMatch:JSON.stringify(snapshotViews(after))===beforeViews,
+      recordCount:after.records.length,expectedCount:before.records.length,
+      auditMatch:canon(after.auditLogs)===canon(before.auditLogs),
+      inputsMatch:['stocks','records','batches','rebuyExecutions','plans','extraTargets','buyTargets','hedges','merges','chainLinks'].every(k=>canon(before[k])===canon(after[k]))};
+  `)
+  check('完整Excel核对快照全部一致',excelRoundtrip.differences.length===0,JSON.stringify(excelRoundtrip))
+  check('完整Excel空库恢复与重复恢复不重复记账',excelRoundtrip.viewsMatch&&excelRoundtrip.recordCount===excelRoundtrip.expectedCount,JSON.stringify(excelRoundtrip))
+  check('完整Excel保留人工关联、成交、操作历史与稳定ID',excelRoundtrip.inputsMatch&&excelRoundtrip.auditMatch,JSON.stringify(excelRoundtrip))
+  await act(`testApp.setDeriveSellPrice(true)`)
+  const settingBackup=await act(`return await testApp.exportBackup()`)
+  await act(`testApp.setDeriveSellPrice(false)`)
+  await act(`await testApp.restoreBackup(${JSON.stringify(settingBackup)})`)
+  check('计算设置随备份恢复并写入持久化存储',await evaluate(`testApp.deriveSellPrice===true&&(async()=>{const {db}=await import('/src/store/db.ts');return (await db.meta.get('deriveSellPrice'))?.value==='true'})()`))
+  await act(`testApp.setDeriveSellPrice(false)`)
+
+
   // 同行号增量导入：通过真实 Dexie 写入检查覆盖风险。
   await act(`await testApp.resetAll();window.importRec=(p)=>({sourceRow:2,stockName:'T',buyDateSerial:46000,buyPriceCents:p,buyQtyRaw:500,qtyNeedsDerive:false,targetPriceCents:p+200,targetNeedsDerive:false,soldQty:0,sellDateSerial:null,earlyBuyPriceCents:null,rawProfitCents:null,importKey:'import:'+p});await testApp.commitImport({sheetName:'Sheet1',records:[importRec(1000)],skippedRows:[],missingColumns:[]},'A.xlsx');await testApp.commitImport({sheetName:'Sheet1',records:[importRec(600)],skippedRows:[],missingColumns:[]},'B.xlsx')`)
   v=await state()
@@ -213,6 +241,54 @@ try {
   check('真实CSV已回补2100股，仅剩500股@8.01',csvState.own===2100&&JSON.stringify(csvState.pending)==='[[60,500,801]]',JSON.stringify(csvState))
   check('真实CSV初始亏损5176，未完成低位买卖不计回血',csvState.chains.filter(c=>csvState.roots.includes(c.row)).reduce((a,c)=>a+c.loss,0)===-517600&&csvState.chains.every(c=>c.profit===0),JSON.stringify(csvState.chains))
   check('真实CSV全部守恒检查通过',v.checks.length===0,JSON.stringify(v.checks))
+  const autoRoundtrip=await act(`
+    const {exportLedgerWorkbook,parseLedgerWorkbook}=await import('/src/io/ledgerWorkbook.ts');
+    const {snapshotViews}=await import('/src/domain/ledgerSnapshot.ts');
+    const before=JSON.parse(await testApp.exportBackup());
+    const p=await parseLedgerWorkbook(await exportLedgerWorkbook(before));
+    await testApp.restoreBackup(JSON.stringify(p.snapshot));
+    const after=JSON.parse(await testApp.exportBackup());
+    return {same:JSON.stringify(snapshotViews(before))===JSON.stringify(snapshotViews(after)),manual:after.hedges.length};
+  `)
+  check('CSV经完整Excel恢复后六条自动关联仍自动且盈亏不变',autoRoundtrip.same&&autoRoundtrip.manual===0,JSON.stringify(autoRoundtrip))
+  // 两个文件入口经原生 input 读完整 XLSX，预览不写库，确认后整库替换。
+  const excelFile=join(OUT,'ledger-roundtrip.xlsx')
+  writeFileSync(excelFile,Buffer.from(await act(`const {exportLedgerWorkbook}=await import('/src/io/ledgerWorkbook.ts');return Array.from(await exportLedgerWorkbook(JSON.parse(await testApp.exportBackup())))`)))
+  await evaluate(`(async()=>{
+    const React=(await import('/node_modules/.vite/deps/react.js')).default;
+    const {createRoot}=(await import('/node_modules/.vite/deps/react-dom_client.js')).default;
+    const source=await (await fetch('/src/pages/OrdersPage.tsx')).text();
+    const storeUrl=source.match(new RegExp('from "([^"]*store.useApp[^"]*)"'))[1];
+    const {AppProvider}=await import(storeUrl);
+    const {ManageImport}=await import('/src/pages/manage/ManageImport.tsx');
+    const {ManageBackup}=await import('/src/pages/manage/ManageBackup.tsx');
+    const el=document.createElement('div');el.id='excel-preview-test';document.body.appendChild(el);
+    createRoot(el).render(React.createElement(AppProvider,null,React.createElement('div',null,
+      React.createElement(ManageImport,{goTrades:()=>{}}),React.createElement(ManageBackup))));
+  })()`)
+  await settle()
+  const setExcelInput=async(selector)=>{
+    const {root}=await send('DOM.getDocument');
+    const {nodeId}=await send('DOM.querySelector',{nodeId:root.nodeId,selector});
+    await send('DOM.setFileInputFiles',{nodeId,files:[excelFile]});
+    await settle();
+  }
+  await setExcelInput('#excel-preview-test #import-file-input')
+  check('普通导入入口识别完整Excel并进入恢复预览',await evaluate(`document.querySelector('[data-testid="ledger-restore-preview"]')?.textContent.includes('62 笔记录')&&document.querySelector('[data-testid="ledger-restore-preview"]')?.textContent.includes('核对通过')`))
+  check('完整文件未混进普通增量导入报告',await evaluate(`!document.querySelector('#excel-preview-test')?.textContent.includes('dry-run 报告')`))
+  await evaluate(`(()=>{const p=document.querySelector('[data-testid="ledger-restore-preview"]');[...p.querySelectorAll('button')].find(b=>b.textContent.trim()==='取消').click()})()`)
+  await settle()
+  await setExcelInput('#excel-preview-test #ledger-file-input')
+  check('备份入口同样先展示恢复预览',await evaluate(`Boolean(document.querySelector('[data-testid="ledger-restore-preview"]'))`))
+  check('移动端恢复预览没有横向溢出',await evaluate(`document.documentElement.scrollWidth<=window.innerWidth`))
+  await evaluate(`document.querySelector('[data-testid="ledger-restore-preview"]').scrollIntoView({block:'start'})`)
+  const previewShot=await send('Page.captureScreenshot',{format:'png'})
+  writeFileSync(join(OUT,'ledger-restore-mobile.png'),Buffer.from(previewShot.data,'base64'))
+  await click('[data-action="restore-ledger-confirm"]')
+  await settle()
+  check('确认恢复关闭预览且数据库保持62笔',await evaluate(`(async()=>!document.querySelector('[data-testid="ledger-restore-preview"]')&&(JSON.parse(await testApp.exportBackup())).records.length===62)()`))
+  await evaluate(`document.getElementById('excel-preview-test')?.remove()`)
+
   const cycleRows=await act(`const hi=await testApp.addManualRecord({kind:'buy',stockName:'T',date:'2026-10-20',price:'10',qty:'500'});const root=await testApp.addManualRecord({kind:'sell',stockName:'T',date:'2026-10-21',price:'7',qty:'500',rebuyPrice:'5'});const low=await testApp.addManualRecord({kind:'buy',stockName:'T',date:'2026-10-22',price:'5',qty:'500',targetPrice:'7'});await testApp.recordLotSales([{lotId:'lot:'+low,qty:500}],500,700,'2026-10-23');return [hi,root,low,testApp.records.find(r=>r.soldLotId==='lot:'+low)?.sourceRow]`)
   // React 的快照要等动作重载后再读取新增子卖出。
   cycleRows[3]=await evaluate(`testApp.records.find(r=>r.soldLotId==='lot:'+${cycleRows[2]})?.sourceRow`)
