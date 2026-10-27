@@ -11,7 +11,7 @@
  *   baseQty         = owed − 同价真实买入覆盖（价位槽，V9.49）        ← 待买单的计划基数（奖励前）
  *   openBaseQty     = max(0, baseQty − 回补成交基础股)                 ← 真正还欠的股数
  *   openExposureQty = max(0, owed − 真实覆盖 − 成交基础股 − 挂钩股)     ← 真空头敞口（挂住的股已由高位批次交割）
- *   deductQty       = max(0, 成交基础股 − 已了结挂钩股) + 真实覆盖     ← 守恒式扣减（既抵了敞口、又进了待卖的股）
+ *   deductQty       = min(本行买回 + 真实覆盖 + 成交基础股, 卖出量 − 全部高位交割股)     ← 守恒式扣减（既抵了敞口、又进了待卖的股）
  *
  * 两条关键规则：
  * 1. **真实覆盖要扣**：同价真实买入既平掉裸卖，又以自己的批次进了待卖，不在守恒式里扣回就是双算。
@@ -32,10 +32,10 @@ export interface SellCoverInput {
   realCoverQty: number
   /** 被裸卖挂钩占住、已由高位批次交割的股数（含暂记 hold 与已了结 closed） */
   hedgeAppliedQty: number
-  /** 其中「已经买回、永久了结」的股数（守恒扣减要减去，因为批次份额已不在待卖） */
+  /** 其中「已经买回、永久了结」的股数（保留调用接口；高位交割统一按 hedgeAppliedQty 扣减） */
   hedgeClosedQty: number
   /**
-   * 这笔卖是不是空头（无买入批次），或者是「先卖后买、本行买入只盖住一部分」的差额。
+   * 这笔卖是否先卖后买。其买回批次完整留在持仓，因此本行覆盖也参与守恒扣减。
    * 只有这类卖出才产生敞口与守恒扣减；记卖出的子卖出（soldLotId）不算空头。
    */
   exposureEligible: boolean
@@ -71,7 +71,6 @@ export function coverOfSell(input: SellCoverInput): SellCover {
   const exec = qtyOf(input.execBaseQty)
   const real = Math.min(qtyOf(input.realCoverQty), Math.max(0, sellQty - own))
   const hedge = qtyOf(input.hedgeAppliedQty)
-  const closed = Math.min(qtyOf(input.hedgeClosedQty), exec)
 
   const owed = Math.max(0, sellQty - own)
   const baseQty = Math.max(0, owed - real)
@@ -79,7 +78,10 @@ export function coverOfSell(input: SellCoverInput): SellCover {
   const openExposureQty = input.exposureEligible
     ? Math.max(0, owed - real - exec - hedge)
     : 0
-  const deductQty = input.exposureEligible ? Math.max(0, exec - closed) + real : 0
+  // 已买回的持仓中，只有尚未由高位原持仓交割的那部分需要在守恒式扣回。
+  const deductQty = input.exposureEligible
+    ? Math.min(own + real + exec, Math.max(0, sellQty - hedge))
+    : 0
 
   return {
     owed,

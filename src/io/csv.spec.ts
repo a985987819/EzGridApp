@@ -66,14 +66,14 @@ describe('CSV 单表解析：结构与行级取值', () => {
 })
 
 describe('CSV 解析 → ledger：与 xlsx 口径对齐', () => {
-  it('R44 盈利补回，全表盈利 ¥10,151 / 卖出额 ¥196,522', () => {
-    expect(ledger.totals.profitCents).toBe(1015100)
+  it('真实日期触发高位分配记亏，全表盈利 ¥3,061 / 卖出额 ¥196,522', () => {
+    expect(ledger.totals.profitCents).toBe(306100)
     expect(ledger.totals.sellAmountCents).toBe(19652200)
   })
 
-  it('待卖 29 条 / 15,200 股，待买 4 条，净持仓 13,200 不变', () => {
-    expect(ledger.totals.targetCount).toBe(29)
-    expect(ledger.totals.targetQty).toBe(15200)
+  it('待卖 27 条 / 13,200 股，待买 4 条，净持仓 13,200 不变', () => {
+    expect(ledger.totals.targetCount).toBe(27)
+    expect(ledger.totals.targetQty).toBe(13200)
     expect(ledger.totals.rebuyCount).toBe(4)
     expect(ledger.totals.netQty).toBe(13200)
   })
@@ -88,13 +88,14 @@ describe('CSV 解析 → ledger：与 xlsx 口径对齐', () => {
     expect(ledger.sells.filter((s) => s.sellBeforeBuy).map((s) => s.sourceRow)).toEqual([40, 57, 60, 61, 62, 63])
   })
 
-  it('与 xlsx 首表互检：卖出/批次数量一致，推定口径下盈利相同', async () => {
+  it('与 xlsx 首表互检：真实卖出/批次数量一致，真实日期决定自动分配', async () => {
     const buf = readFileSync(resolve(process.cwd(), 'tests/fixtures/26年网格记录.xlsx'))
     const xlsx = await parseWorkbook(new Uint8Array(buf))
     const xlsxLedger = buildLedger(xlsx.records, DEFAULT_STOCKS, { deriveSellPrice: true })
-    expect(xlsxLedger.sells).toHaveLength(ledger.sells.length)
+    expect(xlsxLedger.totals.sellCount).toBe(ledger.totals.sellCount)
     expect(xlsxLedger.lots).toHaveLength(ledger.lots.length)
-    expect(xlsxLedger.totals.profitCents).toBe(ledger.totals.profitCents)
+    expect(xlsxLedger.effectiveHedges).toHaveLength(1)
+    expect(ledger.effectiveHedges).toHaveLength(6)
     // 日期口径：xlsx 有 9 笔落在「未填日期」桶，CSV 全部有真日期
     expect(ledger.monthly.some((m) => m.dateMissing)).toBe(false)
     expect(xlsxLedger.monthly.some((m) => m.dateMissing)).toBe(true)

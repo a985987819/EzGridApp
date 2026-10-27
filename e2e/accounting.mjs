@@ -5,7 +5,7 @@
  *   node e2e/accounting.mjs http://127.0.0.1:5173
  */
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -204,6 +204,33 @@ try {
   await settle()
   v=await state()
   check('按计划成交200股后仍只欠300股',v.executions[0]?.qty===200&&v.executions[0]?.priceCents===550&&v.orders[0]?.remainingQty===300,JSON.stringify(v.orders))
+  // 用户确认的真实 CSV：导入、自动高位关联、同行回补与跨详情回本链。
+  const csv = readFileSync(join(process.cwd(),'tests/fixtures/26年网格记录-交易记录.csv'),'utf8')
+  await act(`await testApp.resetAll();const {parseCsvText}=await import('/src/io/parseWorkbook.ts');await testApp.commitImport(await parseCsvText(${JSON.stringify(csv)}),'交易记录.csv')`)
+  v=await state()
+  const csvState=await evaluate(`({roots:testApp.ledger.sells.filter(s=>s.sellBeforeBuy).map(s=>s.sourceRow),chains:testApp.ledger.repairChains.map(c=>({row:c.anchorRow,loss:c.lossCents,profit:c.profitCents})),pending:testApp.ledger.orders.filter(o=>o.sellFirst&&o.remainingQty>0).map(o=>[o.sourceRow,o.remainingQty,o.rebuyPriceCents]),own:testApp.ledger.sells.reduce((a,s)=>a+(s.ownLotCoverQty??0),0)})`)
+  check('真实CSV识别六笔先卖后买',JSON.stringify(csvState.roots)==='[40,57,60,61,62,63]',JSON.stringify(csvState))
+  check('真实CSV已回补2100股，仅剩500股@8.01',csvState.own===2100&&JSON.stringify(csvState.pending)==='[[60,500,801]]',JSON.stringify(csvState))
+  check('真实CSV初始亏损5176，未完成低位买卖不计回血',csvState.chains.filter(c=>csvState.roots.includes(c.row)).reduce((a,c)=>a+c.loss,0)===-517600&&csvState.chains.every(c=>c.profit===0),JSON.stringify(csvState.chains))
+  check('真实CSV全部守恒检查通过',v.checks.length===0,JSON.stringify(v.checks))
+  const cycleRows=await act(`const hi=await testApp.addManualRecord({kind:'buy',stockName:'T',date:'2026-10-20',price:'10',qty:'500'});const root=await testApp.addManualRecord({kind:'sell',stockName:'T',date:'2026-10-21',price:'7',qty:'500',rebuyPrice:'5'});const low=await testApp.addManualRecord({kind:'buy',stockName:'T',date:'2026-10-22',price:'5',qty:'500',targetPrice:'7'});await testApp.recordLotSales([{lotId:'lot:'+low,qty:500}],500,700,'2026-10-23');return [hi,root,low,testApp.records.find(r=>r.soldLotId==='lot:'+low)?.sourceRow]`)
+  // React 的快照要等动作重载后再读取新增子卖出。
+  cycleRows[3]=await evaluate(`testApp.records.find(r=>r.soldLotId==='lot:'+${cycleRows[2]})?.sourceRow`)
+  check('完成低位买卖后仅回血1000，实际仍亏500',await evaluate(`testApp.ledger.repairChains.some(c=>c.anchorRow===${cycleRows[1]}&&c.lossCents===-150000&&c.profitCents===100000&&c.netCents===-50000)`))
+  const ids=await evaluate(`(async()=>{const {buildNanoIdIndex}=await import('/src/ui/nanoid.ts');return Object.fromEntries(buildNanoIdIndex(testApp.records).rowToId)})()`)
+  await send('Page.reload');await settle()
+  for(const row of [40,29,60,7,62,...cycleRows]){
+    await send('Page.navigate',{url:BASE+'/#/trades?id='+ids[row]})
+    await settle()
+    if(row===cycleRows[1]){
+      check('自动归链仍保留行上的改挂入口',await click('[data-hedge="'+row+'"]'))
+      check('改挂弹层可见',await evaluate(`Boolean(document.querySelector('.hedge-modal [data-action="save-hedge"]'))`))
+      await evaluate(`document.querySelector('.hedge-modal [aria-label="关闭"]')?.click();[...document.querySelectorAll('.hedge-modal button')].find(b=>b.textContent.trim()==='关闭')?.click()`);await sleep(300)
+    }
+    await click('[data-row="'+row+'"]')
+    check('第'+row+'行详情能看到完整回本链',await evaluate(`Boolean(document.querySelector('[data-testid="chain-section"] .chain-card'))`))
+    if(row===29)check('高位第29行详情同时显示两条关联链',await evaluate(`document.querySelectorAll('[data-testid="chain-section"] .chain-card').length===2`))
+  }
   check('无浏览器运行时错误',problems.length===0,problems.join(' | '))
   const shot=await send('Page.captureScreenshot',{format:'png'})
   writeFileSync(join(OUT,'accounting-mobile.png'),Buffer.from(shot.data,'base64'))

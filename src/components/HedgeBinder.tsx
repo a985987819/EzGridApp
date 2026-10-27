@@ -1,18 +1,4 @@
-/**
- * 裸卖待挂钩（V9.30 抽出；口径 V9.26 决策 E，V9.33 部分买回，V9.36 永久了结）：
- * 把一笔还没回补的裸卖（先卖后买、没有买入批次的行），人工挂到该股票
- * **未完成买单**（= 还没卖完的买入批次）上。
- *
- * 挂上之后（纯派生，见 domain/ledger.ts）：
- *   - 被挂份额退出待卖，按（卖价 − 买价）把亏损记在被挂的买单行上；
- *   - 被挂那部分不再按 P 列算盈利（整笔都挂住时盈利才整笔「暂缓」）；
- *   - 敞口按差额收缩（挂住的股已经由那个买入批次交割了）。
- * **部分买回（V9.33）**：挂钩只作用在「还没买回」的股数上。
- * **买回的那截永久了结（V9.36）**：高位批次不再复活（否则 10 元批次 + 6 元回补批次
- *   会把同一批 500 股算成 1000 股待卖），亏损挂进「回本链」由低位做T的价差冲平。
- *
- * 面板里的几处提示（V9.33）：失效/截断的红条、缺成交价时拦保存、允许挂不满、自动挂满。
- */
+/** 先卖后买的高位成本关联；默认分配可人工改挂，已回补份额仍保留原始亏损。 */
 import { useEffect, useMemo, useState } from 'react'
 import { Button, Input, Modal, Tag, notificationOpen } from 'animal-island-ui'
 import { useApp } from '../store/useApp'
@@ -36,7 +22,7 @@ export function HedgeBinder({
   const sandboxMode = mode === 'sandbox'
   const ledger = sandboxMode ? app.sandboxLedger : app.ledger
   const records = sandboxMode ? app.sandboxPreviewRecords : app.records
-  const hedges = sandboxMode ? app.sandbox.hedges : app.hedges
+  const hedges = ledger.effectiveHedges
   const setHedgeLink = sandboxMode ? app.setSandboxHedge : app.setHedgeLink
   const clearHedgeLink = sandboxMode ? app.clearSandboxHedge : app.clearHedgeLink
   const rec = records.find((r) => r.sourceRow === sellRow) ?? null
@@ -46,11 +32,9 @@ export function HedgeBinder({
   const soldQty = rec?.soldQty ?? 0
   /** V9.57：只算基础股——奖励股是额外买入，不算「已买回」的欠量 */
   const execQty = order ? Math.max(0, order.execQty - order.doneRewardQty) : 0
-  /** 还需要挂的股数 = 卖出量 − 已买回（买回来的那截不参与挂钩） */
-  const required = Math.max(0, soldQty - execQty)
+  /** 关联原始卖出股数；回补只改变持仓，不撤销高位成本。 */
+  const required = soldQty
   const sellPrice = sell?.priceCents ?? rec?.targetPriceCents ?? null
-  /** 还能挂 / 改挂：确实是裸卖（没买入批次）、还剩没买回的股数 */
-  const editable = rec !== null && isHedgeable(rec, execQty)
   /** 这条挂钩现在有没有毛病（失效 / 超挂 / 挂不满）——异常由 ledger 给出，这里只显示 */
   const issues = ledger.anomalies.filter((a) => a.sourceRow === sellRow && a.kind.startsWith('hedge'))
 
@@ -58,15 +42,13 @@ export function HedgeBinder({
   const candidates = useMemo(() => {
     if (!rec) return []
     const own = new Map((link?.items ?? []).map((i) => [i.row, i.qty]))
-    const realSellRows = new Set(
-      ledger.sells.filter((s) => s.hedgedFromSellRow === undefined).map((s) => s.sourceRow),
-    )
     return ledger.lots
       .filter(
         (l) =>
           !l.id.startsWith('lot:exec:') && // 回补批次是虚拟批次，不当买单挂
           l.stockName === rec.stockName &&
-          !realSellRows.has(l.sourceRow), // 已经真实卖过的批次不算未完成
+          l.sourceRow !== sellRow &&
+          !ledger.sells.some((s) => s.sourceRow === l.sourceRow && s.sellBeforeBuy),
       )
       .map((l) => ({
         lot: l,
@@ -76,7 +58,7 @@ export function HedgeBinder({
       .filter((c) => c.available > 0)
       // 高位在前：先挂高买价的批次，亏得明白
       .sort((a, b) => b.lot.buyPriceCents - a.lot.buyPriceCents || a.lot.sourceRow - b.lot.sourceRow)
-  }, [rec, ledger.lots, ledger.sells, link])
+  }, [rec, ledger.lots, ledger.sells, link, sellRow])
 
   // 已存的分配回填到输入框；换行 / 挂钩结果变了就重置
   const [draft, setDraft] = useState<Record<number, string>>({})
@@ -130,7 +112,7 @@ export function HedgeBinder({
 
   async function save() {
     if (assigned === 0) {
-      // 全部清空 = 解除（不要写一条空挂钩进去）
+      // 清空写人工解除，后续重算不自动改挂。
       if (link) await clear()
       else notificationOpen({ message: '还没分配股数', description: '至少给一个买填股数', type: 'warning' })
       return
@@ -140,12 +122,12 @@ export function HedgeBinder({
       return
     }
     if (assigned > required) {
-      notificationOpen({ message: '挂多了', description: `最多挂没买回的 ${required} 股`, type: 'warning' })
+      notificationOpen({ message: '挂多了', description: `最多关联本笔卖出的 ${required} 股`, type: 'warning' })
       return
     }
     if (assigned < required && !allowPartial) {
       notificationOpen({
-        message: '合计不等于还没买回的股数',
+        message: '合计不等于卖出股数',
         description: `已分配 ${assigned} 股，还差 ${required - assigned} 股；只挂一部分请勾「允许挂不满」`,
         type: 'warning',
       })
@@ -166,7 +148,7 @@ export function HedgeBinder({
           assigned > 0
             ? sandboxMode
               ? `这 ${assigned} 股只记在沙盒预览里；点「记为成交」才转成真实挂钩`
-              : `这 ${assigned} 股记为亏损；买回后自动按未买回股数收缩`
+              : `这 ${assigned} 股按原高位成本结算；回补后仍保留亏损和回本链`
             : '没有分配任何股数，等于解除',
         type: 'success',
       })
@@ -186,20 +168,10 @@ export function HedgeBinder({
     }
   }
 
-  if (!rec || rec.buyPriceCents !== null || soldQty <= 0) {
+  if (!rec || !isHedgeable(rec, execQty)) {
     return (
       <p className="tiny muted" style={{ margin: 0 }}>
-        这行不是裸卖（有买入批次），不需要挂钩。
-      </p>
-    )
-  }
-
-  if (!editable) {
-    return (
-      <p className="tiny muted" style={{ margin: 0 }}>
-        这笔卖的 {qty(soldQty)} 股已经全部买回来了：挂钩按规则<b>永久了结</b>——被挂的高位批次
-        不再回到待卖（它的股份已经在卖出价上兑现），亏损挂进下面的「回本链」，由低位继续做T
-        的价差逐轮冲平。撤销这笔回补成交 / 改回裸卖会自动恢复挂住状态。
+        这行不是先卖后买，不需要挂钩。
       </p>
     )
   }
@@ -218,11 +190,11 @@ export function HedgeBinder({
       <p className="tiny muted" style={{ margin: '0 0 8px' }}>
         {sandboxMode ? '沙盒预演：' : ''}选还没卖完的买单，把这笔卖的 <b>{qty(required)} 股</b>（
         {price(sellPrice)} 卖出
-        {execQty > 0 ? `，已买回 ${qty(execQty)} 股不参与` : ''}）算到它头上：
+        {execQty > 0 ? `，已回补 ${qty(execQty)} 股` : ''}）算到它头上：
         被挂份额退出待卖、按（卖价 − 买价）记为亏损。
         {sandboxMode
           ? '只影响概览预览，点「记为成交」才会写进明细。'
-          : '买回一部分就按没买回的股数自动收缩，全买回即彻底解除，先卖 + 后买回归成一笔正常完成的订单。'}
+          : '默认已按卖出日期分配最高价剩余买单；可在这里改挂。买回后的高位亏损仍留在链中，后续完成网格交易再抵减。'}
       </p>
 
       {sellPrice === null && (
@@ -297,7 +269,7 @@ export function HedgeBinder({
         </Button>
         {link && (
           <Button size="small" danger onClick={() => void clear()}>
-            解除挂钩
+            解除并停止自动关联
           </Button>
         )}
       </div>
@@ -318,7 +290,7 @@ export function HedgeSheet({
   return (
     <Modal
       open={sellRow !== null}
-      title={mode === 'sandbox' ? '沙盒挂钩预演' : '裸卖待挂钩'}
+      title={mode === 'sandbox' ? '沙盒挂钩预演' : '先卖后买 · 高位关联'}
       typewriter={false}
       className="hedge-modal"
       onClose={onClose}

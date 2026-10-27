@@ -69,21 +69,20 @@ describe('可挂判定（V9.32：与有没有待买订单解耦；V9.33：部分
     expect(isHedgeable({ buyPriceCents: null, soldQty: 0 }, 0)).toBe(false)
     // 买回了一部分：剩下的还能挂
     expect(isHedgeable({ buyPriceCents: null, soldQty: 500 }, 100)).toBe(true)
-    // 全部买回 → 挂钩自动解除，不再给入口
-    expect(isHedgeable({ buyPriceCents: null, soldQty: 500 }, 500)).toBe(false)
+    // 全部买回仍可改挂原始高位成本
+    expect(isHedgeable({ buyPriceCents: null, soldQty: 500 }, 500)).toBe(true)
   })
 })
 
 describe('先卖后买挂钩（V9.26）', () => {
-  it('不挂钩时维持原口径：裸卖计敞口、自身按 P 列成本记账', () => {
+  it('默认按最高价未完成买单关联，记录真实亏损而非计划回补价差', () => {
     const led = buildLedger(records(), [STOCK])
-    const order = led.orders.find((o) => o.sourceRow === 3)
-    expect(order?.exposure).toBe(true)
-    expect(led.totals.exposureQty).toBe(500)
-    // 裸卖盈利 =（7 − 6.5）× 500 = +250 元
-    expect(led.sells.find((s) => s.sourceRow === 3)?.profitCents).toBe(25000)
-    expect(led.totals.profitCents).toBe(25000)
-    expect(led.lots.find((l) => l.sourceRow === 2)?.remainingQty).toBe(500)
+    expect(led.orders.find((o) => o.sourceRow === 3)?.exposure).toBe(false)
+    expect(led.totals.exposureQty).toBe(0)
+    expect(led.sells.find((s) => s.sourceRow === 3)?.profitCents).toBeNull()
+    expect(led.totals.profitCents).toBe(-150000)
+    expect(led.lots.find((l) => l.sourceRow === 2)?.remainingQty).toBe(0)
+    expect(led.repairChains[0]).toMatchObject({ anchorRow: 3, lossCents: -150000 })
   })
 
   it('挂钩期间：批次暂记卖出、负盈利进合计、裸卖盈利暂缓、敞口清零、守恒式全绿', () => {
@@ -296,8 +295,8 @@ describe('先卖后买挂钩（V9.26）', () => {
     const partial: HedgeLink = { id: 'hedge:3', sellRow: 3, items: [{ row: 2, qty: 300 }], at: 0 }
     const led = buildLedger(records(), [STOCK], { hedges: [partial] })
     expect(led.lots.find((l) => l.sourceRow === 2)?.remainingQty).toBe(200)
-    // 没挂的 200 股照旧按 P 列：(7−6.5)×200 = +100
-    expect(led.sells.find((s) => s.sourceRow === 3)?.profitCents).toBe(10000)
+    // 没挂的 200 股也不能按 P 列预记盈利
+    expect(led.sells.find((s) => s.sourceRow === 3)?.profitCents).toBeNull()
     expect(led.sells.find((s) => s.sourceRow === 3)?.hedgedHold).toBeUndefined()
     expect(led.anomalies.some((a) => a.kind === 'hedgeMismatch')).toBe(true)
     expect(led.totals.exposureQty).toBe(200)

@@ -276,6 +276,8 @@ export interface RepairBranch {
  * 链在首次亏损清仓时就成立——一直不买回，原始亏损也留在账上。
  */
 export interface RepairChain {
+  /** 尚未找到高位成本的卖出份额；不能把未知亏损显示成已回本。 */
+  unlinkedQty?: number
   id: string
   stockName: string
   /** 锚点行：这次亏损清仓对应的买入批次 */
@@ -487,6 +489,8 @@ export interface CheckResult {
 }
 
 export interface Ledger {
+  /** 人工覆盖 + 自动最高价分配的有效关联，仅派生，不落库。 */
+  effectiveHedges: HedgeLink[]
   lots: Lot[]
   sells: SellExecution[]
   targets: SellTarget[]

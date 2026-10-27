@@ -124,12 +124,12 @@ describe('沙盒条目的预览行', () => {
 })
 
 describe('沙盒预演先卖后买挂钩', () => {
-  it('不挂时：模拟裸卖自己按 P 列盈利，最高卖价不变', () => {
+  it('未指定时自动挂到高位买单，模拟亏损和真实口径一致', () => {
     const led = buildLedger([lot(), ...sandboxRecords([sellItem()])], [STOCK])
-    expect(led.byStock[0].targetMaxPriceCents).toBe(1100)
+    expect(led.byStock[0].targetMaxPriceCents).toBeNull()
     // (9.00 − 8.00) × 500 = +500
-    expect(led.totals.profitCents).toBe(50000)
-    expect(led.totals.exposureQty).toBe(500)
+    expect(led.totals.profitCents).toBe(-50000)
+    expect(led.totals.exposureQty).toBe(0)
   })
 
   it('挂到 10 元批次后：批次退出待卖、最高卖价消失、已实现变成暂记亏损', () => {

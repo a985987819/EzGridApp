@@ -33,8 +33,8 @@ describe('真实文件 dry-run：8 个基准数（文档 §03 / S2 验收）', (
     expect(Math.abs(ledger.totals.sellAmountCents - BASELINE.sellAmountCents)).toBeLessThanOrEqual(100)
   })
 
-  it('实现盈利 ¥9,830（文档 ¥9,831，R44 缺 E 不入池）', () => {
-    expect(ledger.totals.profitCents).toBe(983000)
+  it('新口径实现盈利 ¥7,970：先卖后买不预记价差、高位卖出记亏', () => {
+    expect(ledger.totals.profitCents).toBe(797000)
     expect(Math.abs(ledger.totals.profitCents - BASELINE.profitCents)).toBeLessThanOrEqual(100)
   })
 
@@ -45,14 +45,14 @@ describe('真实文件 dry-run：8 个基准数（文档 §03 / S2 验收）', (
     }
   })
 
-  it('待卖 29 条 / 15,200 股 / ¥202,284 / 预期收益 ¥12,515', () => {
+  it('待卖 30 条 / 15,200 股 / ¥201,924 / 预期收益 ¥12,575', () => {
     expect(ledger.totals.targetCount).toBe(BASELINE.targetCount)
     expect(ledger.totals.targetQty).toBe(BASELINE.targetQty)
     expect(ledger.totals.targetAmountCents).toBe(BASELINE.targetAmountCents)
     expect(ledger.totals.expectProfitCents).toBe(BASELINE.expectProfitCents)
   })
 
-  it('待买 4 条 / 2,100 股（含奖励 100 股）/ ¥16,601', () => {
+  it('待买 4 条 / 2,000 股（未成交价差不产生奖励）/ ¥15,820', () => {
     expect(ledger.totals.rebuyCount).toBe(BASELINE.rebuyCount)
     expect(ledger.totals.rebuyBaseQty).toBe(BASELINE.rebuyBaseQty)
     expect(ledger.totals.rewardQty).toBe(BASELINE.rewardQty)
@@ -76,7 +76,7 @@ describe('真实文件 dry-run：8 个基准数（文档 §03 / S2 验收）', (
 describe('规则落地细节', () => {
   it('D2：33 笔历史卖出里只有 4 笔生成待买', () => {
     expect(ledger.sells.filter((s) => s.rebuyStatus === 'pending')).toHaveLength(4)
-    expect(ledger.sells.filter((s) => s.rebuyStatus === 'repaid')).toHaveLength(29)
+    expect(ledger.sells.filter((s) => s.hedgedFromSellRow === undefined && s.rebuyStatus === 'repaid')).toHaveLength(29)
   })
 
   it('待买回补价取 P 列：8.01 / 7.71 / 8.11 / 7.81', () => {
@@ -84,14 +84,14 @@ describe('规则落地细节', () => {
     expect(prices).toEqual([771, 781, 801, 811])
   })
 
-  it('7.81 组 1 手 100 股挂给 R63（不是已回补的 R46）', () => {
+  it('7.81 组只有真实盈利 ¥560，不靠 R63 计划价差凑奖励', () => {
     const r63 = ledger.orders.find((o) => o.sourceRow === 63)
-    expect(r63?.rewardQty).toBe(100)
+    expect(r63?.rewardQty).toBe(0)
     const r46Reward = ledger.orders.filter((o) => o.sourceRow === 46)
     expect(r46Reward).toHaveLength(0)
     const pool = ledger.groups.find((g) => g.groupKey === 'stock:柳工|781')
-    expect(pool?.grossProfitCents).toBe(99500)
-    expect(pool?.capacityHands).toBe(1)
+    expect(pool?.grossProfitCents).toBe(56000)
+    expect(pool?.capacityHands).toBe(0)
   })
 
   it('其余 3 组 0 手', () => {

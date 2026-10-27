@@ -8,6 +8,7 @@ import { deriveBuyQty } from './qty'
 import { deriveRebuyPrice } from './manual'
 import { serialToIso, stockIdOf } from './defaults'
 import { buildRepairChains } from './chain'
+import { defaultHedges, isSellFirst } from './sellFirst'
 import { coverOfSell, type SellCover } from './cover'
 import { type Anomaly, type BuySplit, type ExtraBuyTarget, type ExtraTarget, type HedgeLink, type RebuyExecution, type TradePlan, type CheckResult, type GroupPool, type Ledger, type Lot, type DayBucket, type MonthlyBucket, type RawRecord, type RebuyOrder, type RepairChainLink, type SellExecution, type SellTarget, type StockConfig, type StockSummary } from './types'
 
@@ -114,9 +115,11 @@ export function buildLedger(
     const soldAt = serialToIso(r.sellDateSerial)
     const isLot = !r.soldLotId && r.buyPriceCents !== null && qty !== null && qty > 0
     const isSell = soldQty > 0
+    const sellFirst = isSellFirst(r)
 
     if (isLot) {
-      const rem = Math.max(0, qty! - soldQty)
+      const lotSoldQty = sellFirst ? 0 : soldQty
+      const rem = Math.max(0, qty! - lotSoldQty)
       const lot: Lot = {
         id: `lot:${r.sourceRow}`,
         sourceRow: r.sourceRow,
@@ -125,7 +128,7 @@ export function buildLedger(
         buyDate,
         buyPriceCents: r.buyPriceCents!,
         qty: qty!,
-        soldQty,
+        soldQty: lotSoldQty,
         remainingQty: rem,
         targetPriceCents: target,
         needsPrice: target === null,
@@ -133,7 +136,7 @@ export function buildLedger(
       }
       lots.push(lot)
       // 超卖：卖出量超过批次量，超出部分没有批次对应——标出来让用户知道
-      if (soldQty > qty!) {
+      if (!sellFirst && soldQty > qty!) {
         anomalies.push({
           kind: 'oversell',
           sourceRow: r.sourceRow,
@@ -156,13 +159,9 @@ export function buildLedger(
       const cost = r.soldLotId ? lotCost(r.soldLotId) : r.buyPriceCents ?? r.earlyBuyPriceCents
       const price = target
       const costComplete = cost !== null && price !== null
-      const profit = costComplete ? mulCents(price! - cost!, soldQty) : null
+      const profit = !sellFirst && costComplete ? mulCents(price! - cost!, soldQty) : null
       // D4：有日期就比较；无买入批次（先卖后买）同样置 sellBeforeBuy
-      const sellBeforeBuy =
-        (r.buyDateSerial !== null &&
-          r.sellDateSerial !== null &&
-          r.sellDateSerial < r.buyDateSerial) ||
-        (r.buyPriceCents === null && soldQty > 0)
+      const sellBeforeBuy = sellFirst
       /**
        * V9.47.1 用户口径：先卖后买**允许卖出日期早于买入日期**，闭环只看份额——
        * 卖出日 ≤ 买入日（A股 T+1，当日买的不能当日卖，所以同日也只可能是先卖后买）时，
@@ -175,12 +174,14 @@ export function buildLedger(
       const needRebuyQty = Math.max(0, soldQty - ownLotCoverQty)
       const groupKey = cost !== null ? groupKeyOf(stockId, cost) : null
       /**
-       * V9.49：回补价提前在这里定好（P 列 > 裸卖的推导价 = 卖出价 − 该股间隔）。
+       * 回补价提前统一确定：P 列 > 同行已确认实际回补价 > 卖出价 − 该股间隔。
        * 回本链的「价位槽」靠它认「同股、同价买入」，待买单也复用它，口径只算一次。
        */
       const nakedRebuyPrice =
-        !isLot && !r.soldLotId && r.rebuyPriceSource !== 'repaid' ? deriveRebuyPrice(r, interval).cents : null
-      const rebuyPriceCents = r.earlyBuyPriceCents ?? nakedRebuyPrice
+        sellFirst && r.rebuyPriceSource !== 'repaid'
+          ? deriveRebuyPrice({ ...r, buyPriceCents: ownLotCoverQty > 0 ? r.buyPriceCents : null }, interval).cents
+          : null
+      const rebuyPriceCents = r.earlyBuyPriceCents ?? (sellFirst && ownLotCoverQty > 0 ? r.buyPriceCents : null) ?? nakedRebuyPrice
 
       const sell: SellExecution = {
         id: `sell:${r.sourceRow}`,
@@ -198,10 +199,10 @@ export function buildLedger(
         rebuyPriceCents,
         ownLotCoverQty,
         sellBeforeBuy,
-        groupKey,
+        groupKey: sellFirst && rebuyPriceCents !== null ? groupKeyOf(stockId, rebuyPriceCents) : groupKey,
         costComplete,
         // §7.1：卖出挂回买入批次；先卖后买（无批次）留 null
-        lotId: r.soldLotId ?? (isLot ? `lot:${r.sourceRow}` : null),
+        lotId: r.soldLotId ?? (isLot && !sellFirst ? `lot:${r.sourceRow}` : null),
         // 自动目标在下面生成后再回填
         targetId: null,
       }
@@ -232,7 +233,7 @@ export function buildLedger(
           stockName: r.stockName,
           detail: '缺目标售价（E 列公式已损坏），盈利无法计算，不入组池',
         })
-      } else if (cost === null) {
+      } else if (cost === null && !sellFirst) {
         anomalies.push({
           kind: 'needsCost',
           sourceRow: r.sourceRow,
@@ -267,7 +268,7 @@ export function buildLedger(
   // 对得上（否则 10 元批次复活 + 6 元回补批次会双算成 1000 股）。了结的亏损进
   // 「回本链」，由低位继续做T的价差逐轮冲平。
   // V9.32 起按挂单时间（at）先后应用，抢同一批次股数时先挂先占。
-  const hedgeLinks = (opts.hedges ?? []).slice().sort((a, b) => (a.at ?? 0) - (b.at ?? 0))
+  const hedgeLinks = defaultHedges(live, lots, sells, opts.hedges ?? [])
   const sellByRow = new Map(sells.map((s) => [s.sourceRow, s]))
   const lotByRow = new Map(lots.map((l) => [l.sourceRow, l]))
   const hedgeUsedByLot = new Map<number, number>()
@@ -275,15 +276,17 @@ export function buildLedger(
   const hedgeAppliedByRow = new Map<number, number>()
   /** V9.36 每张裸卖「已回补所以永久了结」的股数（不再往待卖里灌重复股） */
   const hedgeClosedByRow = new Map<number, number>()
+  const childSalesByLot = new Map<string, number>()
+  for (const r of live) if (r.soldLotId && reachable.has(r.sourceRow)) childSalesByLot.set(r.soldLotId, (childSalesByLot.get(r.soldLotId) ?? 0) + (r.soldQty ?? 0))
   for (const h of hedgeLinks) {
     const rec = byRow.get(h.sellRow)
     const naked =
-      rec && !rec.soldLotId && rec.buyPriceCents === null && (rec.soldQty ?? 0) > 0 ? sellByRow.get(h.sellRow) : undefined
+      rec && isSellFirst(rec) ? sellByRow.get(h.sellRow) : undefined
     if (!rec || !naked) continue // 行没了 / 不是裸卖 → 挂钩失效
     // 还没买回的股数 = 卖出量 − 已回补量：这部分还能挂；买回光了就整笔永久了结（V9.36）
     const execs = execByOrder.get(`rb:${naked.id}`) ?? []
     const execQty = execs.reduce((a, e) => a + e.qty - e.rewardQty, 0)
-    const unrepaid = Math.max(0, naked.qty - execQty)
+    const unrepaid = Math.max(0, naked.qty - (naked.ownLotCoverQty ?? 0) - execQty)
     if (naked.priceCents === null) {
       anomalies.push({
         kind: 'hedgeInvalid',
@@ -303,7 +306,7 @@ export function buildLedger(
       if (applied >= naked.qty) break // 配额上限是这笔卖的全部股数
       const lot = lotByRow.get(it.row)
       const lotRec = lot ? byRow.get(it.row) : undefined
-      if (!lot || !lotRec || lot.stockName !== rec.stockName || (lotRec.soldQty ?? 0) > 0) {
+      if (!lot || !lotRec || lot.sourceRow === h.sellRow || lot.stockName !== rec.stockName || isSellFirst(lotRec)) {
         anomalies.push({
           kind: 'hedgeInvalid',
           sourceRow: h.sellRow,
@@ -316,7 +319,7 @@ export function buildLedger(
       // V9.32 修 bug：lot.remainingQty 在前面每挂一条时已经被扣过，这里不能再减 hedgeUsedByLot，
       // 否则第二张裸卖挂同一批次时可用量被重复扣减（500 股的批次挂 200+300 会只挂上 300）。
       const used = hedgeUsedByLot.get(it.row) ?? 0
-      const lotCap = Math.max(0, lot.remainingQty)
+      const lotCap = Math.max(0, lot.remainingQty - (childSalesByLot.get(lot.id) ?? 0))
       const sellCap = Math.max(0, naked.qty - applied)
       const q = Math.min(Math.floor(it.qty), lotCap, sellCap)
       // 只有「被批次剩余卡住」才算超挂；因为已买回而被削到剩下的股数属于正常，不报异常
@@ -389,11 +392,11 @@ export function buildLedger(
       }
     }
     if (applied > 0) {
-      // 被挂的那部分不再按 P 列算盈利；没挂的照旧按 P 列结算。
+      // 高位交割计亏损；根先卖单不按计划回补价预记盈利。
       // 整笔都挂住 → 盈利整笔暂缓（profitCents = null，行上显示「暂缓」）。
       const plain = naked.qty - applied
       const cost = naked.costCents
-      naked.profitCents =
+      naked.profitCents = naked.sellBeforeBuy ? null :
         plain > 0 && cost !== null && naked.priceCents !== null ? mulCents(naked.priceCents - cost, plain) : null
       naked.hedgedHold = plain > 0 ? undefined : true
       hedgeAppliedByRow.set(h.sellRow, applied)
@@ -515,6 +518,7 @@ export function buildLedger(
     sells,
     executions: scopedExecs,
     links: opts.chainLinks ?? [],
+    legacyHedgeRows: (opts.hedges ?? []).map((h) => h.sellRow),
   })
   const repairChains = chainBuild.chains
 
@@ -544,7 +548,7 @@ export function buildLedger(
     sell.rebuyStatus = cover.pending ? 'pending' : 'repaid'
   }
 
-  // R2 待买：只认 P 列（D3）。baseQty 0（被同价真实买入盖满）不再生成幽灵订单；
+  // R2 待买：使用统一的回补价优先级。baseQty 0（被同价真实买入盖满）不再生成幽灵订单；
   // 已回补完的订单保留成 closed，历史/奖励（doneRewardQty）还要看得见。
   const orders: RebuyOrder[] = []
   for (const sell of sells) {
@@ -642,10 +646,7 @@ export function buildLedger(
     rebuyRemainingQty: sumBy(orders, (o) => o.remainingQty),
     netQty: 0,
     // 只算真空头敞口：cover 已把本行买入 / 成交 / 同价真实买入 / 挂钩交割全部扣掉
-    exposureQty: sumBy(
-      orders.filter((o) => o.exposure),
-      (o) => covers.get(o.sourceRow)?.openExposureQty ?? 0,
-    ),
+    exposureQty: sumBy([...covers.values()], (c) => c.openExposureQty),
   }
   // 回补批次已在 Σ买入 里，净持仓 = Σ买入 − Σ卖出
   totals.netQty = totals.buyQty - totals.sellQty
@@ -740,6 +741,7 @@ export function buildLedger(
     checks,
     totals,
     repairChains,
+    effectiveHedges: hedgeLinks,
   }
 }
 
@@ -970,10 +972,7 @@ function summarizeByStock(
       rebuyQty: sumBy(os, (o) => o.baseQty + o.rewardQty),
       // 与 totals 同口径：lots 已含回补批次（虚拟批次），净持仓 = Σ买入 − Σ卖出
       netQty: sumBy(ls, (l) => l.qty) - sumBy(real, (s) => s.qty),
-      exposureQty: sumBy(
-        os.filter((o) => o.exposure),
-        (o) => covers.get(o.sourceRow)?.openExposureQty ?? 0,
-      ),
+      exposureQty: sumBy(real, (s) => covers.get(s.sourceRow)?.openExposureQty ?? 0),
     }
   })
 }

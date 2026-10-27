@@ -360,7 +360,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       plans,
       extraTargets,
       buyTargets,
-      hedges: sandbox.hedges.length ? [...hedges, ...sandbox.hedges] : hedges,
+      hedges: sandbox.hedges.length ? [...hedges.filter((h) => !sandbox.hedges.some((x) => x.sellRow === h.sellRow)), ...sandbox.hedges] : hedges,
       chainLinks,
     })
   }, [
@@ -574,7 +574,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
        * `continue`，挂账凭空消失、盈利从「暂缓」变回按 P 列结算——账面静默变，用户完全察觉不到。
        * 和「先撤销后续成交」一个道理：先把依赖解掉。
        */
-      const hedgeHit = (await db.hedges.toArray()).find((h) => h.items.some((it) => it.row === sourceRow))
+      const hedgeHit = (await currentLedger()).ledger.effectiveHedges.find((h) => h.items.some((it) => it.row === sourceRow))
       if (hedgeHit) {
         const held = hedgeHit.items.filter((it) => it.row === sourceRow).reduce((a, it) => a + it.qty, 0)
         const label = recordNoLabel(hedgeHit.sellRow, buildRecordNoIndex(allRows))
@@ -586,7 +586,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       })
       await reloadRecords()
     },
-    [reloadRecords],
+    [reloadRecords, currentLedger],
   )
 
   const restore = useCallback(
@@ -876,24 +876,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const clearHedgeLink = useCallback(
     async (sellRow: number) => {
-      const prev = await db.hedges.get(`hedge:${sellRow}`)
+      const prev = (await currentLedger()).ledger.effectiveHedges.find((h) => h.sellRow === sellRow)
       await db.transaction('rw', db.hedges, db.auditLogs, async () => {
-        await db.hedges.delete(`hedge:${sellRow}`)
-        if (prev) {
-          await db.auditLogs.add(
+        // 空关联是明确的人工解除，避免重算时又自动挂回最高价批次。
+        await db.hedges.put({ id: `hedge:${sellRow}`, sellRow, items: [], at: Date.now() })
+        await db.auditLogs.add(
             audit(
               `record:${sellRow}`,
               '解除挂钩',
-              prev.items.map((i) => `第${i.row}行×${i.qty}`).join(' + '),
+              (prev?.items ?? []).map((i) => `第${i.row}行×${i.qty}`).join(' + '),
               '',
               'hedge',
             ),
-          )
-        }
+        )
       })
       setHedges(await db.hedges.toArray())
     },
-    [],
+    [currentLedger],
   )
 
   const setSandboxActive = useCallback((active: boolean) => {
@@ -1083,7 +1082,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       setSandbox((s) => {
         const rest = s.hedges.filter((h) => h.sellRow !== sellRow)
-        if (items.length === 0) return { ...s, hedges: rest }
         return {
           ...s,
           hedges: [...rest, { id: `sandbox-hedge:${sellRow}`, sellRow, items, at: Date.now() }],
@@ -1094,7 +1092,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   )
 
   const clearSandboxHedge = useCallback((sellRow: number) => {
-    setSandbox((s) => ({ ...s, hedges: s.hedges.filter((h) => h.sellRow !== sellRow) }))
+    setSandbox((s) => ({ ...s, hedges: [...s.hedges.filter((h) => h.sellRow !== sellRow), { id: `sandbox-hedge:${sellRow}`, sellRow, items: [], at: Date.now() }] }))
   }, [])
 
   const clearSandbox = useCallback(() => {

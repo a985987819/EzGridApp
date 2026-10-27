@@ -22,9 +22,10 @@ describe('真实文件的日期完整性', () => {
   })
 
   it('卖出日期：24 笔有真实日期，9 笔是 =TODAY() 公式且工作簿没存计算结果', () => {
-    const withDate = ledger.sells.filter((s) => s.soldAt !== null)
-    const missing = ledger.sells.filter((s) => s.soldAt === null).map((s) => s.sourceRow)
-    expect(ledger.sells).toHaveLength(33)
+    const realSells = ledger.sells.filter((s) => s.hedgedFromSellRow === undefined)
+    const withDate = realSells.filter((s) => s.soldAt !== null)
+    const missing = realSells.filter((s) => s.soldAt === null).map((s) => s.sourceRow)
+    expect(realSells).toHaveLength(33)
     expect(withDate).toHaveLength(24)
     // 这 9 行是「填了实现份数、卖出日期用 TODAY() 自动填」的写法，文件里没有缓存值
     expect(missing).toEqual([46, 47, 49, 50, 57, 60, 61, 62, 63])

@@ -158,7 +158,7 @@ describe('真实文件上的编辑', () => {
     const r44 = parsed.records.find((r) => r.sourceRow === 44)!
     expect(r44).toBeTruthy()
     const before = buildLedger(parsed.records, DEFAULT_STOCKS)
-    expect(before.totals.profitCents).toBe(983000)
+    expect(before.totals.profitCents).toBe(797000)
 
     const fixed = applyEdits(r44, { targetPrice: '19.88' })
     expect(fixed.errors).toHaveLength(0)
@@ -166,7 +166,7 @@ describe('真实文件上的编辑', () => {
       parsed.records.map((r) => (r.sourceRow === 44 ? fixed.record : r)),
       DEFAULT_STOCKS,
     )
-    expect(after.totals.profitCents).toBe(983000 + 32100)
+    expect(after.totals.profitCents).toBe(797000 + 32100)
     for (const c of after.checks) expect(c.ok, `${c.name}: ${c.actual}`).toBe(true)
   })
 

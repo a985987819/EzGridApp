@@ -26,7 +26,7 @@ export function RepairChainCard({
       <div className="chain-head">
         <strong>回本链</strong>
         <Tag size="small" variant="soft" color={chain.done ? 'app-green' : 'app-yellow'}>
-          {chain.done ? '已不亏钱' : `还差 ${money(chain.gapCents)}`}
+          {chain.unlinkedQty ? `待关联高位买单 · ${qty(chain.unlinkedQty)} 股` : chain.done ? '已不亏钱' : `还差 ${money(chain.gapCents)}`}
         </Tag>
         {chain.closedByUserAt !== null && (
           <Tag size="small" variant="soft" color="default">
@@ -35,20 +35,20 @@ export function RepairChainCard({
         )}
         <div className="spacer" />
         <span className="tiny muted">
-          高位 {price(chain.anchorCostCents)} × {qty(chain.anchorQty)}
+          {chain.unlinkedQty === chain.anchorQty ? '高位成本待关联' : <>高位 {price(chain.anchorCostCents)} × {qty(chain.anchorQty - (chain.unlinkedQty ?? 0))}</>}
         </span>
       </div>
 
       <p className="tiny muted chain-line">
         {rowLabel(chain.anchorRow)}
-        {chain.closedAtCents !== null && <> 已于 <b>{price(chain.closedAtCents)}</b> 卖出了结</>}；
+        {chain.closedAtCents !== null && <> 已于 <b>{price(chain.closedAtCents)}</b> 卖出</>}；
         之后归属它的交易每实现一笔净盈利就往这里累加，一直不买回这笔亏损也留在账上。
       </p>
 
       <div className="chain-nums">
         <div className="chain-num">
-          <span className="tiny muted">原始亏损</span>
-          <b className="num down">{signedMoney(chain.lossCents)}</b>
+          <span className="tiny muted">{chain.unlinkedQty ? '已关联部分亏损' : '原始亏损'}</span>
+          <b className="num down">{chain.unlinkedQty === chain.anchorQty ? '待确定' : signedMoney(chain.lossCents)}</b>
         </div>
         <div className="chain-num">
           <span className="tiny muted">后续净盈利</span>
@@ -56,11 +56,11 @@ export function RepairChainCard({
         </div>
         <div className="chain-num">
           <span className="tiny muted">链累计盈亏</span>
-          <b className={`num ${tone(chain.netCents)}`}>{signedMoney(chain.netCents)}</b>
+          <b className={`num ${tone(chain.netCents)}`}>{chain.unlinkedQty ? '待补全成本' : signedMoney(chain.netCents)}</b>
         </div>
         <div className="chain-num">
           <span className="tiny muted">还差多少</span>
-          <b className="num">{chain.done ? '已不亏钱' : money(chain.gapCents)}</b>
+          <b className="num">{chain.unlinkedQty ? '待补全成本' : chain.done ? '已不亏钱' : money(chain.gapCents)}</b>
         </div>
       </div>
 

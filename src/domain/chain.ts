@@ -7,8 +7,8 @@
  *        先卖后买被高位批次「了结」的那一截，同样按了结卖出建链（沿用 V9.36 的入口）。
  *   价位槽（V9.49 用户拍板）：链之后同股、**同卖出价**的裸卖单（先卖后买订单）自动挂回这条链，
  *        按它们的 P 列（回补价）各开一个槽；之后所有同股、**买入价正好等于这一档**的买入
- *        （回补成交、明细新增、导入导入）都自动进这个槽，盈亏一路累加——全自动，不手动勾。
- *        根裸卖的盈利按 P 列（空头回补）计，槽内买入批次的盈利按它们自己卖出时计，各算一次不重复。
+ *        （回补成交、明细新增、导入）都自动进这个槽，盈亏一路累加——全自动，不手动勾。
+ *        先卖订单不按计划回补价预记盈利；槽内批次按后续完成的同价网格卖出累计。
  *   进度：只累计**已经完成的买卖净盈利**；买回没卖只算持仓。
  *        「回补节省」只展示，绝不再计一次（否则会双算）。
  *   人工归属（V9.46）保留：chainLinks.memberRows 优先于自动槽，可以显式控制。
@@ -38,6 +38,8 @@ interface Seed {
   lossCents: number
   relatedSellRows: number[]
   sells: SellExecution[]
+  sellFirst?: boolean
+  unlinkedQty?: number
 }
 
 /** 价位槽：链下一档回补价位（P 列），根是「同价再卖」的裸卖单 */
@@ -52,6 +54,7 @@ interface PriceSlot {
   date: string | null
   /** 用户结束这条链的本地日期（ISO）；之后的再卖 / 买入不再自动归进来 */
   endedIso: string | null
+  sellPrices: number[]
 }
 
 function sum<T>(arr: readonly T[], f: (x: T) => number): number {
@@ -128,11 +131,12 @@ function branchOf(
   }
 }
 
-/** 锚点：亏着清仓的真实批次 / 被先卖后买永久了结的批次 */
+/** 历史锚点：亏损真实批次 / 已存人工挂钩的高位批次 */
 function collectSeeds(
   lots: readonly Lot[],
   sellsByLot: Map<string, SellExecution[]>,
   memberOwner: Map<number, RepairChainLink>,
+  rootRows: Set<number>,
 ): Map<number, Seed> {
   const seeds = new Map<number, Seed>()
   for (const lot of lots) {
@@ -140,7 +144,7 @@ function collectSeeds(
     if (lot.id !== `lot:${lot.sourceRow}`) continue
     // 这笔已经归属到别的链 → 它的盈亏只算一次，不再单独成链
     if (memberOwner.has(lot.sourceRow)) continue
-    const related = sellsByLot.get(lot.id) ?? []
+    const related = (sellsByLot.get(lot.id) ?? []).filter((s) => s.hedgedFromSellRow === undefined || !rootRows.has(s.hedgedFromSellRow))
     if (related.length === 0) continue
     const qty = sum(related, (s) => s.qty)
     const lossCents = sum(related, (s) => s.profitCents ?? 0)
@@ -193,8 +197,9 @@ function collectPriceSlots(opts: {
   memberOwner: Map<number, RepairChainLink>
   anchorRows: Set<number>
   linkByAnchor: Map<number, RepairChainLink>
+  rootOwner: Map<number, number>
 }): { slots: PriceSlot[]; autoLotIds: Set<string>; realCoverBySell: Map<number, number>; pending: Map<number, number> } {
-  const { seeds, lots, sells, executions, memberOwner, anchorRows, linkByAnchor } = opts
+  const { seeds, lots, sells, executions, memberOwner, anchorRows, linkByAnchor, rootOwner } = opts
   const slots: PriceSlot[] = []
   const autoLotIds = new Set<string>()
   /** 每笔裸卖被「同价真实买入」覆盖的股数（不含回补成交虚拟批次） */
@@ -226,12 +231,12 @@ function collectPriceSlots(opts: {
 
   for (const s of sells) {
     if (s.lotId !== null || s.hedgedFromSellRow !== undefined) continue
-    if (hedgedRows.has(s.sourceRow)) continue
+    if (hedgedRows.has(s.sourceRow) && !rootOwner.has(s.sourceRow)) continue
     if (s.priceCents === null) continue
-    // 回补价位：P 列 > 卖出价 − 该股间隔（ledger 在生成 sell 时已经算好）
+    // 回补价位：P 列 > 同行实际回补价 > 卖出价 − 该股间隔（ledger 在生成 sell 时已经算好）
     const price = s.rebuyPriceCents ?? s.costCents
     if (price === null || price <= 0) continue
-    const seed = chainsByDate.find((x) => {
+    const seed = seeds.get(rootOwner.get(s.sourceRow) ?? -1) ?? chainsByDate.find((x) => {
       if (x.stockName !== s.stockName) return false
       // V9.57：按锚点**实际卖出过的价位**匹配，不再拿全部卖出的加权均价
       if (!x.closePrices.includes(s.priceCents as number)) return false
@@ -253,9 +258,10 @@ function collectPriceSlots(opts: {
     const ended = endedIsoByAnchor.get(seed.anchorRow) ?? null
     let slot = slots.find((x) => x.chainAnchor === seed.anchorRow && x.priceCents === price)
     if (!slot) {
-      slot = { chainAnchor: seed.anchorRow, stockName: seed.stockName, priceCents: price, roots: [], lots: [], date: null, endedIso: ended }
+      slot = { chainAnchor: seed.anchorRow, stockName: seed.stockName, priceCents: price, roots: [], lots: [], date: null, endedIso: ended, sellPrices: [] }
       slots.push(slot)
     }
+    if (!slot.sellPrices.includes(s.priceCents)) slot.sellPrices.push(s.priceCents)
     slot.roots.push(s)
   }
 
@@ -288,6 +294,7 @@ function collectPriceSlots(opts: {
         lots: [],
         date: seed.closeDate,
         endedIso: ended,
+        sellPrices: seed.closePrices,
       })
     }
   }
@@ -296,9 +303,16 @@ function collectPriceSlots(opts: {
   const slotsByDate = [...slots].sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''))
   for (const lot of lots) {
     // 锚点自己已经成链，不被别的链收编；人工归属优先
-    if (anchorRows.has(lot.sourceRow)) continue
+    const ownRoot = rootsForLot(lot)
+    if (anchorRows.has(lot.sourceRow) && !ownRoot) continue
     if (memberOwner.has(lot.sourceRow)) continue
-    const slot = slotsByDate.find(
+    const execution = executions.find((e) => lot.id === `lot:exec:${e.id}`)
+    const execRoot = execution ? sells.find((s) => s.id === execution.sellExecId) : undefined
+    const origin = ownRoot ?? execRoot
+    const originAnchor = origin ? rootOwner.get(origin.sourceRow) ?? (seeds.has(origin.sourceRow) ? origin.sourceRow : undefined) : undefined
+    // 已知成交来源优先沿原链；人工挂钩的成交留给后面的份额所有权递归分配。
+    if (execution && originAnchor === undefined) continue
+    const slot = (origin ? slotsByDate.find((x) => x.chainAnchor === originAnchor && x.priceCents === origin.rebuyPriceCents && (x.endedIso === null || (lot.buyDate !== null && lot.buyDate <= x.endedIso))) : undefined) ?? (!origin ? slotsByDate.find(
       (x) =>
         x.stockName === lot.stockName &&
         x.priceCents === lot.buyPriceCents &&
@@ -309,10 +323,15 @@ function collectPriceSlots(opts: {
         lot.buyDate >= x.date &&
         // 链结束之后的买入不再自动归链（和「结束后的算独立交易」同一口径）
         (x.endedIso === null || lot.buyDate <= x.endedIso),
-    )
+    ) : undefined)
     if (!slot) continue
     slot.lots.push(lot)
     autoLotIds.add(lot.id)
+  }
+
+  function rootsForLot(lot: Lot): SellExecution | undefined {
+    // 同行买回必须先留给自己的卖出，历史人工挂钩也一样。
+    return sells.find((s) => s.sourceRow === lot.sourceRow && (s.ownLotCoverQty ?? 0) > 0)
   }
 
   // 覆盖量：槽里买回多少股，就盖住多少卖出（先盖最早的那笔）；已有回补成交的部分不重复算
@@ -323,15 +342,20 @@ function collectPriceSlots(opts: {
   for (const slot of slots) {
     // V9.57：只有真实买入能「盖住」裸卖。回补成交的虚拟批次已经在 execQty 里扣过，
     // 算进来 === 同一笔股数被扣两次（敞口 / 链计划量因此少算）。
-    const realQty = sum(slot.lots.filter((l) => l.id === `lot:${l.sourceRow}`), (l) => l.qty)
-    let left = realQty
+    const realLots = slot.lots.filter((l) => l.id === `lot:${l.sourceRow}`)
+    const available = new Map(realLots.map((l) => [l.id, Math.max(0, l.qty - (rootsForLot(l)?.ownLotCoverQty ?? 0))]))
     let slotPending = 0
     for (const root of slot.roots) {
-      const need = Math.max(0, root.qty - (execBySell.get(root.id) ?? 0))
-      const q = Math.min(need, left)
+      const need = Math.max(0, root.qty - (root.ownLotCoverQty ?? 0) - (execBySell.get(root.id) ?? 0))
+      let q = 0
+      for (const lot of realLots) {
+        if (root.soldAt === null || lot.buyDate === null || lot.buyDate < root.soldAt) continue
+        const take = Math.min(need - q, available.get(lot.id) ?? 0)
+        q += take
+        available.set(lot.id, (available.get(lot.id) ?? 0) - take)
+      }
       if (q > 0) {
         realCover.set(root.sourceRow, (realCover.get(root.sourceRow) ?? 0) + q)
-        left -= q
       }
       // 已成交的部分不再是欠账，只把「没买回来」的算进计划量
       slotPending += Math.max(0, need - q)
@@ -342,13 +366,12 @@ function collectPriceSlots(opts: {
   return { slots, autoLotIds, realCoverBySell: realCover, pending }
 }
 
-/** 价位槽 → 分支：根裸卖的空头收益 + 槽内锁仓批次自己的卖出盈亏 */
+/** 价位槽 → 分支：只累计槽内批次后续已完成的买卖盈亏 */
 function slotBranch(slot: PriceSlot, sellsByLot: Map<string, SellExecution[]>): RepairBranch {
   const rootQty = sum(slot.roots, (s) => s.qty)
   const rootAmount = sum(slot.roots, (s) => (s.priceCents ?? 0) * s.qty)
-  const rootProfit = sum(slot.roots, (s) => s.profitCents ?? 0)
   const lotsQty = sum(slot.lots, (l) => l.qty)
-  const sells = slot.lots.flatMap((l) => plainSellsOf(l.id, sellsByLot))
+  const sells = slot.lots.flatMap((l) => plainSellsOf(l.id, sellsByLot)).filter((s) => s.priceCents !== null && slot.sellPrices.includes(s.priceCents))
   return {
     key: `branch:${slot.chainAnchor}:${slot.priceCents}`,
     row: slot.roots.length > 0 ? slot.roots[0].sourceRow : null,
@@ -361,16 +384,17 @@ function slotBranch(slot: PriceSlot, sellsByLot: Map<string, SellExecution[]>): 
     sellPriceCents: rootQty > 0 ? weighted(rootAmount, rootQty) : null,
     sellQty: rootQty + sum(sells, (s) => s.qty),
     soldAt: latestDate([...slot.roots.map((s) => s.soldAt), ...sells.map((s) => s.soldAt)]),
-    profitCents: rootProfit + sum(sells, (s) => s.profitCents ?? 0),
+    profitCents: sum(sells, (s) => s.profitCents ?? 0),
     allocatedLossCents: 0,
     netCents: 0,
-    // 根裸卖的盈利本身就是「卖价 − 回补价」，不再单独显示回补节省（会双算）
-    savingCents: 0,
+    // 同行实际回补价差仅作参考，绝不计入盈利。
+    savingCents: sum(slot.lots, (l) => sum(slot.roots.filter((r) => r.sourceRow === l.sourceRow), (r) => ((r.priceCents ?? 0) - l.buyPriceCents) * (r.ownLotCoverQty ?? 0))),
     rootSellRow: slot.roots.length > 0 ? slot.roots[0].sourceRow : null,
     cycles: slot.roots.length + sells.length,
     memberRows: [
       ...new Set([
         ...slot.roots.map((s) => s.sourceRow),
+        ...sells.map((s) => s.sourceRow),
         ...slot.lots.filter((l) => l.id === `lot:${l.sourceRow}`).map((l) => l.sourceRow),
       ]),
     ],
@@ -391,6 +415,8 @@ export function buildRepairChains(opts: {
   sells: readonly SellExecution[]
   executions: readonly RebuyExecution[]
   links?: readonly RepairChainLink[]
+  /** 已保存人工挂钩保留原锚点身份，避免已有链的结束/归属设置失效。 */
+  legacyHedgeRows?: readonly number[]
 }): ChainBuildResult {
   const { lots, sells, executions, links = [] } = opts
   const lotById = new Map(lots.map((l) => [l.id, l]))
@@ -410,6 +436,7 @@ export function buildRepairChains(opts: {
       .filter((l) => l.id === `lot:${l.sourceRow}` && sum(sellsByLot.get(l.id) ?? [], (s) => s.profitCents ?? 0) < 0)
       .map((l) => l.sourceRow),
   )
+  for (const s of sells) if (s.sellBeforeBuy && s.hedgedFromSellRow === undefined) possibleAnchors.add(s.sourceRow)
   for (const l of links) {
     if (!possibleAnchors.has(l.anchorRow)) continue
     if (links.some((other) => other.anchorRow !== l.anchorRow && other.memberRows.includes(l.anchorRow) && other.memberRows.length > 0)) continue
@@ -417,7 +444,41 @@ export function buildRepairChains(opts: {
     for (const r of l.memberRows) if (r !== l.anchorRow && !memberOwner.has(r)) memberOwner.set(r, l)
   }
 
-  const seeds = collectSeeds(lots, sellsByLot, memberOwner)
+  const legacyRows = new Set((opts.legacyHedgeRows ?? []).filter((r) => !linkByAnchor.has(r)))
+  const newRootRows = new Set(sells.filter((s) => s.sellBeforeBuy && !legacyRows.has(s.sourceRow)).map((s) => s.sourceRow))
+  const seeds = collectSeeds(lots, sellsByLot, memberOwner, newRootRows)
+  // 每笔先卖后买都能看链；同一低位网格的后续卖单沿用最早的链，盈亏只归属一次。
+  const rootOwner = new Map<number, number>()
+  const roots = sells.filter((s) => s.sellBeforeBuy && !s.lotId && s.hedgedFromSellRow === undefined)
+    .sort((a, b) => (a.soldAt ?? '').localeCompare(b.soldAt ?? '') || a.sourceRow - b.sourceRow)
+  for (const root of roots) {
+    if (legacyRows.has(root.sourceRow) && sells.some((s) => s.hedgedFromSellRow === root.sourceRow)) continue
+    const existing = [...seeds.values()].sort((a,b) => (b.closeDate ?? '').localeCompare(a.closeDate ?? '')).find((s) => root.soldAt !== null && s.closeDate !== null && s.closeDate <= root.soldAt &&
+      s.stockName === root.stockName && s.closePrices.includes(root.priceCents ?? -1) &&
+      (!s.sellFirst || s.sells[0].rebuyPriceCents === root.rebuyPriceCents) &&
+      (!linkByAnchor.get(s.anchorRow)?.closedAt || new Date(linkByAnchor.get(s.anchorRow)!.closedAt!).toLocaleDateString('sv-SE') >= root.soldAt))
+    const allocated = sells.filter((s) => s.hedgedFromSellRow === root.sourceRow)
+    if (existing && !existing.sellFirst && allocated.length === 0) {
+      rootOwner.set(root.sourceRow, existing.anchorRow)
+      continue
+    }
+    const q = sum(allocated, (s) => s.qty)
+    const seed: Seed = existing ?? {
+      anchorRow: root.sourceRow, stockName: root.stockName, qty: 0, costSum: 0, closeSum: 0,
+      closePrices: root.priceCents === null ? [] : [root.priceCents],
+      closeDatesByPrice: new Map(root.priceCents === null ? [] : [[root.priceCents, root.soldAt]]),
+      closeDate: root.soldAt, lossCents: 0, relatedSellRows: [], sells: [], sellFirst: true, unlinkedQty: 0,
+    }
+    seed.qty += root.qty
+    seed.costSum += sum(allocated, (s) => (s.costCents ?? 0) * s.qty)
+    seed.closeSum += (root.priceCents ?? 0) * root.qty
+    seed.lossCents += sum(allocated, (s) => s.profitCents ?? 0)
+    seed.unlinkedQty = (seed.unlinkedQty ?? 0) + Math.max(0, root.qty - q)
+    seed.relatedSellRows.push(root.sourceRow, ...allocated.map((s) => s.sourceRow))
+    seed.sells.push(root)
+    seeds.set(seed.anchorRow, seed)
+    rootOwner.set(root.sourceRow, seed.anchorRow)
+  }
   // V9.49：价位槽自动分支（同股 + 同卖出价的裸卖 → 根；同价买入 → 成员）
   const auto = collectPriceSlots({
     seeds,
@@ -427,6 +488,7 @@ export function buildRepairChains(opts: {
     memberOwner,
     anchorRows: new Set(seeds.keys()),
     linkByAnchor,
+    rootOwner,
   })
 
   const chains: RepairChain[] = []
@@ -443,7 +505,7 @@ export function buildRepairChains(opts: {
     return out
   }
   const owners = new Map<string, Part[]>()
-  for (const seed of seeds.values()) owners.set(`lot:${seed.anchorRow}`, [{ anchor: seed.anchorRow, qty: lotById.get(`lot:${seed.anchorRow}`)?.qty ?? seed.qty }])
+  for (const seed of seeds.values()) if (!seed.sellFirst) owners.set(`lot:${seed.anchorRow}`, [{ anchor: seed.anchorRow, qty: lotById.get(`lot:${seed.anchorRow}`)?.qty ?? seed.qty }])
   for (const [row, link] of memberOwner) {
     if (!seeds.has(link.anchorRow)) continue
     const lot = lotById.get(`lot:${row}`)
@@ -452,6 +514,11 @@ export function buildRepairChains(opts: {
   const sellParts = new Map<string, Part[]>()
   // 挂钩卖出的整笔成交按实际挂住的来源批次拆分，未挂部分保留无归属。
   for (const naked of sells.filter((s) => !s.lotId)) {
+    const rootAnchor = rootOwner.get(naked.sourceRow)
+    if (rootAnchor !== undefined) {
+      sellParts.set(naked.id, [{ anchor: rootAnchor, qty: naked.qty }])
+      continue
+    }
     const parts: Part[] = []
     for (const s of sells.filter((x) => x.hedgedFromSellRow === naked.sourceRow)) {
       const anchor = s.lotId ? owners.get(s.lotId)?.[0]?.anchor ?? null : null
@@ -473,6 +540,43 @@ export function buildRepairChains(opts: {
     if (sellParts.has(id)) continue
     const related = sells.filter((v) => v.hedgedFromSellRow === s.hedgedFromSellRow)
     sellParts.set(id, related.map((v) => ({ anchor: v.lotId ? owners.get(v.lotId)?.[0]?.anchor ?? null : null, qty: v.qty })))
+  }
+  // 老人工挂钩保留高位锚点。独立导入的同价买入按原挂钩份额分配，
+  // 与回补成交共用所有权区间，跨两条链也不能重复认领整批股数或盈利。
+  const legacyRealLots = new Map<string, SellExecution>()
+  const realBoughtByRoot = new Map<number, number>()
+  for (const lot of lots) {
+    if (lot.id !== `lot:${lot.sourceRow}` || owners.has(lot.id) || auto.autoLotIds.has(lot.id) || lot.buyDate === null) continue
+    const matches = (r: SellExecution) => {
+      if (!legacyRows.has(r.sourceRow) || r.stockName !== lot.stockName || r.soldAt === null || r.soldAt > lot.buyDate!) return false
+      const own = r.sourceRow === lot.sourceRow && (r.ownLotCoverQty ?? 0) > 0
+      if (!own && r.rebuyPriceCents !== lot.buyPriceCents) return false
+      return (sellParts.get(r.id) ?? []).some((p) => {
+        if (p.anchor === null) return false
+        const ended = linkByAnchor.get(p.anchor)?.closedAt
+        return !ended || new Date(`${lot.buyDate}T00:00:00`).getTime() <= ended
+      })
+    }
+    const ownRoot = roots.find((r) => r.sourceRow === lot.sourceRow && (r.ownLotCoverQty ?? 0) > 0)
+    const root = ownRoot ? (matches(ownRoot) ? ownRoot : undefined) : [...roots].reverse().find(matches)
+    if (!root) continue
+    const parts = sellParts.get(root.id) ?? []
+    let left = lot.qty
+    const assigned = parts.map((p, i) => {
+      const q = i === parts.length - 1 ? left : Math.floor(lot.qty * p.qty / root.qty)
+      left -= q
+      const ended = p.anchor === null ? null : linkByAnchor.get(p.anchor)?.closedAt
+      return { anchor: ended && new Date(`${lot.buyDate}T00:00:00`).getTime() > ended ? null : p.anchor, qty: q }
+    })
+    owners.set(lot.id, assigned)
+    legacyRealLots.set(lot.id, root)
+    // 同行买回已由 ownLotCoverQty 扣过；只有独立买入可继续平欠量。
+    if (root.sourceRow !== lot.sourceRow) realBoughtByRoot.set(root.sourceRow, (realBoughtByRoot.get(root.sourceRow) ?? 0) + lot.qty)
+  }
+  for (const root of roots) {
+    const exec = sum(executions.filter((e) => e.sellExecId === root.id), (e) => e.qty - e.rewardQty)
+    const q = Math.min(realBoughtByRoot.get(root.sourceRow) ?? 0, Math.max(0, root.qty - (root.ownLotCoverQty ?? 0) - exec))
+    if (q > 0) auto.realCoverBySell.set(root.sourceRow, q)
   }
   const sortedExecs = [...executions].sort((a, b) => a.at - b.at || a.id.localeCompare(b.id))
   // 已被价位槽自动收编的回补成交，不再走人工/锚点归属（每份盈亏只算一次）
@@ -528,6 +632,32 @@ export function buildRepairChains(opts: {
       branches.push(branchOf(`record:${row}`, 'record', row, lot, sellsByLot))
       firstBoughtQty += lot.qty
     }
+    for (const [lotId, root] of legacyRealLots) {
+      const lot = lotById.get(lotId)!
+      const parts = owners.get(lotId) ?? []
+      const qty = sum(parts.filter((p) => p.anchor === seed.anchorRow), (p) => p.qty)
+      if (qty === 0) continue
+      const b = branchOf(`record:${lot.sourceRow}`, 'record', lot.sourceRow, lot, sellsByLot)
+      let sold = 0
+      let ownSold = 0
+      let profit = 0
+      const memberRows = [lot.sourceRow, root.sourceRow]
+      for (const sale of sellsByLot.get(lotId) ?? []) {
+        const mine = sum(slice(parts, sold, sale.qty).filter((p) => p.anchor === seed.anchorRow), (p) => p.qty)
+        ownSold += mine
+        if (mine > 0) memberRows.push(sale.sourceRow)
+        if (isRealizedSale(sale) && sale.priceCents === root.priceCents) profit += (sale.priceCents! - lot.buyPriceCents) * mine
+        sold += sale.qty
+      }
+      b.qty = qty
+      b.sellQty = ownSold
+      b.remainingQty = sum(slice(parts, sold, Math.max(0, lot.qty - sold)).filter((p) => p.anchor === seed.anchorRow), (p) => p.qty)
+      b.profitCents = profit
+      b.savingCents = ((root.priceCents ?? lot.buyPriceCents) - lot.buyPriceCents) * qty
+      b.memberRows = [...new Set(memberRows)]
+      firstBoughtQty += qty
+      branches.push(b)
+    }
     for (const e of executions) {
       const lot = lotById.get(`lot:exec:${e.id}`)
       // 可直接测试纯链函数；正常账本总有回补批次。
@@ -556,6 +686,7 @@ export function buildRepairChains(opts: {
       b.sellQty = ownedSold
       b.remainingQty = remaining
       b.profitCents = profit
+      b.memberRows = [...new Set((sellsByLot.get(lot?.id ?? `lot:exec:${e.id}`) ?? []).map((s) => s.sourceRow))]
       const initial = seed.sells.some((s) => (s.hedgedFromSellRow !== undefined ? `sell:${s.hedgedFromSellRow}` : s.id) === e.sellExecId)
       if (initial) firstBoughtQty += qty
       b.savingCents = initial && closePrice !== null ? mulCents(closePrice - e.priceCents, qty) : 0
@@ -568,7 +699,7 @@ export function buildRepairChains(opts: {
       /**
        * V9.63：无根的 P 档（锚点自己的回补价位）没有根裸卖的空头收益可展示，
        * 节省 = 锚点清算价 − 本档买价 × 归进来的买入股数——只展示、不进进度（决策 F）。
-       * 有根槽不补：根的空头收益本身就是节省，再补会双算。
+       * 有根槽只展示同行真实回补的节省；不把计划价差提前记为盈利。
        */
       if (slot.roots.length === 0 && closePrice !== null) {
         b.savingCents = mulCents(closePrice - slot.priceCents, sum(slot.lots, (l) => l.qty))
@@ -590,10 +721,11 @@ export function buildRepairChains(opts: {
     const savingCents = sum(branches, (b) => b.savingCents)
     const holdingQty = sum(branches, (b) => b.remainingQty)
     const pendingQty = sells.reduce((total, s) => {
+      if (slots.some((slot) => slot.roots.some((r) => r.id === s.id))) return total
       const parts = sellParts.get(s.id) ?? []
       if (s.hedgedFromSellRow !== undefined) return total
       const base = s.qty - (s.ownLotCoverQty ?? 0)
-      const execQty = sum(executions.filter((e) => e.sellExecId === s.id), (e) => e.qty - e.rewardQty)
+      const execQty = sum(executions.filter((e) => e.sellExecId === s.id), (e) => e.qty - e.rewardQty) + (auto.realCoverBySell.get(s.sourceRow) ?? 0)
       const q = sum(slice(parts, execQty, Math.max(0, base - execQty)).filter((p) => p.anchor === seed.anchorRow), (p) => p.qty)
       return total + (s.rebuyStatus === 'pending' ? q : 0)
     }, 0)
@@ -614,14 +746,15 @@ export function buildRepairChains(opts: {
       stockName: seed.stockName,
       anchorRow: seed.anchorRow,
       anchorQty: seed.qty,
-      anchorCostCents: weighted(seed.costSum, seed.qty) ?? 0,
+      anchorCostCents: weighted(seed.costSum, seed.qty - (seed.unlinkedQty ?? 0)) ?? 0,
       closedAtCents: closePrice,
       lossCents: seed.lossCents,
       profitCents,
       netCents,
       gapCents: Math.max(0, -netCents),
-      done: netCents >= 0,
-      covered: need <= 0 ? 1 : Math.max(0, Math.min(1, profitCents / need)),
+      done: netCents >= 0 && !(seed.unlinkedQty ?? 0),
+      unlinkedQty: seed.unlinkedQty,
+      covered: need <= 0 ? 0 : Math.max(0, Math.min(1, profitCents / need)),
       savingCents,
       holdingQty,
       // V9.49：锚点这一轮已经完成（A/B 视为已完成）——有根槽时只看槽里还欠多少；

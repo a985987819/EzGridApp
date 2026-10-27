@@ -117,7 +117,7 @@ try {
 
   const evaluate = async (expression) => {
     const r = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true })
-    if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails))
+    if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails) + '\nBrowser errors: ' + problems.join('\n'))
     return r.result.value
   }
   const settle = async (budget = 6000) => {
@@ -751,15 +751,15 @@ try {
   check('复位后 URL 不带筛选', (await evaluate('location.hash')) === '#/trades', await evaluate('location.hash'))
 
   // V9.5：默认隐藏已完成，chip 一键找回，URL 记住 showDone=1
-  // V9.46：奥佳华第 26/30 笔亏着清仓、当场成了回本链的锚点——还欠着账，不算完成，33 → 35
-  check('默认隐藏已完成（62 行里可见 35 行）', allCount === 35, String(allCount))
+  // V9.46：奥佳华第 26/30 笔亏着清仓、当场成了回本链的锚点——还欠着账，不算完成，新口径保留先卖后买的实际回补持仓，33 → 36
+  check('默认隐藏已完成（62 行里可见 36 行）', allCount === 36, String(allCount))
   check('点「隐藏已完成」chip 放开', await toggleStatus('隐藏已完成'))
   const withDone = await headCount()
   check('放开后已完成行回来（62 行）', withDone === 62, String(withDone))
   check('URL 记住 showDone=1', (await evaluate('location.hash')).includes('showDone=1'), await evaluate('location.hash'))
   check('已完成行出现（R2 已卖完）', Boolean(await evaluate(`Boolean(document.querySelector('[data-row="2"]'))`)))
   check('再点恢复隐藏', await toggleStatus('隐藏已完成'))
-  check('恢复隐藏后回到 35 行', (await headCount()) === allCount, String(await headCount()))
+  check('恢复隐藏后回到 36 行', (await headCount()) === allCount, String(await headCount()))
   check('明细顶部吸顶', (await stickyOf('trades')) === 'sticky')
   const tradePills = await evaluate(`JSON.stringify([...document.querySelectorAll('.stock-tabs > *')].map(e => e.textContent.trim()))`)
   check('明细也有股票药丸（含「全部」）', JSON.parse(tradePills)[0] === '全部' && JSON.parse(tradePills).length === 5, tradePills)
@@ -866,7 +866,7 @@ try {
   check('能读到 9.00', (await bodyText()).includes('9.00'))
   await closeDrawer()
   await nav('overview')
-  check('编辑后盈利 ¥9,990', (await bodyText()).includes('9,990'))
+  check('编辑先卖单不预记计划盈利，仍为 ¥7,970', (await bodyText()).includes('7,970'))
 
   console.log('\n[6.5] 拆分卖出目标（分批止盈）')
   await nav('trades')
@@ -937,7 +937,7 @@ try {
   await closeDrawer()
   await nav('overview')
   text = await bodyText()
-  check('改回后盈利 ¥9,830 且概览无基准异常', text.includes('9,830') && !text.includes('去管理页看'))
+  check('改回后盈利 ¥7,970 且概览无基准异常', text.includes('7,970') && !text.includes('去管理页看'))
 
   console.log('\n[7.2] 编辑抽屉：滚动位置保持 + 输入法避让（V9.40）')
   await nav('trades')
@@ -1125,8 +1125,8 @@ try {
   )
   await sleep(600)
   const groupHash = await evaluate('location.hash')
-  check('组池跳转带股票和价格档', groupHash.startsWith('#/trades') && /price=\d+/.test(groupHash) && decodeURIComponent(groupHash).includes('stock=柳工'), groupHash)
-  check('组池[0]=柳工|7.81 命中 2 行（跳转自动放开隐藏）', (await headCount()) === 2, String(await headCount()))
+  check('组池跳转带股票和价格档', groupHash.startsWith('#/trades') && /price=\d+/.test(groupHash) && decodeURIComponent(groupHash).includes('stock=三一重工'), groupHash)
+  check('组池[0]=三一重工|19.53 命中 1 行（跳转自动放开隐藏）', (await headCount()) === 1, String(await headCount()))
 
   // V9.61 网格进行度 + 高成交点位 + 盈利趋势
   await nav('stats')
@@ -1161,8 +1161,8 @@ try {
   // V9.7：年 / 月累计盈利 + 日历按天聚合
   await nav('stats')
   text = await bodyText()
-  // 基准数据：全部盈利 ¥9,830，其中 9 笔缺日期 ¥2,869 不进累计 → 年累计 ¥6,961；10 月只有 R56 → ¥196
-  check('年累计盈利（¥6,961）', text.includes('6,961'), '')
+  // 基准数据：全部盈利 ¥7,970，其中缺日期盈利 ¥1,429 不进累计 → 年累计 ¥6,541；10 月只有 R56 → ¥196
+  check('年累计盈利（¥6,541）', text.includes('6,541'), '')
   check('月累计盈利（¥196）', text.includes('196'), '')
   // 日历格 = 左当日总盈利（+196）· 右成交笔数（1笔）
   check('日历格聚合成「盈利+笔数」', text.includes('+196') && text.includes('1笔'), '')
@@ -1886,7 +1886,7 @@ try {
   await nav('overview')
   text = await bodyText()
   check('卖出后净持仓 12,700', text.includes('12,700'))
-  check('卖出后敞口 2,500', text.includes('2,500'))
+  check('自动关联高位后敞口仍为 2,000', text.includes('2,000'))
 
   // V9.30 裸卖待挂钩：行上标签点一下直接弹绑定面板（不必先开抽屉）
   await nav('trades')
@@ -1897,9 +1897,9 @@ try {
     (await evaluate(`document.querySelector('.app-main')?.dataset.dir ?? ''`)) === 'forward',
   )
   text = await bodyText()
-  check('裸卖行有「裸卖待挂钩」标签', text.includes('裸卖待挂钩'))
+  check('先卖行有「已挂钩 · 改挂」标签', text.includes('已挂钩 · 改挂'))
   check(
-    '点「裸卖待挂钩」标签',
+    '点「已挂钩 · 改挂」标签',
     await evaluate(`(() => {
       const el = document.querySelector('[data-hedge="100000"]')
       if (!el) return false
@@ -1918,7 +1918,7 @@ try {
       save: Boolean(save && save.offsetParent !== null),
       // V9.33：列表变高后「保存挂钩」曾被顶到可视区外，这条专门盯它
       saveInView: Boolean(sr && sr.top >= 0 && sr.bottom <= window.innerHeight - 2),
-      title: document.body.textContent.includes('裸卖待挂钩'),
+      title: document.body.textContent.includes('先卖后买 · 高位关联'),
       box: r ? { l: Math.round(r.left), r: Math.round(r.right), w: Math.round(r.width), vw: window.innerWidth } : null,
     })
   })()`)
@@ -1927,7 +1927,7 @@ try {
   check('弹层里列出未完成买单', sheet.cands > 0, sheetInfo)
   check('弹层里有「保存挂钩」', sheet.save, sheetInfo)
   check('「保存挂钩」在可视区内（列表不把按钮顶出去）', sheet.saveInView, sheetInfo)
-  check('弹层标题「裸卖待挂钩」', sheet.title, sheetInfo)
+  check('弹层标题含高位关联', sheet.title, sheetInfo)
   check('弹层没超出视口宽度', Boolean(sheet.box && sheet.box.l >= 0 && sheet.box.r <= sheet.box.vw), sheetInfo)
   // V9.33 面板新增：自动挂满 / 允许挂不满 / 已分配提示
   const sheetTools = await evaluate(`JSON.stringify({
@@ -2103,7 +2103,7 @@ try {
         const c = document.querySelector('[data-testid="chain-section"] .chain-card')
         if (!c) return false
         const t = c.textContent
-        return t.includes('原始亏损') && t.includes('后续净盈利') && t.includes('链累计盈亏') && t.includes('还差多少')
+        return (t.includes('原始亏损') || t.includes('已关联部分亏损')) && t.includes('后续净盈利') && t.includes('链累计盈亏') && t.includes('还差多少')
       })()`),
     )
     check(
@@ -2372,7 +2372,7 @@ try {
   const sb0 = JSON.parse(sbBaseRaw)
   console.log('  沙盒基线:', sbBaseRaw)
   check('沙盒面板出现（与真实台账并排）', sb0.panel, sbBaseRaw)
-  check('沙盒基线 · 已实现 +¥5,425.00', sb0.profit.includes('5,425.00'), sbBaseRaw)
+  check('沙盒基线 · 已实现 +¥3,985.00', sb0.profit.includes('3,985.00'), sbBaseRaw)
   check('沙盒基线 · 理想可卖到 11.48 元', sb0.max.includes('11.48'), sbBaseRaw)
   check('沙盒基线 · 理想剩余可赚 +¥8,052.00', sb0.expect.includes('8,052.00'), sbBaseRaw)
   check('沙盒初始没有模拟条目', sb0.count === '0', sbBaseRaw)
@@ -2427,18 +2427,18 @@ try {
       rowText: row ? row.innerText : '',
       // Tag 不透传 data-*，用它会透传的 className 找入口
       hedgeTag: Boolean(row?.querySelector('.hedge-entry')),
-      exposure: document.body.innerText.includes('待补敞口 2,500 股'),
+      exposure: document.body.innerText.includes('待补敞口 2,000 股'),
     })
   })()`)
   const sb1 = JSON.parse(sbAddRaw)
   check('模拟条目计数 1', sb1.count === '1', sbAddRaw)
   check('模拟待买行出现（预览行 300001）', sb1.row, sbAddRaw)
   check('模拟行标「模拟 ·」且注明只预览', sb1.rowText.includes('模拟 ·') && sb1.rowText.includes('只用于沙盒预览'), sbAddRaw)
-  check('模拟行有「模拟待挂钩」入口', sb1.hedgeTag, sbAddRaw)
-  check('未挂时已实现 +¥5,675.00（+250 按 P 列）', sb1.profit.includes('5,675.00'), sbAddRaw)
-  check('未挂时理想可卖到仍是 11.48', sb1.max.includes('11.48'), sbAddRaw)
-  check('未挂时理想剩余可赚不变 +¥8,052.00', sb1.expect.includes('8,052.00'), sbAddRaw)
-  check('未挂时敞口 2,500（模拟裸卖加空 500）', sb1.exposure, sbAddRaw)
+  check('模拟行有改挂入口', sb1.hedgeTag, sbAddRaw)
+  check('自动挂钩后已实现 +¥2,040.00（计入高位亏损，不预记回补收益）', sb1.profit.includes('2,040.00'), sbAddRaw)
+  check('自动挂钩后理想可卖到 11.38', sb1.max.includes('11.38'), sbAddRaw)
+  check('自动挂钩后理想剩余可赚 +¥7,757.00', sb1.expect.includes('7,757.00'), sbAddRaw)
+  check('自动挂钩后敞口仍为 2,000', sb1.exposure, sbAddRaw)
 
   check('去概览看树', await clickByText('button', '去概览看树'))
   await sleep(1000)
@@ -2457,12 +2457,12 @@ try {
     })
   })()`)
   const ov1 = JSON.parse(sbOvRaw)
-  console.log('  未挂概览:', sbOvRaw)
+  console.log('  自动挂钩概览:', sbOvRaw)
   check('概览出现沙盒横幅（未写库）', ov1.banner, sbOvRaw)
-  check('横幅差价 · 已实现 5,425 → 5,675', ov1.profit?.was.includes('5,425.00') && ov1.profit?.now.includes('5,675.00'), sbOvRaw)
-  check('横幅差价 · 理想可卖到 11.48 不变', ov1.max?.was.includes('11.48') && ov1.max?.now.includes('11.48'), sbOvRaw)
-  check('横幅差价 · 剩余可赚 8,052 不变', ov1.expect?.was.includes('8,052.00') && ov1.expect?.now.includes('8,052.00'), sbOvRaw)
-  check('树上的理想可卖到仍是 11.48', ov1.ideal === 1148, sbOvRaw)
+  check('横幅差价 · 已实现 3,985 → 2,040', ov1.profit?.was.includes('3,985.00') && ov1.profit?.now.includes('2,040.00'), sbOvRaw)
+  check('横幅差价 · 理想可卖到 11.48 → 11.38', ov1.max?.was.includes('11.48') && ov1.max?.now.includes('11.38'), sbOvRaw)
+  check('横幅差价 · 剩余可赚 8,052 → 7,757', ov1.expect?.was.includes('8,052.00') && ov1.expect?.now.includes('7,757.00'), sbOvRaw)
+  check('树上的理想可卖到 11.38', ov1.ideal === 1138, sbOvRaw)
 
   check('回挂单页', await clickByText('button', '去挂单页调'))
   await sleep(900)
@@ -2473,7 +2473,7 @@ try {
     }
   })()`)
   check(
-    '点模拟行的「模拟待挂钩」',
+    '点模拟行的改挂入口',
     await evaluate(`(() => {
       const t = document.querySelector('[data-testid="rebuy-ledger"] [data-sandbox-row="300001"] .hedge-entry')
       if (!t) return false
@@ -2517,7 +2517,7 @@ try {
   const sbh = JSON.parse(sbHedgedRaw)
   console.log('  模拟挂钩后:', sbHedgedRaw)
   check('模拟行变成「模拟已挂钩 · 改挂」', sbh.tag.includes('模拟已挂钩'), sbHedgedRaw)
-  check('挂钩后已实现 −¥1,945.00（5,425 − 1,945）', sbh.profit.includes('3,480.00'), sbHedgedRaw)
+  check('人工确认后已实现 +¥2,040.00（3,985 − 1,945）', sbh.profit.includes('2,040.00'), sbHedgedRaw)
   check('挂钩后理想可卖到 11.38（最高批次退出待卖）', sbh.max.includes('11.38'), sbHedgedRaw)
   check('挂钩后剩余可赚 8,052 − 295 = 7,757', sbh.expect.includes('7,757.00'), sbHedgedRaw)
   check('挂钩后敞口回到 2,000', sbh.exposure, sbHedgedRaw)
@@ -2543,7 +2543,7 @@ try {
   })()`)
   const ov2 = JSON.parse(sbOvHedgedRaw)
   console.log('  挂钩后概览:', sbOvHedgedRaw)
-  check('概览横幅 · 已实现 5,425 → 3,480', ov2.profit?.was.includes('5,425.00') && ov2.profit?.now.includes('3,480.00'), sbOvHedgedRaw)
+  check('概览横幅 · 已实现 3,985 → 2,040', ov2.profit?.was.includes('3,985.00') && ov2.profit?.now.includes('2,040.00'), sbOvHedgedRaw)
   check('概览横幅 · 理想可卖到 11.48 → 11.38', ov2.max?.was.includes('11.48') && ov2.max?.now.includes('11.38'), sbOvHedgedRaw)
   check('概览横幅 · 剩余可赚 8,052 → 7,757', ov2.expect?.was.includes('8,052.00') && ov2.expect?.now.includes('7,757.00'), sbOvHedgedRaw)
   check('树上的理想可卖到变成 11.38', ov2.ideal === 1138, sbOvHedgedRaw)
@@ -2587,7 +2587,7 @@ try {
   check('模拟条目清空', sbc2.count === '0', sbCommitRaw)
   check('转正后真实待买行带「已挂钩 · 改挂」', sbc2.realHedgeTag, sbCommitRaw)
   check('转正后标注「已挂高位，这张买单可撤」', sbc2.note, sbCommitRaw)
-  check('转正后已实现 = 3,480（不再是预览）', sbc2.profit.includes('3,480.00'), sbCommitRaw)
+  check('转正后已实现 = 2,040（不再是预览）', sbc2.profit.includes('2,040.00'), sbCommitRaw)
   check('转正后理想可卖到 11.38', sbc2.max.includes('11.38'), sbCommitRaw)
   check('转正后剩余可赚 7,757', sbc2.expect.includes('7,757.00'), sbCommitRaw)
 
@@ -2608,7 +2608,7 @@ try {
     '抽屉里解除转正的挂钩',
     await evaluate(`(() => {
       const sec = document.querySelector('[data-testid="hedge-section"]')
-      const b = sec && [...sec.querySelectorAll('button')].find((x) => x.textContent.trim() === '解除挂钩')
+      const b = sec && [...sec.querySelectorAll('button')].find((x) => x.textContent.trim() === '解除并停止自动关联')
       if (!b) return false
       b.click(); return true
     })()`),
@@ -2625,7 +2625,7 @@ try {
     return JSON.stringify({ profit: q('[data-sandbox-metric="profit"]'), max: q('[data-sandbox-metric="max"]') })
   })()`)
   const sbb = JSON.parse(sbBackRaw)
-  check('清理后已实现回到 +¥5,425.00', sbb.profit.includes('5,425.00'), sbBackRaw)
+  check('清理后已实现回到 +¥3,985.00', sbb.profit.includes('3,985.00'), sbBackRaw)
   check('清理后理想可卖到回到 11.48', sbb.max.includes('11.48'), sbBackRaw)
 
   console.log('\n[12.6] 沙盒：模拟待卖 → 记为成交 → 刷新清空')
@@ -2671,7 +2671,7 @@ try {
   const sbb2 = JSON.parse(sbBuyRaw)
   check('模拟待卖计数 1', sbb2.count === '1', sbBuyRaw)
   check('模拟待卖出现在待卖/今日挂单', sbb2.rows >= 1, sbBuyRaw)
-  check('模拟待卖不改已实现', sbb2.profit.includes('5,425.00'), sbBuyRaw)
+  check('模拟待卖不改已实现', sbb2.profit.includes('3,985.00'), sbBuyRaw)
   check('模拟待卖挂高理想可卖到不变 11.48', sbb2.max.includes('11.48'), sbBuyRaw)
   check('模拟待卖使剩余可赚 +50 → 8,102', sbb2.expect.includes('8,102.00'), sbBuyRaw)
   check(

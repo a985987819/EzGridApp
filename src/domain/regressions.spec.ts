@@ -183,12 +183,12 @@ describe('挂单建议回归',()=>{
  it('V9.53 推荐买单可以硬改价量，来源不变且数量不放大',()=>{
   const l=buildLedger([sell(9,700,500)],[stock])
   const base=buildBuySuggestions(l.buySplits,[],[])
-  expect(base[0]).toMatchObject({priceCents:500,qty:700})
+  expect(base[0]).toMatchObject({priceCents:500,qty:500})
   const edited=buildBuySuggestions(l.buySplits,[],[{id:'p',refId:base[0].key,kind:'buy',priceCents:450,qty:200,at:1}])
   expect(edited[0]).toMatchObject({priceCents:450,qty:200,amountCents:90000,edited:true})
   expect(edited[0].sources).toEqual(base[0].sources)
   const bigger=buildBuySuggestions(l.buySplits,[],[{id:'p',refId:base[0].key,kind:'buy',priceCents:450,qty:900,at:1}])
-  expect(bigger[0].qty).toBe(700)
+  expect(bigger[0].qty).toBe(500)
  })
 })
 
@@ -275,10 +275,10 @@ describe('V9.50 卖单拆买',()=>{
  it('拆几档就挂几档，成交按档位顺序冲抵',()=>{
   const targets=[{id:'bt1',sellRow:9,priceCents:600,qty:400,at:1},{id:'bt2',sellRow:9,priceCents:500,qty:600,at:2}]
   const l=buildLedger([sell(9,700,1000)],[stock],{buyTargets:targets})
-  expect(l.buySplits.map((b)=>[b.priceCents,b.qty,b.split])).toEqual([[600,400,true],[500,1000,true]])
+  expect(l.buySplits.map((b)=>[b.priceCents,b.qty,b.split])).toEqual([[600,400,true],[500,600,true]])
   expect(l.buySplits.reduce((a,b)=>a+b.qty,0)).toBe(l.orders[0].remainingQty)
   const withExec=buildLedger([sell(9,700,1000)],[stock],{buyTargets:targets,executions:[ex(9,300,600)]})
-  expect(withExec.buySplits.map((b)=>b.qty)).toEqual([100,1000])
+  expect(withExec.buySplits.map((b)=>b.qty)).toEqual([100,600])
   expect(withExec.buySplits.map((b)=>b.executedQty)).toEqual([300,0])
  })
  it('成交按价格落到对应档，不会错位冲抵',()=>{
@@ -292,12 +292,12 @@ describe('V9.50 卖单拆买',()=>{
    {id:'bt1',sellRow:9,priceCents:600,qty:400,at:1},
    {id:'bt2',sellRow:9,priceCents:500,qty:400,at:2},
   ]})
-  expect(l.buySplits.map((b)=>b.qty)).toEqual([400,300])
+  expect(l.buySplits.map((b)=>b.qty)).toEqual([400,100])
   expect(l.anomalies.some((a)=>a.kind==='buyTargetOverflow')).toBe(true)
  })
  it('没拆的待买仍然是整单一条',()=>{
   const l=buildLedger([sell(9,700,500)],[stock])
   expect(l.buySplits).toHaveLength(1)
-  expect(l.buySplits[0]).toMatchObject({split:false,qty:700,priceCents:500})
+  expect(l.buySplits[0]).toMatchObject({split:false,qty:500,priceCents:500})
  })
 })

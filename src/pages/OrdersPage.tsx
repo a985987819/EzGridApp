@@ -68,7 +68,6 @@ export function OrdersPage({
     removeRebuy,
     setPlan,
     clearPlan,
-    hedges,
     merges,
     plans,
     sandbox,
@@ -1328,9 +1327,7 @@ export function OrdersPage({
               {orderedRebuys.map((o) => {
                 const z = zone(o.rebuyPriceCents)
                 const sim = sandboxByRow.get(o.sourceRow)
-                const link = sim
-                  ? sandbox.hedges.find((h) => h.sellRow === o.sourceRow)
-                  : hedges.find((h) => h.sellRow === o.sourceRow)
+                const link = view.effectiveHedges.find((h) => h.sellRow === o.sourceRow && h.items.length > 0)
                 return (
                   <div
                     key={o.id}

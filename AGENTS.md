@@ -8,10 +8,10 @@
 
 ```bash
 npm run dev        # 127.0.0.1:5173
-npm test           # vitest，301 条（domain 纯函数 + 真实 xlsx fixture 回归）
+npm test           # vitest，337 条（domain 纯函数 + 真实 xlsx fixture 回归）
 npm run lint       # eslint
 npm run build      # tsc --noEmit && vite build；GITHUB_PAGES=true 时启用 /EzGridApp/ 子路径 base
-node e2e/smoke.mjs http://127.0.0.1:5173   # 无头 Chrome CDP，460 项断言，需先起 dev
+node e2e/smoke.mjs http://127.0.0.1:5173   # 无头 Chrome CDP，477 项断言，需先起 dev
                    # 数据种子 = tests/fixtures 经 CDP DOM.setFileInputFiles 塞进上传框（站点不带示例数据）
 node e2e/accounting.mjs http://127.0.0.1:5173 # 独立浏览器：真实 IndexedDB、多轮回补/卖出/分链/防重复
 ```
@@ -45,6 +45,16 @@ store/useApp（唯一写库入口，全部动作写 auditLogs）
 - `domain/*` 纯函数、无 IO、无 React——所有口径只允许写在这里。
 - `store/useApp.tsx` 是唯一写库层；任何数据变更必须走它的 action（自动写审计）。
 - pages 里禁止手改派生对象、禁止绕过 store 直接操作 db。
+
+## 当前口径（2026-10-27）：先卖后买自动关联与实际回本
+
+**本节优先于下方历史版本记录中的 P 列预记盈利、裸卖只允许人工挂钩、回补后不可改挂等旧规则。** 完整规则与真实 CSV 数值见 [先卖后买与回本链](docs/先卖后买与回本链需求.md)。
+
+- `domain/sellFirst.ts` 统一识别卖出早于/同日买入、无买入价及只有卖出日期的记录；子卖出不重复分类。回补价 = P 列 > 同行已确认实际回补价 > 卖出价 − 股票间隔。日期不明不猜已回补。
+- 默认按卖出日期、行号，优先关联同股、当时已买、最高价的未完成高位批次，人工关联优先；`ledger.effectiveHedges` 纯派生，股数不重用。人工解除存空覆盖；无 DB schema 变化。
+- 所有先卖后买均可见链；未关联成本时显示待关联。原始亏损 + 后续已完成同价低位网格盈利 = 实际链盈亏；计划价差和初始回补节省不入盈利/奖励。关联高位、根卖单、低位买入、子卖出详情均显示全部相关链。
+- 同行后买完整保留库存，同行/独立真实买入/回补成交覆盖只扣一次；缺价不生成无效订单，但敞口仍保留。人工结束、归属及历史分链继续兼容。
+- 用户 CSV：6 笔先卖后买、2100 股已回补、仅第 60 行欠 500 股 @8.01；高位亏损合计 −5176 元，后续完成盈利 0。旧 XLSX 新基准：盈利 7970 元、待卖 15200 股、待买/敞口各 2000 股。
 
 ## 关键口径（改动前必读，出处都在 domain/）
 

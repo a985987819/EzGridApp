@@ -231,18 +231,18 @@ describe('V9.49 价位槽：同价买入全自动归链', () => {
     rec(6, { buy: 600, qty: 500, sell: 800, soldQty: 500, buyDate: 46031, sellDate: 46050 }),
   ]
 
-  it('C/D 自动挂链、E/F 自动回补，两轮做完显示【已不亏钱】', () => {
+  it('C/D 自动挂链，只累计同卖出价完成的盈利，不重复加回补节省', () => {
     const led = buildLedger(autoExample(), [STOCK])
     expect(led.repairChains).toHaveLength(1)
     const c = led.repairChains[0]
     expect(c).toMatchObject({
       anchorRow: 2,
       lossCents: -300000,
-      // C +1,000、D +500、E 卖出 +1,000、F 卖出 +1,000
-      profitCents: 350000,
-      netCents: 50000,
-      done: true,
-      gapCents: 0,
+      // E 在原卖出价 7 元成交计入；F 在 8 元卖出，盈利不自动归入 7 元网格。
+      profitCents: 100000,
+      netCents: -200000,
+      done: false,
+      gapCents: 200000,
       plannedQty: 0,
       holdingQty: 0,
       unallocatedLossCents: 0,
@@ -250,14 +250,14 @@ describe('V9.49 价位槽：同价买入全自动归链', () => {
     // 两支价位槽：5 元、6 元，根都是那笔 7 卖 500
     const slots = c.branches.filter((b) => b.kind === 'sell')
     expect(slots.map((b) => b.buyPriceCents)).toEqual([500, 600])
-    expect(slots[0]).toMatchObject({ rootSellRow: 3, qty: 500, profitCents: 200000, cycles: 2 })
-    expect(slots[1]).toMatchObject({ rootSellRow: 4, qty: 500, profitCents: 150000, cycles: 2 })
+    expect(slots[0]).toMatchObject({ rootSellRow: 3, qty: 500, profitCents: 100000, cycles: 2 })
+    expect(slots[1]).toMatchObject({ rootSellRow: 4, qty: 500, profitCents: 0, cycles: 1 })
     // C/D 的待买被同价买回盖满 → 自动完成：不再生成幽灵订单、不算敞口
     expect(led.orders.find((o) => o.sourceRow === 3)).toBeUndefined()
     expect(led.orders.find((o) => o.sourceRow === 4)).toBeUndefined()
     expect(led.totals.exposureQty).toBe(0)
     // 每份盈亏只算一次：全局盈利仍按原始成交走
-    expect(led.totals.profitCents).toBe(-300000 + 50000 + 100000 + 100000 + 100000)
+    expect(led.totals.profitCents).toBe(-300000 + 100000 + 100000)
   })
 
   it('还没买回时：槽里欠多少就是计划买回多少，待买单照旧挂着', () => {
@@ -270,7 +270,7 @@ describe('V9.49 价位槽：同价买入全自动归链', () => {
     )
     const c = led.repairChains[0]
     expect(c.plannedQty).toBe(500)
-    expect(c.profitCents).toBe(100000) // C 自己的空头收益（7 卖、按 5 的回补价）
+    expect(c.profitCents).toBe(0) // 未成交的计划价差不记盈利
     expect(c.done).toBe(false)
     expect(led.orders.find((o) => o.sourceRow === 3)?.baseQty).toBe(500)
     expect(led.totals.exposureQty).toBe(500)
@@ -298,9 +298,10 @@ describe('V9.49 价位槽：同价买入全自动归链', () => {
     expect(slots[0].rootSellRow).toBe(3)
     expect(slots[0].memberRows).toEqual([3, 5])
     expect(c.relatedSellRows).toEqual([3])
-    // 结束前那笔已被同价买回盖住 → 连订单都不生成；结束后的那笔照旧欠 500
+    // 结束前的回补沿旧链；结束后的卖单另成链，由第 6 行覆盖。
     expect(led.orders.find((o) => o.sourceRow === 3)).toBeUndefined()
-    expect(led.orders.find((o) => o.sourceRow === 4)?.baseQty).toBe(500)
+    expect(led.orders.find((o) => o.sourceRow === 4)).toBeUndefined()
+    expect(led.repairChains.find((c) => c.anchorRow === 4)?.branches[0].memberRows).toEqual([4, 6])
   })
 
   it('买入日期早于那笔再卖的，不算回补、不归链', () => {
@@ -315,7 +316,7 @@ describe('V9.49 价位槽：同价买入全自动归链', () => {
     )
     const c = led.repairChains[0]
     expect(c.branches.filter((b) => b.kind === 'sell')).toHaveLength(1)
-    expect(c.branches.find((b) => b.kind === 'sell')?.profitCents).toBe(100000)
+    expect(c.branches.find((b) => b.kind === 'sell')?.profitCents).toBe(0)
     expect(led.orders.find((o) => o.sourceRow === 3)?.baseQty).toBe(500)
     expect(c.holdingQty).toBe(0)
   })
@@ -393,7 +394,7 @@ describe('V9.57 统一覆盖模型（cover）', () => {
     expect(led.orders.find((o) => o.sourceRow === 3)).toBeUndefined()
     expect(led.totals.exposureExecBaseQty).toBe(500)
     expect(led.totals.exposureQty).toBe(0)
-    expect(led.repairChains[0]).toMatchObject({ plannedQty: 0, profitCents: 100000 })
+    expect(led.repairChains[0]).toMatchObject({ plannedQty: 0, profitCents: 0 })
   })
 
   it('回补成交的虚拟批次不重复 cover：敞口与链计划量按真实欠量算', () => {
@@ -560,9 +561,9 @@ describe('归属、结束与部分成交', () => {
 
 
 describe('V9.63 锚点 P 档：无同价再卖也自动归链', () => {
-  it('高买低卖后直接记成交买回、低位多次卖出——盈利逐笔累加进链（修复「亏损固定不动」）', () => {
+  it('高买低卖后直接记成交买回，仅原卖出价的已完成盈利自动归链', () => {
     // 10 买 1000 → 7 卖 1000（−3000，P=5.00）；5.00 记成交买回 1000（之后没有同价裸卖）
-    // → 该批次分两次卖：7.00×400、6.50×300。修复前：P 档不存在，这两笔盈利不归链。
+    // → 该批次分两次卖：7.00×400、6.50×300；只有原 7.00 档盈利自动归链。
     const led = buildLedger(
       [
         rec(2, { buy: 1000, qty: 1000, sell: 700, soldQty: 1000, sellDate: 46010, p: 500 }),
@@ -576,10 +577,10 @@ describe('V9.63 锚点 P 档：无同价再卖也自动归链', () => {
     const c = led.repairChains[0]
     expect(c).toMatchObject({
       lossCents: -300000,
-      // (7.00−5.00)×400 + (6.50−5.00)×300 = 80000 + 45000
-      profitCents: 125000,
-      netCents: -175000,
-      gapCents: 175000,
+      // (7.00−5.00)×400；6.50 档仍计全局盈利，不自动归入本链。
+      profitCents: 80000,
+      netCents: -220000,
+      gapCents: 220000,
       holdingQty: 300,
       plannedQty: 0, // P 档已经全部买回，不再提示计划买回
     })
@@ -589,8 +590,8 @@ describe('V9.63 锚点 P 档：无同价再卖也自动归链', () => {
       buyPriceCents: 500,
       qty: 1000,
       remainingQty: 300,
-      cycles: 2,
-      profitCents: 125000,
+      cycles: 1,
+      profitCents: 80000,
     })
     // 展示口径：无根 P 档的回补节省 = 清算价 − 档价 × 买入股数（只展示不进进度）
     expect(slot?.savingCents).toBe(200000)
@@ -599,10 +600,10 @@ describe('V9.63 锚点 P 档：无同价再卖也自动归链', () => {
   it('明细新增在 P 档价位的买入同样归链；用户结束链后不再归', () => {
     const led = buildLedger([
       rec(2, { buy: 1000, qty: 1000, sell: 700, soldQty: 1000, sellDate: 46010, p: 500 }),
-      rec(3, { buy: 500, qty: 300, sell: 600, soldQty: 300, buyDate: 46015, sellDate: 46020 }),
+      rec(3, { buy: 500, qty: 300, sell: 700, soldQty: 300, buyDate: 46015, sellDate: 46020 }),
     ], [STOCK])
     expect(led.repairChains).toHaveLength(1)
-    expect(led.repairChains[0]).toMatchObject({ profitCents: 30000, holdingQty: 0 })
+    expect(led.repairChains[0]).toMatchObject({ profitCents: 60000, holdingQty: 0 })
 
     const closed = buildLedger(
       [

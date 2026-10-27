@@ -89,7 +89,7 @@ describe('§09 测试矩阵', () => {
     expect(l.sells[0].costComplete).toBe(false)
     expect(l.orders).toHaveLength(1)
     expect(l.orders[0].rebuyPriceCents).toBe(811)
-    expect(l.anomalies.some((a) => a.kind === 'needsCost')).toBe(true)
+    expect(l.repairChains[0].unlinkedQty).toBe(500)
   })
 
   it('#05 自定义价不被覆盖（改间隔后自定义价不变）', () => {
@@ -175,7 +175,7 @@ describe('§09 测试矩阵', () => {
 
   it('#13 改价后重新分组（R63 从 7.81 改 7.86 → 两组手数同步变化）', () => {
     const base = buildLedger(fixture.records, DEFAULT_STOCKS)
-    expect(base.orders.find((o) => o.sourceRow === 63)?.rewardQty).toBe(100)
+    expect(base.orders.find((o) => o.sourceRow === 63)?.rewardQty).toBe(0)
 
     const moved = buildLedger(
       fixture.records.map((r) => (r.sourceRow === 63 ? { ...r, earlyBuyPriceCents: 786 } : r)),
@@ -185,14 +185,14 @@ describe('§09 测试矩阵', () => {
     expect(order63.rebuyPriceCents).toBe(786)
     // 7.81 组只剩 R46（¥560 < 每手 ¥781）→ 0 手；R63 并入 7.86 组（R35 ¥432 + 自己 ¥410 = ¥842）→ 1 手
     expect(moved.groups.find((g) => g.groupKey === 'stock:柳工|781')?.capacityHands).toBe(0)
-    expect(moved.groups.find((g) => g.groupKey === 'stock:柳工|786')?.capacityHands).toBe(1)
-    expect(order63.rewardQty).toBe(100)
+    expect(moved.groups.find((g) => g.groupKey === 'stock:柳工|786')?.capacityHands).toBe(0)
+    expect(order63.rewardQty).toBe(0)
     expect(base.totals.rewardQty).toBe(moved.totals.rewardQty)
   })
 
   it('#14 已完成奖励不被删（成交后 doneRewardQty 固定）', () => {
     const records = [
-      rec({ stockName: '柳工', sourceRow: 46, buyPriceCents: 781, buyQtyRaw: 1000, targetPriceCents: 837, soldQty: 1000 }),
+      rec({ stockName: '柳工', sourceRow: 46, buyPriceCents: 781, buyQtyRaw: 1000, targetPriceCents: 860, soldQty: 1000 }),
       rec({ stockName: '柳工', sourceRow: 63, soldQty: 500, targetPriceCents: 868, earlyBuyPriceCents: 781 }),
     ]
     const before = buildLedger(records, DEFAULT_STOCKS)
@@ -315,7 +315,7 @@ describe('§09 测试矩阵', () => {
     expect(r14.targetId).toBeNull()
 
     // 真实数据里每行都是「买满即卖光」，没有部分卖出样本，所以 targetId 全为 null
-    for (const s of l.sells) expect(s.targetId).toBeNull()
+    for (const s of l.sells.filter((v) => v.hedgedFromSellRow === undefined)) expect(s.targetId).toBeNull()
 
     // 构造一笔部分卖出：批次还剩 600，自动目标存在，targetId 应回填
     const partial = rec({
@@ -341,17 +341,17 @@ describe('§09 测试矩阵', () => {
   it('§7.1 凑手来源：R63 的奖励只来自同组自己（R46 已回补、没有订单）', () => {
     const l = buildLedger(fixture.records, DEFAULT_STOCKS)
     const r63 = l.orders.find((o) => o.sourceRow === 63)!
-    expect(r63.rewardQty).toBe(100)
-    expect(r63.rewardSourceOrderIds).toEqual([r63.id])
+    expect(r63.rewardQty).toBe(0)
+    expect(r63.rewardSourceOrderIds).toEqual([])
     const others = l.orders.filter((o) => o.sourceRow !== 63)
     for (const o of others) expect(o.rewardSourceOrderIds).toEqual([])
   })
 
   it('稳健性：范围外的回补成交不进净持仓、不消耗奖励预算', () => {
-    // ¥560 + ¥435 = ¥995 → 7.81 组容量 1 手；若范围外的成交泄漏进来，
+    // 真实已实现 ¥790 → 7.81 组容量 1 手；若范围外的成交泄漏进来，
     // usedProfit 会吃掉 78100 → 容量归 0
     const records = [
-      rec({ stockName: '柳工', sourceRow: 1, buyPriceCents: 781, buyQtyRaw: 1000, targetPriceCents: 837, soldQty: 1000 }),
+      rec({ stockName: '柳工', sourceRow: 1, buyPriceCents: 781, buyQtyRaw: 1000, targetPriceCents: 860, soldQty: 1000 }),
       rec({ stockName: '柳工', sourceRow: 2, soldQty: 500, targetPriceCents: 868, earlyBuyPriceCents: 781 }),
     ]
     // 一笔挂在不存在行上的成交（行被删了），groupKey 相同——不能泄漏进来
@@ -411,7 +411,7 @@ describe('§09 测试矩阵', () => {
 
   it('V9.32：老库带账户前缀的成交键照样扣额度（前缀会被剥掉）', () => {
     const records = [
-      rec({ stockName: '柳工', sourceRow: 46, buyPriceCents: 781, buyQtyRaw: 1000, targetPriceCents: 837, soldQty: 1000 }),
+      rec({ stockName: '柳工', sourceRow: 46, buyPriceCents: 781, buyQtyRaw: 1000, targetPriceCents: 860, soldQty: 1000 }),
       rec({ stockName: '柳工', sourceRow: 63, soldQty: 500, targetPriceCents: 868, earlyBuyPriceCents: 781 }),
     ]
     const before = buildLedger(records, DEFAULT_STOCKS)
@@ -500,13 +500,13 @@ describe('§09 测试矩阵', () => {
     expect(l.sells[0].ownLotCoverQty).toBe(500)
     expect(l.sells[0].rebuyStatus).toBe('repaid')
     expect(l.orders).toHaveLength(0)
-    expect(l.lots[0].remainingQty).toBe(0)
+    expect(l.lots[0].remainingQty).toBe(500)
     expect(l.totals.exposureQty).toBe(0)
     expect(l.totals.netQty).toBe(0)
     for (const c of l.checks) expect(c.ok, `${c.name}: ${c.actual}`).toBe(true)
     // 结掉之后这一档买入价就是「下一轮应买」的候选（V9.47）
     const levels = buildNextRoundBuyRows({ lots: l.lots, orders: l.orders, sells: l.sells, merges: [] })
-    expect(levels.map((r) => r.priceCents)).toEqual([781])
+    expect(levels).toEqual([])
   })
 
   it('V9.47.1 买入只盖住一半 → 待买单只挂没买回来的那截', () => {

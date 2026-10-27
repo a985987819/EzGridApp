@@ -67,9 +67,9 @@ describe('奖励引擎：组池 + FIFO（R4 / R5）', () => {
   it('已回补的卖出不占名额，额度顺延给 open 订单', () => {
     const l = buildLedger(
       [
-        // R1：有批次、P 空 → repaid，盈利 ¥560 仍入池
-        sellRow('柳工', 781, 837, 1000, null, 1),
-        // R2：无批次、P=7.81 → pending，盈利 ¥435
+        // R1：有批次、P 空 → repaid，盈利 ¥1,000 仍入池
+        sellRow('柳工', 781, 881, 1000, null, 1),
+        // R2：无批次、P=7.81 → pending，尚未回补不计价差
         rec({ stockName: '柳工', sourceRow: 2, soldQty: 500, targetPriceCents: 868, earlyBuyPriceCents: 781, buyPriceCents: null }),
       ],
       DEFAULT_STOCKS,

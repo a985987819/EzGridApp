@@ -68,7 +68,7 @@ describe('手动新增：卖出（先卖后买）', () => {
 
     const l = buildLedger([patched.record], DEFAULT_STOCKS)
     expect(l.lots).toHaveLength(1)
-    expect(l.lots[0].remainingQty).toBe(0) // 买入 500 全部卖出
+    expect(l.lots[0].remainingQty).toBe(500) // 后来买回的 500 股仍在持仓
     expect(l.totals.netQty).toBe(0)
     expect(l.sells[0].sellBeforeBuy).toBe(true) // 卖出 10-21 早于买入 10-22
     for (const c of l.checks) expect(c.ok, `${c.name}: ${c.actual}`).toBe(true)

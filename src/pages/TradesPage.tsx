@@ -171,7 +171,6 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     addBuyTarget,
     removeBuyTarget,
     buyTargets,
-    hedges,
     chainLinks,
     setChainMembers,
   } = useApp()
@@ -483,7 +482,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   )
 
   // ---------- V9.26 先卖后买挂钩（V9.30 起入口独立：行上「裸卖待挂钩」标签 → 弹层） ----------
-  const hedgeOf = useMemo(() => new Map(hedges.map((h) => [h.sellRow, h])), [hedges])
+  const hedgeOf = useMemo(() => new Map(ledger.effectiveHedges.filter((h) => h.items.length > 0).map((h) => [h.sellRow, h])), [ledger.effectiveHedges])
   /** 有挂钩异常（失效 / 超挂 / 挂不满）的卖出行（V9.33）：行上标红，点开面板能看到原因 */
   const hedgeIssues = useMemo(
     () => new Set(ledger.anomalies.filter((a) => a.kind.startsWith('hedge')).map((a) => a.sourceRow)),
@@ -510,10 +509,14 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   )
   /** 归属成员行 → 它归进去的那条链（V9.49：价位槽里每一笔同价买入都算，点开就能看整条链） */
   const repairByMember = useMemo(() => {
-    const m = new Map<number, RepairChain>()
+    const m = new Map<number, RepairChain[]>()
     for (const c of ledger.repairChains) {
       for (const b of c.branches) {
-        for (const r of b.memberRows) m.set(r, c)
+        for (const r of b.memberRows) {
+          const list = m.get(r) ?? []
+          if (!list.some((x) => x.id === c.id)) list.push(c)
+          m.set(r, list)
+        }
       }
     }
     return m
@@ -852,29 +855,27 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
         </Card>
       ) : (
         visible.map((r) => {
-          // V9.30 挂钩状态标签（可点）：未回补的裸卖 → 「裸卖待挂钩」/「已挂钩 · 改挂」，
+          // V9.30 挂钩状态标签（可点）：先卖后买 → 「裸卖待挂钩」/「已挂钩 · 改挂」，
           // 点一下直接弹绑定面板（不用先开抽屉）；被挂的高位批次 → 「挂钩暂记 · 原目标 x」
           // V9.33：这条挂钩有异常（失效 / 超挂 / 挂不满）→ 标签变红，点进去看红条
           let hedgeTag: ReactNode = null
-          if (r.rec.buyPriceCents === null && (r.rec.soldQty ?? 0) > 0) {
-            if (hedgeableRows.has(r.rec.sourceRow)) {
-              const linked = hedgeOf.has(r.rec.sourceRow)
-              const broken = hedgeIssues.has(r.rec.sourceRow)
-              hedgeTag = (
-                <span
-                  data-hedge={r.rec.sourceRow}
-                  style={{ display: 'inline-flex', cursor: 'pointer' }}
-                  onClick={(e) => {
-                    e.stopPropagation() // 别顺手把抽屉也打开
-                    setHedgeRow(r.rec.sourceRow)
-                  }}
-                >
-                  <Tag size="small" variant="soft" color={broken ? 'app-red' : linked ? 'app-teal' : 'app-yellow'}>
-                    {broken ? '挂钩异常 · 改挂' : linked ? '已挂钩 · 改挂' : '裸卖待挂钩'}
-                  </Tag>
-                </span>
-              )
-            }
+          if (hedgeableRows.has(r.rec.sourceRow)) {
+            const linked = hedgeOf.has(r.rec.sourceRow)
+            const broken = hedgeIssues.has(r.rec.sourceRow)
+            hedgeTag = (
+              <span
+                data-hedge={r.rec.sourceRow}
+                style={{ display: 'inline-flex', cursor: 'pointer' }}
+                onClick={(e) => {
+                  e.stopPropagation() // 别顺手把抽屉也打开
+                  setHedgeRow(r.rec.sourceRow)
+                }}
+              >
+                <Tag size="small" variant="soft" color={broken ? 'app-red' : linked ? 'app-teal' : 'app-yellow'}>
+                  {broken ? '挂钩异常 · 改挂' : linked ? '已挂钩 · 改挂' : '裸卖待挂钩'}
+                </Tag>
+              </span>
+            )
           } else if (r.sell && r.sell.hedgedFromSellRow !== undefined) {
             // V9.46：回补过的截 = 高位批次「亏着清仓」，成了回本链的锚点（一直不回本就一直欠着）
             const chain = repairByAnchor.get(r.rec.sourceRow)
@@ -901,7 +902,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
             : anchorChain
               ? (
                 <Tag size="small" variant="soft" color={anchorChain.done ? 'app-green' : 'app-red'}>
-                  {anchorChain.done ? '回本链 · 已不亏钱' : `回本链 · 还差 ${money(anchorChain.gapCents)}`}
+                  {anchorChain.unlinkedQty ? '回本链 · 待关联高位买单' : anchorChain.done ? '回本链 · 已不亏钱' : `回本链 · 还差 ${money(anchorChain.gapCents)}`}
                 </Tag>
               )
               : memberChain
@@ -924,8 +925,8 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
               row={r}
               no={recordNo.of(r.rec.sourceRow)}
               onClick={() => open(r)}
-              // V9.49：价位槽的行先亮回本链（它已经是这条链的一环，不必再提示「裸卖待挂钩」）
-              extraTag={isBranch && memberChain ? chainTag : (hedgeTag ?? chainTag)}
+              // 自动归链后仍保留改挂入口；其它成员显示回本链标签。
+              extraTag={hedgeTag ?? chainTag}
               anim={anim}
               chain={anchorChain ? 'anchor' : memberChain ? (isBranch ? 'branch' : 'member') : undefined}
             />
@@ -1300,7 +1301,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                 <LotMergeBinder key={`merge-${current.rec.sourceRow}`} row={current.rec.sourceRow} />
 
                 {/* V9.26 先卖后买挂钩：裸卖未回补时人工指定未完成买单（V9.30 面板抽成 HedgeBinder） */}
-                {current.rec.buyPriceCents === null && (current.rec.soldQty ?? 0) > 0 && (
+                {isHedgeable(current.rec, 0) && (
                   <div className="divider-top" data-testid="hedge-section">
                     <div className="sec-head sm">
                       <strong>裸卖待挂钩</strong>
@@ -1319,7 +1320,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                     {[
                       repairByAnchor.get(current.rec.sourceRow),
                       ...(repairBySell.get(current.rec.sourceRow) ?? []),
-                      repairByMember.get(current.rec.sourceRow),
+                      ...(repairByMember.get(current.rec.sourceRow) ?? []),
                     ]
                       .filter((c): c is RepairChain => Boolean(c))
                       .filter((c, i, arr) => arr.findIndex((x) => x.id === c.id) === i)
