@@ -143,7 +143,9 @@ try {
   }
   const clickByText = (sel, text) =>
     evaluate(`(() => {
-      const el = [...document.querySelectorAll(${JSON.stringify(sel)})].find(x => x.textContent.trim().includes(${JSON.stringify(text)}))
+      const candidates = [...document.querySelectorAll(${JSON.stringify(sel)})]
+      const el = candidates.find(x => x.textContent.trim() === ${JSON.stringify(text)})
+        ?? candidates.find(x => x.textContent.trim().includes(${JSON.stringify(text)}))
       if (!el) return false
       el.click(); return true
     })()`)

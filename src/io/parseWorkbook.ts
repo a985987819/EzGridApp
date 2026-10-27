@@ -31,6 +31,8 @@ export interface ParseResult {
   records: RawRecord[]
   skippedRows: number[]
   missingColumns: string[]
+  /** 含可选列，仅用于增量更新保护，不落库。 */
+  absentFields?: string[]
 }
 
 /**
@@ -42,8 +44,8 @@ const COL = {
   buyDate: ['日期', '买入日期', 'date', 'buy date', 'buyDate', 'trade date'],
   buyPrice: ['买入价', '买入价格', 'buy price', 'buyprice', 'cost', 'avg price'],
   buyQty: ['买入份额', '份额', '数量', 'shares', 'qty', 'quantity', 'buy qty'],
-  target: ['目标售价', '目标价', 'target', 'target price', 'sell price'],
-  soldQty: ['实现份数', '卖出数量', 'sold', 'sold qty', 'sold shares'],
+  target: ['目标售价', '目标价', '成交价', 'target', 'target price', 'sell price'],
+  soldQty: ['实现份数', '卖出数量', '已卖', 'sold', 'sold qty', 'sold shares'],
   profit: ['实现盈利', '盈亏', 'profit', 'realized', 'realized pnl'],
   sellDate: ['卖出日期', 'sell date', 'sold date', 'close date'],
   earlyBuy: ['提前卖的买价', '回补价', '提前买价', 'rebuy', 'rebuy price', 'early buy price'],
@@ -132,11 +134,15 @@ function resolveHeader(sheet: WorkSheet, aliases: readonly string[]): number | n
 
 /** 单表解析核心：xlsx 的第 1 个表和 CSV 的唯一表都走这里 */
 function parseSheet(sheet: WorkSheet, sheetName: string): ParseResult {
+  if (resolveHeader(sheet, ['导出用途（仅供查看，不可导入）']) !== null) {
+    throw new Error('这是查看用明细，未保存完整关联。请导入完整台账 Excel 恢复，或使用空白交易模板新增数据')
+  }
   const idx = {} as Record<ColKey, number | null>
   for (const k of Object.keys(COL) as ColKey[]) {
     idx[k] = resolveHeader(sheet, COL[k])
   }
   const missingColumns = (Object.keys(COL) as ColKey[]).filter((k) => idx[k] === null && k !== 'profit')
+  const tradePriceCol = resolveHeader(sheet, ['成交价'])
 
   const range = XLSX.utils.decode_range(sheet['!ref'] as string)
   const records: RawRecord[] = []
@@ -156,8 +162,10 @@ function parseSheet(sheet: WorkSheet, sheetName: string): ParseResult {
 
     const buyPrice = idx.buyPrice === null ? null : centsOrNull(sheet, r, idx.buyPrice)
     const buyQtyRaw = idx.buyQty === null ? null : numOrNull(sheet, r, idx.buyQty)
-    const targetRaw = idx.target === null ? null : centsOrNull(sheet, r, idx.target)
     const soldQty = idx.soldQty === null ? null : numOrNull(sheet, r, idx.soldQty)
+    const targetRaw = (soldQty ?? 0) > 0 && tradePriceCol !== null
+      ? centsOrNull(sheet, r, tradePriceCol) ?? (idx.target === null ? null : centsOrNull(sheet, r, idx.target))
+      : idx.target === null ? null : centsOrNull(sheet, r, idx.target)
 
     const qtyFormula = idx.buyQty === null ? null : cellFormula(sheet, r, idx.buyQty)
     const targetFormula = idx.target === null ? null : cellFormula(sheet, r, idx.target)
@@ -207,7 +215,7 @@ function parseSheet(sheet: WorkSheet, sheetName: string): ParseResult {
     records.push(rec)
   }
 
-  return { sheetName, records, skippedRows, missingColumns }
+  return { sheetName, records, skippedRows, missingColumns, absentFields: (Object.keys(COL) as ColKey[]).filter((k) => idx[k] === null && !(k === 'target' && tradePriceCol !== null)) }
 }
 
 export async function parseWorkbook(buffer: ArrayBuffer | Uint8Array): Promise<ParseResult> {
@@ -313,9 +321,12 @@ export async function buildTemplateWorkbook(): Promise<Uint8Array> {
 }
 
 /** V9.64：把明细行（已按表头顺序拼好）导出为【交易记录】格式的 xlsx 字节 */
-export async function exportRecordsWorkbook(rows: (string | number | null)[][]): Promise<Uint8Array> {
+export async function exportRecordsWorkbook(rows: (string | number | null)[][], viewOnly = false): Promise<Uint8Array> {
   await loadXlsx()
   const wb = XLSX.utils.book_new()
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([[...TEMPLATE_HEADERS], ...rows]), '交易记录')
+  const data = viewOnly
+    ? [[...TEMPLATE_HEADERS, '导出用途（仅供查看，不可导入）'], ...rows.map((r) => [...r, '查看用；恢复请用完整台账'])]
+    : [[...TEMPLATE_HEADERS], ...rows]
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(data), '交易记录')
   return XLSX.write(wb, { bookType: 'xlsx', type: 'array' }) as Uint8Array
 }

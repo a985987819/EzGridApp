@@ -220,6 +220,48 @@ try {
   await act(`testApp.setDeriveSellPrice(false)`)
 
 
+  // 审计回归：同订单拆档撞价合并后，基础股只能分配一次，奖励必须占用利润。
+  await act(`await testApp.resetAll();await testApp.addStock({id:'stock:T',name:'T',intervalCents:200,priceLimitType:'main_10'});window.auditRec={sourceRow:2,stockName:'T',buyDateSerial:46000,buyPriceCents:500,buyQtyRaw:500,qtyNeedsDerive:false,targetPriceCents:700,targetNeedsDerive:false,soldQty:500,sellDateSerial:46010,earlyBuyPriceCents:500,rawProfitCents:null,importKey:'audit:reward'};await testApp.commitImport({sheetName:'交易记录',records:[auditRec],skippedRows:[],missingColumns:[]},'audit.csv');await testApp.addBuyTarget(2,450,300);await testApp.addBuyTarget(2,500,200)`)
+  await act(`const {buildBuySuggestions}=await import('/src/domain/suggestions.ts');const row=buildBuySuggestions(testApp.ledger.buySplits,[],[]).find(b=>b.priceCents===450);await testApp.setPlan('buy',row.key,500,300)`)
+  await evaluate(`document.querySelector('[data-action="suggestion-buy"]')?.click()`)
+  await settle()
+  check('合并建议从UI进入多来源成交，默认量为700股',await evaluate(`document.querySelector('input[data-field="tradeQty"]')?.value==='700'`))
+  await evaluate(`[...document.querySelectorAll('button')].find(b=>b.textContent.trim()==='保存成交')?.click()`)
+  await settle()
+  const rewardResult=await evaluate(`({done:testApp.ledger.orders[0].doneRewardQty,used:testApp.ledger.groups[0].usedProfitCents,remaining:testApp.ledger.orders[0].remainingQty,sources:testApp.executions.map(e=>e.buyTargetId),bad:testApp.ledger.checks.filter(c=>!c.ok)})`)
+  check('同订单拆档合并700股正确记录200奖励及1000元已用利润',rewardResult.done===200&&rewardResult.used===100000&&rewardResult.remaining===0&&rewardResult.sources.every(Boolean)&&rewardResult.bad.length===0,JSON.stringify(rewardResult))
+  await act(`await testApp.removeRebuy(testApp.executions.find(e=>e.rewardQty>0).id)`)
+  check('撤销奖励成交恢复额度，基础股不重复扣档',await evaluate(`testApp.ledger.orders[0].remainingQty===400&&testApp.ledger.buySplits.find(b=>b.priceCents===450).qty===0&&testApp.ledger.buySplits.find(b=>b.priceCents===500).qty===400&&testApp.ledger.groups[0].usedProfitCents===0`))
+  await act(`await testApp.removeRebuy(testApp.executions[0].id)`)
+  await act(`const split=testApp.ledger.buySplits.find(b=>b.priceCents===500);await testApp.recordRebuy(testApp.ledger.orders[0],400,500,200,undefined,split.key)`)
+  check('单档先成交奖励档也保存来源，其它300股基础档不变',await evaluate(`testApp.executions[0].rewardQty===200&&Boolean(testApp.executions[0].buyTargetId)&&testApp.ledger.buySplits.find(b=>b.priceCents===450).qty===300&&testApp.ledger.buySplits.find(b=>b.priceCents===500).qty===0&&testApp.ledger.checks.every(c=>c.ok)`))
+
+  await act(`await testApp.resetAll();await testApp.addStock({id:'stock:T',name:'T',intervalCents:200,priceLimitType:'main_10'});window.partialBuy=await testApp.addManualRecord({kind:'sell',stockName:'T',date:'2026-10-20',price:'8',qty:'1000',rebuyPrice:'6'});await testApp.addBuyTarget(partialBuy,500,200)`)
+  check('只拆200股的买单保留默认价600分的800股',await evaluate(`testApp.ledger.buySplits.some(b=>b.priceCents===500&&b.qty===200)&&testApp.ledger.buySplits.some(b=>b.priceCents===600&&b.qty===800)`))
+  await act(`const split=testApp.ledger.buySplits.find(b=>b.priceCents===500);await testApp.recordRebuy(testApp.ledger.orders[0],100,550,0,undefined,split.key)`)
+  check('单档改价部分买入后只扣原档100股',await evaluate(`testApp.ledger.buySplits.some(b=>b.priceCents===500&&b.qty===100)&&testApp.ledger.buySplits.some(b=>b.priceCents===600&&b.qty===800)&&Boolean(testApp.executions[0].buyTargetId)`))
+
+  // 新来源身份跨完整 Excel 往返，恢复后继续卖出和撤销。
+  await act(`await testApp.resetAll();await testApp.addStock({id:'stock:T',name:'T',intervalCents:200,priceLimitType:'main_10'});window.splitParent=await testApp.addManualRecord({kind:'buy',stockName:'T',date:'2026-10-20',price:'5',qty:'500',targetPrice:'7'});await testApp.addExtraTarget('lot:'+splitParent,600,200);await testApp.addExtraTarget('lot:'+splitParent,700,300)`)
+  await act(`const t=testApp.ledger.targets.find(t=>t.priceCents===600);await testApp.recordLotSales([{lotId:t.lotId,targetId:t.id,qty:t.qty}],100,650,'2026-10-21')`)
+  check('卖出改成交价后仍只扣原拆分档',await evaluate(`testApp.ledger.targets.some(t=>t.priceCents===600&&t.qty===100)&&testApp.ledger.targets.some(t=>t.priceCents===700&&t.qty===300)&&Boolean(testApp.records.find(r=>r.soldLotId)?.soldTargetId)`))
+  const splitRestored=await act(`const {exportLedgerWorkbook,parseLedgerWorkbook}=await import('/src/io/ledgerWorkbook.ts');const p=await parseLedgerWorkbook(await exportLedgerWorkbook(JSON.parse(await testApp.exportBackup())));await testApp.restoreBackup(JSON.stringify(p.snapshot));return p.differences.length===0`)
+  check('来源档身份经完整Excel恢复，核对快照不变',splitRestored)
+  await act(`const t=testApp.ledger.targets.find(t=>t.priceCents===600);await testApp.recordLotSales([{lotId:t.lotId,targetId:t.id,qty:t.qty}],100,600,'2026-10-22')`)
+  check('恢复后继续卖出，已成交低价档不再出现',await evaluate(`testApp.ledger.targets.length===1&&testApp.ledger.targets[0].priceCents===700&&testApp.ledger.targets[0].qty===300`))
+  await act(`await testApp.softDelete(testApp.records.filter(r=>r.soldLotId).sort((a,b)=>b.sourceRow-a.sourceRow)[0].sourceRow)`)
+  check('恢复后撤销子卖出，原档100股恢复',await evaluate(`testApp.ledger.targets.some(t=>t.priceCents===600&&t.qty===100)&&testApp.ledger.checks.every(c=>c.ok)`))
+  await act(`await testApp.recordLotSales(testApp.ledger.targets.map(t=>({lotId:t.lotId,targetId:t.id,qty:t.qty})),400,700,'2026-10-23')`)
+  check('同批次多档一起成交支持独立来源，并识别父明细已完成',await evaluate(`(async()=>{const {isDone}=await import('/src/domain/tradeState.ts');return testApp.ledger.lots.find(l=>l.id==='lot:'+splitParent).remainingQty===0&&isDone({rec:testApp.records.find(r=>r.sourceRow===splitParent),lot:testApp.ledger.lots.find(l=>l.id==='lot:'+splitParent),sell:null})&&testApp.ledger.checks.every(c=>c.ok)})()`))
+
+  // 推定售价设置必须同时用于页面和事务内成交校验。
+  await act(`await testApp.resetAll();await testApp.addStock({id:'stock:T',name:'T',intervalCents:200,priceLimitType:'main_10'});await testApp.commitImport({sheetName:'交易记录',records:[{...auditRec,targetPriceCents:null,targetNeedsDerive:true,importKey:'audit:formula'}],skippedRows:[],missingColumns:[]},'formula.xlsx')`)
+  await act(`testApp.setDeriveSellPrice(true)`)
+  check('推定售价启用后显示700股含200奖励',await evaluate(`testApp.ledger.orders[0].remainingQty===700`))
+  await act(`await testApp.recordBuySuggestion([{kind:'order',id:testApp.ledger.orders[0].id,row:2,qty:700}],700,500,'2026-10-23')`)
+  check('推定售价设置下700股按页面额度成功成交',await evaluate(`testApp.ledger.orders[0].remainingQty===0&&testApp.ledger.orders[0].doneRewardQty===200&&testApp.ledger.checks.every(c=>c.ok)`))
+  await act(`testApp.setDeriveSellPrice(false)`)
+
   // 同行号增量导入：通过真实 Dexie 写入检查覆盖风险。
   await act(`await testApp.resetAll();window.importRec=(p)=>({sourceRow:2,stockName:'T',buyDateSerial:46000,buyPriceCents:p,buyQtyRaw:500,qtyNeedsDerive:false,targetPriceCents:p+200,targetNeedsDerive:false,soldQty:0,sellDateSerial:null,earlyBuyPriceCents:null,rawProfitCents:null,importKey:'import:'+p});await testApp.commitImport({sheetName:'Sheet1',records:[importRec(1000)],skippedRows:[],missingColumns:[]},'A.xlsx');await testApp.commitImport({sheetName:'Sheet1',records:[importRec(600)],skippedRows:[],missingColumns:[]},'B.xlsx')`)
   v=await state()

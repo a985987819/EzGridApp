@@ -5,10 +5,24 @@
  *   用户导出 → 改 → 再导入的往返不丢数据。
  */
 import { describe, expect, it } from 'vitest'
-import { buildTemplateWorkbook, exportRecordsWorkbook, parseWorkbook, TEMPLATE_HEADERS } from './parseWorkbook'
+import { buildTemplateWorkbook, exportRecordsWorkbook, parseCsvText, parseWorkbook, TEMPLATE_HEADERS } from './parseWorkbook'
+import { planImport } from '../domain/importPlan'
 import type { RawRecord } from '../domain/types'
 
 describe('Excel 模板与导出闭环', () => {
+  it('旧明细CSV的已卖与成交价可识别；缺列不会清掉已有卖出字段', async () => {
+    const p = await parseCsvText('股票,买入日期,买入价,买入份额,已卖,目标售价,成交价,卖出日期,回补价,实现盈利\nT,2026-10-20,5,500,500,9,7,2026-10-21,5,1000')
+    expect(p.records[0]).toMatchObject({ soldQty: 500, targetPriceCents: 700, rawProfitCents: 100000 })
+    expect(p.missingColumns).not.toContain('soldQty')
+    const incomplete = await parseCsvText('股票,买入日期,买入价,买入份额\nT,2026-10-20,5,500')
+    expect(planImport(p.records, incomplete.records, incomplete.absentFields).updates).toEqual([])
+    const cleared = await parseCsvText('股票,买入日期,买入价,买入份额,已卖\nT,2026-10-20,5,500,')
+    expect(planImport(p.records, cleared.records, cleared.absentFields).updates[0].to.soldQty).toBeNull()
+  })
+  it('查看用明细Excel/CSV拦截导入，防止关联丢失后重复建账', async () => {
+    await expect(parseWorkbook(await exportRecordsWorkbook([['T', '2026-10-20', 5, 500, 7, 200, 400, '2026-10-21', 5]], true))).rejects.toThrow('查看用明细')
+    await expect(parseCsvText('股票,已卖,导出用途（仅供查看，不可导入）\nT,200,查看用')).rejects.toThrow('完整台账')
+  })
   it('模板：两个工作表，表头齐全（缺列清单为空），解析出 0 行数据', async () => {
     const buf = await buildTemplateWorkbook()
     const res = await parseWorkbook(buf)

@@ -73,7 +73,7 @@ export function importFieldValue(r: RawRecord, k: ImportUpdatableKey): string {
   return String(v)
 }
 
-export function planImport(existing: RawRecord[], incoming: RawRecord[]): ImportPlan {
+export function planImport(existing: RawRecord[], incoming: RawRecord[], missingColumns: readonly string[] = []): ImportPlan {
   // 身份 → 本地行队列：同一身份多行（例如同价同日多笔买入）按出现次序配对，不串行
   const byIdentity = new Map<string, RawRecord[]>()
   for (const r of existing) {
@@ -113,6 +113,14 @@ export function planImport(existing: RawRecord[], incoming: RawRecord[]): Import
       targetNeedsDerive: r.targetNeedsDerive,
       earlyBuyPriceCents: r.earlyBuyPriceCents,
       rawProfitCents: r.rawProfitCents,
+    }
+    // 缺列与显式留空不同：没有提供的字段保留原值，避免重导时清掉已成交数据。
+    const protectedKeys: Record<string, ImportUpdatableKey[]> = {
+      soldQty: ['soldQty'], sellDate: ['sellDateSerial', 'sellDateNeedsToday'],
+      target: ['targetPriceCents', 'targetNeedsDerive'], earlyBuy: ['earlyBuyPriceCents'], profit: ['rawProfitCents'],
+    }
+    for (const column of missingColumns) for (const key of protectedKeys[column] ?? []) {
+      Object.assign(merged, { [key]: local[key] })
     }
     if (importDiffFields(local, merged).length > 0) updates.push({ from: local, to: merged })
     else unchanged += 1

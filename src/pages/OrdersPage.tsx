@@ -270,9 +270,7 @@ export function OrdersPage({
       if(q>r.qty)throw new Error(`本次最多记录 ${r.qty} 股`)
       if(trade.buy)await recordBuySuggestion(trade.buy.sources,q,p,tradeDate||todayIso())
       else {
-        const sources=new Map<string,number>()
-        for(const t of trade.sell!.targets)sources.set(t.lotId,(sources.get(t.lotId)??0)+t.qty)
-        await recordLotSales([...sources].map(([lotId,qty])=>({lotId,qty})),q,p,tradeDate||todayIso())
+        await recordLotSales(trade.sell!.targets.map((t)=>({lotId:t.lotId,targetId:t.id,qty:t.qty})),q,p,tradeDate||todayIso())
       }
       setTrade(null)
       notificationOpen({message:'成交已记录',description:'已按来源分配数量，更新持仓与回本链',type:'success'})
@@ -314,7 +312,7 @@ export function OrdersPage({
         <details open><summary className="tiny muted">{r.sources.length} 笔来源 · 查看明细</summary>
           {/* V9.55 修：同一张卖单拆出的两档共用 sourceRow，撞价合并后会并进同一条建议 →
               key 只用「类型+行号」会重复；带上拆分段身份/股数才唯一 */}
-          {r.sources.map((v)=><div key={`${v.kind}:${v.row}:${v.kind==='order'?(v.splitKey??''):''}:${v.qty}`} className="tiny"><Button type="text" size="small" onClick={()=>goTrades({id:idFor(v.row),stock:r.stockName})}>{recordNoLabel(v.row,recordNo)}</Button> · {v.kind==='next'?'下一轮':(v.sellFirst?'先卖后买':'待回补')}{v.kind==='order' && v.splitKey ? ` 第 ${v.splitKey.split('#')[1] ?? '?'} 档` : ''} {qty(v.qty)} 股</div>)}
+          {r.sources.map((v)=><div key={`${v.kind}:${v.row}:${v.kind==='order'?(v.splitKey??''):''}:${v.qty}`} className="tiny"><Button type="text" size="small" onClick={()=>goTrades({id:idFor(v.row),stock:r.stockName})}>{recordNoLabel(v.row,recordNo)}</Button> · {v.kind==='next'?'下一轮':(v.sellFirst?'先卖后买':'待回补')}{v.kind==='order' && v.splitKey?.includes('#') ? ` 第 ${buySplits.filter(b=>b.orderId===v.id&&b.split).findIndex(b=>b.key===v.splitKey)+1} 档` : ''} {qty(v.qty)} 股</div>)}
         </details>
       </div>
       <div className="right num">{money(r.amountCents)}</div>
@@ -336,7 +334,13 @@ export function OrdersPage({
         >
           改单
         </Button>
-        <Button size="small" data-action="suggestion-buy" onClick={()=>{const source=r.sources[0];const order=source?.kind==='order'?orders.find((o)=>o.id===source.id):null;if(!order)return openTrade('buy',r);const split=buySplits.find((b)=>b.orderId===order.id&&(source.kind!=='order'||b.key===source.splitKey))??buySplits.find((b)=>b.orderId===order.id);openExec(order,{qty:split?execQtyOf(split,order):r.qty,priceCents:r.priceCents})}}>记成交</Button>
+        <Button size="small" data-action="suggestion-buy" onClick={()=>{
+          const source=r.sources[0]
+          const order=source?.kind==='order'?orders.find((o)=>o.id===source.id):null
+          if(r.sources.length!==1||!order)return openTrade('buy',r)
+          const split=buySplits.find((b)=>b.orderId===order.id&&(source.kind!=='order'||b.key===source.splitKey))??buySplits.find((b)=>b.orderId===order.id)
+          openExec(order,{qty:Math.min(r.qty,split?execQtyOf(split,order):r.qty),priceCents:r.priceCents,splitKey:split?.key})
+        }}>记成交</Button>
         {(() => {
           // V9.66：单一张订单的档可以直接行内拆分（撞价合并的行来源不唯一，去明细拆）
           const src = r.sources.length === 1 ? r.sources[0] : null
@@ -492,7 +496,7 @@ export function OrdersPage({
               <Button
                 size="small"
                 disabled={!o}
-                onClick={stopWith(() => o && openExec(o, { qty: execQtyOf(b, o), priceCents: b.priceCents }))}
+                onClick={stopWith(() => o && openExec(o, { qty: execQtyOf(b, o), priceCents: b.priceCents, splitKey: b.key }))}
               >
                 记成交
               </Button>
@@ -624,6 +628,7 @@ export function OrdersPage({
 
   // 记成交
   const [execOrder, setExecOrder] = useState<RebuyOrder | null>(null)
+  const [execSplitKey, setExecSplitKey] = useState<string | undefined>()
   const [execQty, setExecQty] = useState('')
   const [execPrice, setExecPrice] = useState('')
   const [execReward, setExecReward] = useState('')
@@ -712,9 +717,11 @@ export function OrdersPage({
     }
   }
 
-  function openExec(o: RebuyOrder, suggestion?: {qty:number;priceCents:number}) {
+  function openExec(o: RebuyOrder, suggestion?: {qty:number;priceCents:number;splitKey?:string}) {
     setExecOrder(o)
-    const baseLeft=Math.max(0,o.baseQty-o.execQty+o.doneRewardQty)
+    setExecSplitKey(suggestion?.splitKey)
+    const split=suggestion?.splitKey?buySplits.find((b)=>b.key===suggestion.splitKey):undefined
+    const baseLeft=split?.baseRemainingQty??Math.max(0,o.baseQty-o.execQty+o.doneRewardQty)
     const defaults={qty:suggestion?.qty??o.remainingQty,priceCents:suggestion?.priceCents??o.rebuyPriceCents,reward:suggestion?Math.max(0,suggestion.qty-baseLeft):Math.max(0,o.rewardQty-o.doneRewardQty)}
     setExecDefaults(defaults)
     setExecQty(String(defaults.qty))
@@ -736,7 +743,7 @@ export function OrdersPage({
       if (!Number.isInteger(q) || q <= 0) throw new Error('股数要填正整数')
       if (p === null || p <= 0) throw new Error('回补价不合法')
       if (!Number.isInteger(r) || r < 0) throw new Error('奖励股数不合法')
-      await recordRebuy(execOrder, q, p, r)
+      await recordRebuy(execOrder, q, p, r, undefined, execSplitKey)
       setExecOrder(null)
       notificationOpen({
         message: '已记回补成交',

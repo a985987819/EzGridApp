@@ -8,13 +8,10 @@ import { Card, Tag } from 'animal-island-ui'
 import type { ReactNode } from 'react'
 import { serialToIso } from '../domain/defaults'
 import { price, qty, signedMoney, tone } from '../ui/format'
-import type { Lot, RawRecord, SellExecution } from '../domain/types'
+import type { TradeRow } from '../domain/tradeState'
+export { isDone } from '../domain/tradeState'
+export type { TradeRow } from '../domain/tradeState'
 
-export interface TradeRow {
-  rec: RawRecord
-  lot: Lot | null
-  sell: SellExecution | null
-}
 
 /** 行上的买入日期（可空） */
 export function buyDateOf(r: TradeRow): string | null {
@@ -24,11 +21,6 @@ export function buyDateOf(r: TradeRow): string | null {
 /** 行上的卖出日期（可空） */
 export function sellDateOf(r: TradeRow): string | null {
   return r.sell?.soldAt ?? null
-}
-
-/** 已完成：卖出已落袋且无剩余、也无待回补挂着——明细页默认隐藏这类行 */
-export function isDone(r: TradeRow): boolean {
-  return r.sell !== null && r.sell.rebuyStatus !== 'pending' && (r.lot === null || r.lot.remainingQty === 0)
 }
 
 export function TradeItem({

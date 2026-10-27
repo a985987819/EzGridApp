@@ -28,6 +28,8 @@ export interface RawRecord {
   excelRow?: number
   /** 本次卖出消耗的既有批次，本行不重复创建买入。 */
   soldLotId?: string
+  /** 子卖出来源档位；改单后成交仍扣原档。删除档位不删除历史身份。 */
+  soldTargetId?: string
   /** 本次买入消耗的下一轮建议来源。 */
   nextRoundOfRow?: number
   stockName: string
@@ -191,7 +193,7 @@ export interface ExtraBuyTarget {
  * 只用于挂单页/概览展示与「记成交」取价、取量——账务仍走 RebuyOrder。
  */
 export interface BuySplit {
-  /** 整单 = rb:sell:C；拆分段 = rb:sell:C#<序号> */
+  /** 默认档 = rb:sell:C；拆分段 = rb:sell:C#<buyTarget ID>，删除其它档不改身份 */
   key: string
   orderId: string
   sellExecId: string
@@ -200,9 +202,11 @@ export interface BuySplit {
   priceCents: number
   /** 这一档还没买回来的量 */
   qty: number
+  /** 未成交基础股，奖励股另计；用于按档成交及继续拆分的额度校验。 */
+  baseRemainingQty: number
   /** 这一档拆分时的原始量 */
   plannedQty: number
-  /** 已经在这档成交的量（按档位顺序冲抵） */
+  /** 已经在这档成交的基础股（来源身份优先、旧成交按价格冲抵，不含奖励） */
   executedQty: number
   split: boolean
   /** 手动拆分段对应的 buyTargets id（可删）；整单为 null */
@@ -372,6 +376,8 @@ export interface RebuyExecution {
   groupKeyAtExecution: string
   at: number
   note?: string
+  /** 成交来源买入档；默认档为 default:<orderId>，删档后仍保留历史身份。 */
+  buyTargetId?: string
 }
 
 export interface RebuyOrder {

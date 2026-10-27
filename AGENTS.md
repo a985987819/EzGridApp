@@ -8,7 +8,7 @@
 
 ```bash
 npm run dev        # 127.0.0.1:5173
-npm test           # vitest，352 条（domain 纯函数 + 真实 xlsx fixture 回归）
+npm test           # vitest，368 条（domain 纯函数 + 真实 xlsx fixture 回归）
 npm run lint       # eslint
 npm run build      # tsc --noEmit && vite build；GITHUB_PAGES=true 时启用 /EzGridApp/ 子路径 base
 node e2e/smoke.mjs http://127.0.0.1:5173   # 无头 Chrome CDP，477 项断言，需先起 dev
@@ -144,7 +144,7 @@ store/useApp（唯一写库入口，全部动作写 auditLogs）
 `et:<lotId>:<ts>` `plan:<refId>` `batch:<ts>` `hedge:<sellRow>`（V9.26）
 `merge:<锚行号>`（V9.45 同价买单合并组；`merge:<组 id>@<目标价分>` 是合并行的计划 ref）
 `chainlink:<锚行号>`（V9.46 回本链归属，只存 memberRows + closedAt；派生链 id 是 `chain:<锚行号>`，不落库）
-`buytarget:<卖单行>:<ts>`（V9.50 卖单拆买，只存价位+股数；派生展示档是 `rb:sell:<行>#<序号>`，不落库）
+`buytarget:<卖单行>:<ts>`（卖单拆买，只存价位+股数；派生展示档是 `rb:sell:<行>#<buyTarget ID>`，默认档 `rb:sell:<行>`，不落库）
 `sandbox:<seq>:<ts>`（V9.39 仅预览；预览行号 = 300000 + seq，绝不落库）。备份
 schemaVersion 11（V9.50 加 buyTargets；V9.49 加行级成交来源；V9.46 加 chainLinks；V9.45 加 merges；V9.32 去掉 accounts）。`validateBackup` 现在逐表校验 records / stocks / 回补成交 / 计划 / 拆分目标 / **拆分买入** / **挂钩** / **合并组** / **回本链归属**（V9.32 起；之前只查前两张，`hedges: [{}]` 能过校验、恢复后 `for..of h.items` 直接白屏）。Dexie schema 改动必须递增 `db.ts` 里的 version()（老库
 自动升级，不写迁移）。
@@ -222,10 +222,18 @@ schemaVersion 11（V9.50 加 buyTargets；V9.49 加行级成交来源；V9.46 �
 ## 完整台账 Excel（2026-10-27 用户确认）
 
 - 新入口在管理备份：全量 XLSX 导出与预览后整库恢复；普通导入也识别该格式。明细筛选导出、旧模板/CSV 增量导入、JSON 备份保留。
-- `domain/ledgerSnapshot.ts` 定义全量派生输入和只读核对视图，`io/ledgerWorkbook.ts` 负责版本化 Excel 编解码与严格校验。格式/计算口径版本均为 1；文档见 `docs/完整台账Excel.md`。
+- `domain/ledgerSnapshot.ts` 定义全量派生输入和只读核对视图，`io/ledgerWorkbook.ts` 负责版本化 Excel 编解码与严格校验。格式版本 1、计算口径版本 2，兼容旧口径 1 文件；文档见 `docs/完整台账Excel.md`。
 - 固定 `sourceRow`/各表 id 是文件中的永久身份；物理行和界面序号不是外键。每表带原始顺序列，排序后仍按原顺序还原，避免同时间事件与派生虚拟批次变化。
 - 人工关系与成员规范化分表；**空 hedges 父行保留**（禁用自动挂钩）。自动有效挂钩/回本链/价位槽仅导出到 `核对_` 表，恢复绝不能写入人工表。
 - 核对表是可见快照，不在 Excel 内实现领域公式。恢复前重算并显示字段差异，可下载完整重算表；合法修改允许恢复。结构、重复身份、外键、类型/金额股数、循环批次引用等不合法则整包拒绝。
 - 唯一写库仍是 `useApp.restoreBackup`，多表+计算设置同事务替换；恢复前 UI 自动下载当前 JSON 快照。`deriveSellPrice` 现在持久化到 meta，JSON schemaVersion 11 新增可选 settings；原审计 ID 保留。设置切换同时写审计。
 - 沙盒、行情昨收/涨跌停会话、页面状态、字体偏好不进账务文件。无跨台账增量合并。
 - 回归：`io/ledgerWorkbook.spec.ts` 覆盖真实 62 行 CSV、排序、人工与自动关系、快照差异和非法文件；`e2e/accounting.mjs` 经真实 IndexedDB 验证空库恢复、重复恢复、来源/历史/虚拟批次与完整链一致。
+
+## 拆单与导出审计修复（2026-10-27，优先于历史版本说明）
+
+- 新卖出保存 `RawRecord.soldTargetId`，按来源档扣 `extraTargets` 已成交量；旧子卖出按同批次同价匹配。多档来自同批次也可一起成交。撤销恢复档位，改单成交价不改变来源。
+- 新回补保存 `RebuyExecution.buyTargetId`（默认档 `default:<orderId>`），分档 key 使用固定 target ID，不再使用位置序号。新成交按来源优先、旧成交按价格，余量顺序冲抵；`BuySplit.executedQty` 只计基础股，`baseRemainingQty` 单列基础欠量。只拆部分时余量保留默认价，奖励只加最后一档。
+- 合并成交按订单累计已分配基础股/奖励股；单档成交也保存来源并校验档位额度。新增「基础成交不超基础回补量」检查；奖励预算改为历史价组的实际奖励支出 ≤ 累计盈利，不再把已买回奖励与剩余容量比较。
+- `domain/tradeState.ts` 集中判定完成与已卖完：父批次经子卖出卖光可完成；子明细自己保留待回补状态；本行有待回补不完成，回本链豁免隐藏规则不变。事务重建账本使用与页面相同的 `deriveSellPrice` 设置。
+- 普通解析支持旧明细 CSV 的「已卖 / 成交价」，缺列不更新已有卖出字段，显式空单元格仍可清空。新明细 Excel/CSV 为查看格式，带用途标记并拦截增量导入；明细页优先提供完整台账导出。完整 Excel 新增两类成交来源档列，旧文件按兼容逻辑重算并预览差异；旧成交无法推知的历史来源不猜。

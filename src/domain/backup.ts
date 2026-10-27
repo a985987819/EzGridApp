@@ -38,6 +38,7 @@ function checkRecords(records: unknown[]): string | null {
     if (typeof rec.sourceRow !== 'number' || !Number.isInteger(rec.sourceRow)) return `records[${i}] 缺 sourceRow（行号）`
     if(rec.excelRow!==undefined && !isRow(rec.excelRow))return `records[${i}] Excel 行号不合法`
     if(rec.soldLotId!==undefined && (typeof rec.soldLotId!=='string'||!rec.soldLotId.startsWith('lot:')))return `records[${i}] 关联批次不合法`
+    if(rec.soldTargetId!==undefined && (typeof rec.soldTargetId!=='string'||!rec.soldTargetId.startsWith('target:')||!rec.soldLotId))return `records[${i}] 卖出来源档不合法`
     if(rec.nextRoundOfRow!==undefined && !isRow(rec.nextRoundOfRow))return `records[${i}] 下一轮来源不合法`
     if (typeof rec.importKey !== 'string' || rec.importKey === '') return `records[${i}] 缺 importKey`
     if (typeof rec.stockName !== 'string' || rec.stockName === '') return `records[${i}] 缺 stockName`
@@ -68,6 +69,7 @@ function checkExecutions(list: unknown[]): string | null {
     if (!isNum(e.priceCents)) return `rebuyExecutions[${i}] 缺 priceCents`
     if (!isNum(e.at)) return `rebuyExecutions[${i}] 缺 at`
     if (typeof e.groupKeyAtExecution !== 'string') return `rebuyExecutions[${i}] 缺 groupKeyAtExecution`
+    if (e.buyTargetId !== undefined && (typeof e.buyTargetId !== 'string' || e.buyTargetId === '')) return `rebuyExecutions[${i}] 买入来源档不合法`
   }
   return null
 }

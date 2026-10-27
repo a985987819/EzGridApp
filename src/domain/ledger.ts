@@ -10,6 +10,7 @@ import { serialToIso, stockIdOf } from './defaults'
 import { buildRepairChains } from './chain'
 import { defaultHedges, isSellFirst } from './sellFirst'
 import { coverOfSell, type SellCover } from './cover'
+import { remainingSellTargets } from './sellTargets'
 import { type Anomaly, type BuySplit, type ExtraBuyTarget, type ExtraTarget, type HedgeLink, type RebuyExecution, type TradePlan, type CheckResult, type GroupPool, type Ledger, type Lot, type DayBucket, type MonthlyBucket, type RawRecord, type RebuyOrder, type RepairChainLink, type SellExecution, type SellTarget, type StockConfig, type StockSummary } from './types'
 
 export interface BuildOptions {
@@ -64,7 +65,7 @@ export function buildLedger(
   const extraTargets = opts.extraTargets ?? []
   const planByRef = new Map(plans.map((p) => [p.refId, p]))
   const extraByLot = new Map<string, ExtraTarget[]>()
-  for (const t of extraTargets) {
+  for (const t of remainingSellTargets(extraTargets, records)) {
     const list = extraByLot.get(t.lotId)
     if (list) list.push(t)
     else extraByLot.set(t.lotId, [t])
@@ -452,6 +453,7 @@ export function buildLedger(
 
     for (const m of manual) {
       if (budget <= 0) break
+      if (m.qty <= 0) continue
       const q = Math.min(m.qty, budget)
       budget -= q
       const plan = planByRef.get(`target:${m.id}`)
@@ -656,19 +658,19 @@ export function buildLedger(
   const daily = summarizeDaily(sells)
 
   /**
-   * 每组「已经买回来的奖励手数」（V9.33）：doneRewardQty 折手后按组汇总。
-   * 组池因为盈利暂缓而消失时容量按 0 算——就是要让它亮出来。
+   * 已成交奖励按成交时价组和实际花费归属，不能拿已用额度与剩余容量比较。
+   * 组池因为盈利暂缓而消失时预算按 0 算，保留异常提醒。
    */
-  const doneHandsByGroup = (() => {
+  const spentByGroup = (() => {
     const m = new Map<string, number>()
-    for (const o of orders) {
-      if (o.doneRewardQty <= 0) continue
-      m.set(o.groupKey, (m.get(o.groupKey) ?? 0) + Math.floor(o.doneRewardQty / 100))
+    for (const e of scopedExecs) {
+      if (e.rewardQty <= 0) continue
+      m.set(e.groupKeyAtExecution, (m.get(e.groupKeyAtExecution) ?? 0) + e.rewardQty * e.priceCents)
     }
-    return [...m.entries()].map(([groupKey, hands]) => ({
+    return [...m.entries()].map(([groupKey, usedCents]) => ({
       groupKey,
-      hands,
-      capacity: groups.get(groupKey)?.capacityHands ?? 0,
+      usedCents,
+      budgetCents: Math.max(0, groups.get(groupKey)?.grossProfitCents ?? 0),
     }))
   })()
 
@@ -690,6 +692,12 @@ export function buildLedger(
       expected: `= ${totals.netQty}`,
       detail:
         '回补成交自动生成回补批次进待卖（R6）；空头单回补的基础股既抵了敞口又在待卖里，扣回防双算；奖励股是额外买入不减敞口',
+    },
+    {
+      name: '各订单基础成交 ≤ 基础回补量',
+      ok: orders.every((o) => o.execQty - o.doneRewardQty <= o.baseQty),
+      actual: orders.filter((o) => o.execQty - o.doneRewardQty > o.baseQty).map((o) => `${o.id} ${o.execQty - o.doneRewardQty}/${o.baseQty}`).join(' · ') || '未超额',
+      expected: '奖励成交不能记成基础回补',
     },
     {
       name: 'Σ待卖量 = Σ批次剩余',
@@ -715,15 +723,15 @@ export function buildLedger(
        * 上面的检查只看「还打算发的手数」，这里补一条看「已经买回来的奖励股」——
        * 缩水到装不下时亮黄灯提醒，而不是继续全绿骗人。
        */
-      name: 'Σ已买回的奖励手数 ≤ Σ组容量',
-      ok: doneHandsByGroup.every((d) => d.hands <= d.capacity),
-      actual: doneHandsByGroup.some((d) => d.hands > d.capacity)
-        ? doneHandsByGroup
-            .filter((d) => d.hands > d.capacity)
-            .map((d) => `${d.groupKey} ${d.hands}/${d.capacity} 手`)
+      name: 'Σ已买回奖励金额 ≤ 组累计盈利',
+      ok: spentByGroup.every((d) => d.usedCents <= d.budgetCents),
+      actual: spentByGroup.some((d) => d.usedCents > d.budgetCents)
+        ? spentByGroup
+            .filter((d) => d.usedCents > d.budgetCents)
+            .map((d) => `${d.groupKey} ${d.usedCents}/${d.budgetCents} 分`)
             .join(' · ')
-        : `${sumBy(doneHandsByGroup, (d) => d.hands)} / ${sumBy(doneHandsByGroup, (d) => d.capacity)}`,
-      expected: '已买回的奖励股不超该组容量',
+        : `${sumBy(spentByGroup, (d) => d.usedCents)} / ${sumBy(spentByGroup, (d) => d.budgetCents)} 分`,
+      expected: '奖励按成交时价组和实际金额计入，不能超过该组盈利预算',
     },
   ]
 
@@ -750,7 +758,7 @@ export function buildLedger(
  * 记成交也按档位取价、取量。
  * - 没拆 = 整单一条（价格取计划价 > P 列）；
  * - 拆了 = 按 at 顺序分段，合计不得超过这张单**本来欠的量**（超出才标 buyTargetOverflow）；
- * - 已成交优先按**成交价落到对应档**（价格对不上再按顺序补），避免 6 元档吞掉 5 元的成交；
+ * - 未拆基础股保留默认档；新成交按来源档、旧成交按价格（不匹配再顺序）冲抵；
  * - 每档还要买回的量受整单 `remainingQty` 约束——回本链同价买回盖住的那截不会再挂出来，
  *   多出来的额度（组池奖励）并到最后一档。
  */
@@ -787,8 +795,9 @@ function buildBuySplits(
         stockName: o.stockName,
         priceCents: o.planPriceCents ?? o.rebuyPriceCents,
         qty: o.remainingQty,
+        baseRemainingQty: Math.max(0, o.baseQty - o.execQty + o.doneRewardQty),
         plannedQty: o.baseQty,
-        executedQty: o.execQty,
+        executedQty: o.execQty - o.doneRewardQty,
         split: false,
         targetId: null,
         sellFirst: o.sellFirst === true,
@@ -808,24 +817,25 @@ function buildBuySplits(
       })
     }
     let planned = 0
-    const rows = mine.map((t, i) => {
+    const rows = mine.map((t) => {
       const plan = Math.min(t.qty, Math.max(0, rawCap - planned))
       planned += plan
-      return { key: `${o.id}#${i + 1}`, t, plan, exec: 0, qty: 0 }
+      return { key: `${o.id}#${t.id}`, targetId: t.id as string | null, priceCents: t.priceCents, plan, exec: 0, qty: 0 }
     })
-    // 已成交优先按价格落到对应档（用户拆了两档、只成交便宜的这档时不会错位）
-    const byPrice = new Map<number, number>()
-    for (const e of execByOrder.get(o.id) ?? []) {
-      byPrice.set(e.priceCents, (byPrice.get(e.priceCents) ?? 0) + e.qty)
+    // 未拆基础股保持默认价；不能把它误当奖励塞进最后一个手动档。
+    if (planned < rawCap) rows.push({ key: o.id, targetId: null, priceCents: o.planPriceCents ?? o.rebuyPriceCents, plan: rawCap - planned, exec: 0, qty: 0 })
+    const pending = (execByOrder.get(o.id) ?? []).map((e) => ({ e, left: e.qty - e.rewardQty }))
+    // 明确来源优先于旧成交的同价匹配；奖励不占基础档额度。
+    for (const explicit of [true, false]) for (const p of pending) {
+      if (Boolean(p.e.buyTargetId) !== explicit) continue
+      for (const r of rows) {
+        if (explicit ? p.e.buyTargetId !== (r.targetId ?? `default:${o.id}`) : p.e.priceCents !== r.priceCents) continue
+        const take = Math.min(p.left, r.plan - r.exec)
+        r.exec += take
+        p.left -= take
+      }
     }
-    let matched = 0
-    for (const r of rows) {
-      const hit = Math.min(r.plan, byPrice.get(r.t.priceCents) ?? 0)
-      byPrice.set(r.t.priceCents, (byPrice.get(r.t.priceCents) ?? 0) - hit)
-      r.exec = hit
-      matched += hit
-    }
-    let fallback = Math.max(0, o.execQty - matched)
+    let fallback = pending.reduce((a, p) => a + p.left, 0)
     for (const r of rows) {
       if (fallback <= 0) break
       const take = Math.min(r.plan - r.exec, fallback)
@@ -834,32 +844,31 @@ function buildBuySplits(
     }
     for (const r of rows) r.qty = Math.max(0, r.plan - r.exec)
     const sumQty = rows.reduce((a, r) => a + r.qty, 0)
-    const diff = o.remainingQty - sumQty
-    if (diff > 0) {
-      // 多出来的额度是组池奖励（额外买入），按最后一档的价格一起挂
-      rows[rows.length - 1].qty += diff
-    } else if (diff < 0) {
-      // 少的那截是被回本链同价买回盖住了，从后往前削，前面的档位优先保留
-      let over = -diff
+    const openBase = Math.max(0, o.baseQty - o.execQty + o.doneRewardQty)
+    if (sumQty > openBase) {
+      // 同价真实回补覆盖基础股，从后往前削；奖励不能与基础股混在一起削减。
+      let over = sumQty - openBase
       for (let i = rows.length - 1; i >= 0 && over > 0; i -= 1) {
         const cut = Math.min(rows[i].qty, over)
         rows[i].qty -= cut
         over -= cut
       }
     }
-    for (const r of rows) {
+    for (const [i, r] of rows.entries()) {
+      const baseRemainingQty = r.qty
       out.push({
         key: r.key,
         orderId: o.id,
         sellExecId: o.sellExecId,
         sourceRow: o.sourceRow,
         stockName: o.stockName,
-        priceCents: r.t.priceCents,
-        qty: r.qty,
+        priceCents: r.priceCents,
+        qty: r.qty + (i === rows.length - 1 ? Math.max(0, o.remainingQty - openBase) : 0),
+        baseRemainingQty,
         plannedQty: r.plan,
         executedQty: r.exec,
-        split: true,
-        targetId: r.t.id,
+        split: r.targetId !== null,
+        targetId: r.targetId,
         sellFirst: o.sellFirst === true,
       })
     }

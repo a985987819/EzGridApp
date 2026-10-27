@@ -47,8 +47,10 @@ describe('完整台账 Excel 往返', () => {
     s.extraTargets = [{ id: 'extra:7', lotId: 'lot:7', qty: 100, priceCents: 1200, at: 500 }]
     s.buyTargets = [{ id: 'buytarget:60:600', sellRow: 60, qty: 200, priceCents: 801, at: 600 }]
     s.rebuyExecutions = [{ id: 'exec:测试', orderId: 'rb:sell:60', sellExecId: 'sell:60', stockId: 'stock:柳工', stockName: '柳工', qty: 200, rewardQty: 100, priceCents: 801, groupKeyAtExecution: 'stock:柳工|801', at: 1793000000000, note: '部分回补' }]
+    s.rebuyExecutions[0].buyTargetId = 'buytarget:60:600'
     s.records.push({ ...s.records[0], sourceRow: 100000, importKey: 'manual:test:999999', origin: 'manual', deletedAt: null, batchId: null, soldLotId: 'lot:exec:exec:测试', buyPriceCents: null, buyQtyRaw: null, buyDateSerial: null, qtyNeedsDerive: false, targetPriceCents: 850, soldQty: 50, stockName: '柳工' })
     s.records[1].deletedAt = 900
+    s.records[s.records.length - 1].soldTargetId = 'target:deleted-history'
     s.stocks[0].note = '〈null〉'
     s.stocks[1].note = ''
     s.auditLogs = [{ id: 800, entity: 'chain', entityId: 'chainlink:60', field: 'members', oldValue: '', newValue: '8,9', at: 700, source: '人工编辑' }]
@@ -101,6 +103,17 @@ describe('完整台账 Excel 往返', () => {
     const p = await parse(s)
     expect(p.snapshot).toEqual(s)
     expect(p.differences).toEqual([])
+  })
+  it('兼容计算口径1缺少来源档列的旧完整文件', async () => {
+    const data = await edit((wb, X) => {
+      wb.Sheets['台账说明'].B4 = { t: 'n', v: 1 }
+      for (const [name, label] of [['交易数据', '卖出来源档ID'], ['回补成交', '买入来源档ID']]) {
+        const rows = X.utils.sheet_to_json<unknown[]>(wb.Sheets[name], { header: 1, defval: null })
+        const col = rows[0].indexOf(label)
+        wb.Sheets[name] = X.utils.aoa_to_sheet(rows.map((r) => r.filter((_, i) => i !== col)))
+      }
+    })
+    expect((await parseLedgerWorkbook(data))!.snapshot).toEqual(base())
   })
 })
 
