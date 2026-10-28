@@ -366,12 +366,13 @@ function collectPriceSlots(opts: {
   return { slots, autoLotIds, realCoverBySell: realCover, pending }
 }
 
-/** 价位槽 → 分支：只累计槽内批次后续已完成的买卖盈亏 */
+/** 价位槽 → 分支：累计槽内批次所有已实现卖出盈亏（不限卖价） */
 function slotBranch(slot: PriceSlot, sellsByLot: Map<string, SellExecution[]>): RepairBranch {
   const rootQty = sum(slot.roots, (s) => s.qty)
   const rootAmount = sum(slot.roots, (s) => (s.priceCents ?? 0) * s.qty)
   const lotsQty = sum(slot.lots, (l) => l.qty)
-  const sells = slot.lots.flatMap((l) => plainSellsOf(l.id, sellsByLot)).filter((s) => s.priceCents !== null && slot.sellPrices.includes(s.priceCents))
+  // V9.67：归属确定后，后续任意实际卖价的盈利或亏损均累计到链中
+  const sells = slot.lots.flatMap((l) => plainSellsOf(l.id, sellsByLot))
   return {
     key: `branch:${slot.chainAnchor}:${slot.priceCents}`,
     row: slot.roots.length > 0 ? slot.roots[0].sourceRow : null,
@@ -646,7 +647,8 @@ export function buildRepairChains(opts: {
         const mine = sum(slice(parts, sold, sale.qty).filter((p) => p.anchor === seed.anchorRow), (p) => p.qty)
         ownSold += mine
         if (mine > 0) memberRows.push(sale.sourceRow)
-        if (isRealizedSale(sale) && sale.priceCents === root.priceCents) profit += (sale.priceCents! - lot.buyPriceCents) * mine
+        // V9.67：归属确定后，任意实际卖价的盈利或亏损均累计
+        if (isRealizedSale(sale) && sale.priceCents !== null) profit += (sale.priceCents - lot.buyPriceCents) * mine
         sold += sale.qty
       }
       b.qty = qty

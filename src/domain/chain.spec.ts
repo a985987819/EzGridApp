@@ -231,18 +231,18 @@ describe('V9.49 价位槽：同价买入全自动归链', () => {
     rec(6, { buy: 600, qty: 500, sell: 800, soldQty: 500, buyDate: 46031, sellDate: 46050 }),
   ]
 
-  it('C/D 自动挂链，只累计同卖出价完成的盈利，不重复加回补节省', () => {
+  it('C/D 自动挂链，归属库存后续任意卖价盈利都累计', () => {
     const led = buildLedger(autoExample(), [STOCK])
     expect(led.repairChains).toHaveLength(1)
     const c = led.repairChains[0]
     expect(c).toMatchObject({
       anchorRow: 2,
       lossCents: -300000,
-      // E 在原卖出价 7 元成交计入；F 在 8 元卖出，盈利不自动归入 7 元网格。
-      profitCents: 100000,
-      netCents: -200000,
+      // V9.67：E 在 7 元成交 + F 在 8 元成交都计入；(7−5)×500 + (8−6)×500 = 1000 + 1000 = 2000
+      profitCents: 200000,
+      netCents: -100000,
       done: false,
-      gapCents: 200000,
+      gapCents: 100000,
       plannedQty: 0,
       holdingQty: 0,
       unallocatedLossCents: 0,
@@ -251,7 +251,7 @@ describe('V9.49 价位槽：同价买入全自动归链', () => {
     const slots = c.branches.filter((b) => b.kind === 'sell')
     expect(slots.map((b) => b.buyPriceCents)).toEqual([500, 600])
     expect(slots[0]).toMatchObject({ rootSellRow: 3, qty: 500, profitCents: 100000, cycles: 2 })
-    expect(slots[1]).toMatchObject({ rootSellRow: 4, qty: 500, profitCents: 0, cycles: 1 })
+    expect(slots[1]).toMatchObject({ rootSellRow: 4, qty: 500, profitCents: 100000, cycles: 2 })
     // C/D 的待买被同价买回盖满 → 自动完成：不再生成幽灵订单、不算敞口
     expect(led.orders.find((o) => o.sourceRow === 3)).toBeUndefined()
     expect(led.orders.find((o) => o.sourceRow === 4)).toBeUndefined()
@@ -561,9 +561,9 @@ describe('归属、结束与部分成交', () => {
 
 
 describe('V9.63 锚点 P 档：无同价再卖也自动归链', () => {
-  it('高买低卖后直接记成交买回，仅原卖出价的已完成盈利自动归链', () => {
+  it('高买低卖后直接记成交买回，归属库存任意卖价盈利都累计', () => {
     // 10 买 1000 → 7 卖 1000（−3000，P=5.00）；5.00 记成交买回 1000（之后没有同价裸卖）
-    // → 该批次分两次卖：7.00×400、6.50×300；只有原 7.00 档盈利自动归链。
+    // → 该批次分两次卖：7.00×400、6.50×300；V9.67：任意卖价都归链
     const led = buildLedger(
       [
         rec(2, { buy: 1000, qty: 1000, sell: 700, soldQty: 1000, sellDate: 46010, p: 500 }),
@@ -577,10 +577,10 @@ describe('V9.63 锚点 P 档：无同价再卖也自动归链', () => {
     const c = led.repairChains[0]
     expect(c).toMatchObject({
       lossCents: -300000,
-      // (7.00−5.00)×400；6.50 档仍计全局盈利，不自动归入本链。
-      profitCents: 80000,
-      netCents: -220000,
-      gapCents: 220000,
+      // V9.67：(7.00−5.00)×400 + (6.50−5.00)×300 = 800 + 450 = 1250
+      profitCents: 125000,
+      netCents: -175000,
+      gapCents: 175000,
       holdingQty: 300,
       plannedQty: 0, // P 档已经全部买回，不再提示计划买回
     })
@@ -590,8 +590,8 @@ describe('V9.63 锚点 P 档：无同价再卖也自动归链', () => {
       buyPriceCents: 500,
       qty: 1000,
       remainingQty: 300,
-      cycles: 1,
-      profitCents: 80000,
+      cycles: 2, // 7.00 + 6.50
+      profitCents: 125000,
     })
     // 展示口径：无根 P 档的回补节省 = 清算价 − 档价 × 买入股数（只展示不进进度）
     expect(slot?.savingCents).toBe(200000)
@@ -615,5 +615,109 @@ describe('V9.63 锚点 P 档：无同价再卖也自动归链', () => {
     )
     expect(closed.repairChains).toHaveLength(1)
     expect(closed.repairChains[0]).toMatchObject({ profitCents: 0, holdingQty: 0 })
+  })
+
+  it('归属库存后续任意卖价的实际盈亏都累计到链（自动槽）', () => {
+    // 10 买 500 → 7 卖 500（亏 1500）；5 买回 500 → 6 卖 300（赚 300）+ 8 卖 200（赚 600）
+    const led = buildLedger([
+      rec(1, { buy: 1000, qty: 500, sell: 700, soldQty: 500, sellDate: 46010, p: 500 }),
+      rec(2, { buy: 500, qty: 500, sell: 700, buyDate: 46015 }), // 不标soldQty
+      rec(3, { lotId: 'lot:2', sell: 600, soldQty: 300, sellDate: 46020 }),
+      rec(4, { lotId: 'lot:2', sell: 800, soldQty: 200, sellDate: 46025 }),
+    ], [STOCK])
+    expect(led.repairChains).toHaveLength(1)
+    const c = led.repairChains[0]
+    // 原始亏损 -1500；后续盈利：(6−5)×300 + (8−5)×200 = 300 + 600 = 900
+    expect(c).toMatchObject({
+      anchorRow: 1,
+      lossCents: -150000,
+      profitCents: 90000,
+      netCents: -60000,
+      gapCents: 60000,
+      done: false,
+    })
+    // 槽分支应包含 6.00 和 8.00 两笔卖出
+    const slot = c.branches.find(b => b.kind === 'sell' && b.buyPriceCents === 500)
+    expect(slot).toMatchObject({
+      buyPriceCents: 500,
+      qty: 500,
+      sellQty: 500, // 后续卖 500
+      profitCents: 90000,
+      cycles: 2, // 6.00 + 8.00（根是rec(1)，不在槽分支里）
+    })
+  })
+
+  it('归属库存后续任意卖价的实际盈亏都累计到链（人工归属）', () => {
+    // 10 买 500 → 7 卖（亏 1500）；手动归属批次 5 买 400 → 6.5 卖 200 + 7.5 卖 200
+    const led = buildLedger(
+      [
+        rec(1, { buy: 1000, qty: 500, sell: 700, soldQty: 500, sellDate: 46010 }),
+        rec(2, { buy: 500, qty: 400, sell: 700, buyDate: 46015 }), // 不标soldQty
+        rec(3, { lotId: 'lot:2', sell: 650, soldQty: 200, sellDate: 46020 }),
+        rec(4, { lotId: 'lot:2', sell: 750, soldQty: 200, sellDate: 46025 }),
+      ],
+      [STOCK],
+      { chainLinks: [{ id: 'chainlink:1', anchorRow: 1, stockName: '柳工', memberRows: [2], closedAt: null, at: 0 }] },
+    )
+    expect(led.repairChains).toHaveLength(1)
+    const c = led.repairChains[0]
+    // 原始亏损 -1500；后续盈利：(6.5−5)×200 + (7.5−5)×200 = 300 + 500 = 800
+    expect(c).toMatchObject({
+      lossCents: -150000,
+      profitCents: 80000,
+      netCents: -70000,
+      gapCents: 70000,
+    })
+    const branch = c.branches.find(b => b.row === 2)
+    expect(branch).toMatchObject({
+      qty: 400,
+      sellQty: 400,
+      profitCents: 80000,
+    })
+  })
+
+  it('结束仅阻止新库存收编，已归属库存后续卖出仍更新链', () => {
+    // 链结束前：5 买 500 归链；链结束后：该批次 6 卖 300 仍应累计
+    const led = buildLedger(
+      [
+        rec(1, { buy: 1000, qty: 500, sell: 700, soldQty: 500, sellDate: 46010, p: 500 }),
+        rec(2, { buy: 500, qty: 500, buyDate: 46015 }), // 结束前买入
+        rec(3, { lotId: 'lot:2', sell: 600, soldQty: 300, sellDate: 46050 }), // 结束后卖出
+      ],
+      [STOCK],
+      { chainLinks: [{ id: 'chainlink:1', anchorRow: 1, stockName: '柳工', memberRows: [], closedAt: new Date('2026-03-30').getTime(), at: 0 }] },
+    )
+    expect(led.repairChains).toHaveLength(1)
+    const c = led.repairChains[0]
+    // 批次2在结束前买入(46015 < 3月30日)，自动归入槽；后续卖出应累计
+    expect(c).toMatchObject({
+      profitCents: 30000, // (6−5)×300
+      holdingQty: 200,
+    })
+  })
+
+  it('结束后新增回补不自动继承链', () => {
+    const led = buildLedger(
+      [
+        rec(1, { buy: 1000, qty: 500, sell: 700, soldQty: 500, sellDate: 46010, p: 500 }),
+      ],
+      [STOCK],
+      {
+        chainLinks: [{ id: 'chainlink:1', anchorRow: 1, stockName: '柳工', memberRows: [], closedAt: new Date('2026-03-30').getTime(), at: 0 }],
+        executions: [execAt('e1', 1, 500, 500, '2026-04-05')], // 结束后成交
+      },
+    )
+    expect(led.repairChains).toHaveLength(1)
+    // 结束后的成交不归链
+    const c = led.repairChains[0]
+    expect(c).toMatchObject({
+      profitCents: 0,
+      holdingQty: 0,
+      plannedQty: 0, // 已结束，不再提示计划买回
+    })
+    // 虚拟批次应该存在，但不归属于链
+    const virtualLot = led.lots.find(l => l.id === 'lot:exec:e1')
+    expect(virtualLot).toBeDefined()
+    expect(virtualLot?.remainingQty).toBe(500) // 未卖出
   })
 })

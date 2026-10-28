@@ -120,8 +120,10 @@ describe('自动关联与历史人工关联的边界', () => {
     const child = row(5, { soldLotId: 'lot:4', soldQty: 200, targetPriceCents: 700, sellDateSerial: 46012 })
     const otherPrice = { ...child, sourceRow: 6, soldQty: 300, targetPriceCents: 800 }
     const l = buildLedger([high, root, low, child, otherPrice], [stock])
-    expect(l.repairChains[0].profitCents).toBe(40000)
+    // V9.67：归属库存任意卖价都累计：(7−5)×200 + (8−5)×300 = 400 + 900 = 1300
+    expect(l.repairChains[0].profitCents).toBe(130000)
     expect(l.repairChains[0].branches[0].memberRows).toContain(5)
+    // 全局盈利不变：-1500（高位亏损）+ 400 + 900 = -200
     expect(l.totals.profitCents).toBe(-20000)
     flat(l)
   })
