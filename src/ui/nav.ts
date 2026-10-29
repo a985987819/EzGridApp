@@ -37,6 +37,59 @@ export interface TradesQuery {
 export interface Route {
   tab: Tab
   query: TradesQuery
+  manage?: ManageQuery
+}
+
+export type ManageSection = 'stocks' | 'import' | 'checks' | 'backup' | 'guide'
+export type GuideMode = 'questions' | 'scenarios' | 'documents' | 'issues'
+export interface ManageQuery {
+  section?: ManageSection
+  doc?: string
+  topic?: string
+  scenario?: string
+  anchor?: string
+  q?: string
+  mode?: GuideMode
+  category?: string
+}
+const MANAGE_SECTIONS: readonly string[] = ['stocks', 'import', 'checks', 'backup', 'guide']
+const GUIDE_MODES: readonly string[] = ['questions', 'scenarios', 'documents', 'issues']
+
+export function parseManageQuery(search: string): ManageQuery {
+  const p = new URLSearchParams(search)
+  const section = p.get('section') ?? ''
+  if (!MANAGE_SECTIONS.includes(section)) return {}
+  const query: ManageQuery = { section: section as ManageSection }
+  if (section !== 'guide') return query
+  for (const key of ['doc', 'topic', 'scenario', 'anchor', 'q', 'category'] as const) {
+    const value = p.get(key)?.trim().slice(0, key === 'q' ? 160 : 120)
+    if (value) query[key] = value
+  }
+  const mode = p.get('mode') ?? ''
+  if (GUIDE_MODES.includes(mode)) query.mode = mode as GuideMode
+  return query
+}
+
+export function buildManageHash(query: ManageQuery = {}): string {
+  const p = new URLSearchParams()
+  if (query.section && MANAGE_SECTIONS.includes(query.section)) p.set('section', query.section)
+  if (query.section === 'guide') {
+    for (const key of ['doc', 'topic', 'scenario', 'anchor', 'q', 'mode', 'category'] as const) {
+      if (query[key]) p.set(key, query[key]!)
+    }
+  }
+  const search = p.toString()
+  return `#/manage${search ? `?${search}` : ''}`
+}
+
+export function navigateManage(query: ManageQuery = {}): void {
+  const next = buildManageHash(query)
+  if (window.location.hash !== next) window.location.hash = next
+}
+
+/** 指南搜索只替换当前历史，不让每次输入都成为一次浏览器返回。 */
+export function replaceManageRoute(query: ManageQuery): void {
+  history.replaceState(null, '', buildManageHash(query))
 }
 
 export function serializeTradesQuery(q: TradesQuery): string {
@@ -100,7 +153,8 @@ export function parseHash(): Route {
   const raw = window.location.hash.replace(/^#\/?/, '')
   const [tabRaw, search = ''] = raw.split('?')
   const tab = (TABS as readonly string[]).includes(tabRaw) ? (tabRaw as Tab) : 'overview'
-  return { tab, query: tab === 'trades' ? parseTradesQuery(search) : {} }
+  return { tab, query: tab === 'trades' ? parseTradesQuery(search) : {},
+    ...(tab === 'manage' ? { manage: parseManageQuery(search) } : {}) }
 }
 
 /** 跨页跳转：写 hash，触发 hashchange（会进浏览器历史） */

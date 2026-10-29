@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { monthRange, parseTradesQuery, serializeTradesQuery } from './nav'
+import { buildManageHash, monthRange, parseManageQuery, parseTradesQuery, serializeTradesQuery } from './nav'
 
 describe('明细筛选的 URL 序列化（S7）', () => {
   it('serialize → parse round-trip 保留全部条件', () => {
@@ -42,5 +42,20 @@ describe('monthRange（月度成交 → 明细日期区间）', () => {
 
   it('非法输入返回空区间', () => {
     expect(monthRange('bad')).toEqual({ from: '', to: '' })
+  })
+})
+
+describe('管理页和指南的深链', () => {
+  it('刷新/分享保留文档、搜索和阅读锚点', () => {
+    const query = { section: 'guide' as const, doc: 'boundaries', anchor: 'c01', mode: 'issues' as const, q: '回本 库存', category: '回本链' }
+    const hash = buildManageHash(query)
+    expect(parseManageQuery(hash.split('?')[1])).toEqual(query)
+    expect(buildManageHash()).toBe('#/manage')
+    expect(parseManageQuery('section=backup&doc=irrelevant')).toEqual({ section: 'backup' })
+  })
+  it('未知管理入口回菜单，不把恶意长查询直接带进阅读状态', () => {
+    expect(parseManageQuery('section=unknown&doc=guide')).toEqual({})
+    expect(parseManageQuery(`section=guide&q=${'a'.repeat(500)}`).q).toHaveLength(160)
+    expect(parseManageQuery('section=guide&mode=unknown')).toEqual({ section: 'guide' })
   })
 })

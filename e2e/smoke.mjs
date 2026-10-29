@@ -234,7 +234,8 @@ try {
   check('切到管理页', await nav('manage'))
   check(
     '管理页是按钮入口',
-    (await evaluate(`document.querySelectorAll('[data-manage-entry]').length`)) === 4,
+    (await evaluate(`document.querySelectorAll('[data-manage-entry]').length`)) === 5 &&
+      Boolean(await evaluate(`Boolean(document.querySelector('[data-manage-entry="guide"]'))`)),
   )
   text = await bodyText()
   check('入口列表不展开内容', !text.includes('默认间隔') && text.includes('股票设置'))

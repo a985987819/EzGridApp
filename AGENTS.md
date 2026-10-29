@@ -19,6 +19,8 @@
 
 ## 命令
 
+管理 → 操作指南提供43个处理问题、108个核对场景及本地完整文档；正文唯一来源为 `docs/*.md`，`src/help/content.ts` 建立索引，页面懒加载。新增/修正规则要同步操作指南和操作边界，不能把历史审计快照当当前无缺陷结论。指南路由使用 `#/manage?section=guide`，问题/文档可分享与刷新，搜索只替换历史。回归：`node e2e/guide.mjs http://127.0.0.1:5173`；生产包加 `--offline` 验证离线阅读。O01 选股混单已修复，待处理业务问题见 `docs/操作边界与核对.md`。
+
 ```bash
 npm run dev        # 127.0.0.1:5173
 npm test           # vitest，368 条（domain 纯函数 + 真实 xlsx fixture 回归）

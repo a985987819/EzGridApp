@@ -38,6 +38,13 @@ export const IconList = (p: SVGProps<SVGSVGElement>) => (
   </svg>
 )
 
+export const IconBook = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}>
+    <path d="M12 5.5c-2.6-1.8-5.5-2-9-1v15c3.5-1 6.4-.8 9 1 2.6-1.8 5.5-2 9-1v-15c-3.5-1-6.4-.8-9 1Z" />
+    <path d="M12 5.5v15M6 8.5l3 .5M6 12l3 .5M15 9l3-.5M15 12.5l3-.5" />
+  </svg>
+)
+
 export const IconTag = (p: SVGProps<SVGSVGElement>) => (
   <svg {...base(p)}>
     <path d="M20.5 13.3 13.3 20.5a2 2 0 0 1-2.8 0l-6.9-6.9A2 2 0 0 1 3 12.2V4.5A1.5 1.5 0 0 1 4.5 3h7.7c.5 0 1 .2 1.4.6l6.9 6.9a2 2 0 0 1 0 2.8Z" />

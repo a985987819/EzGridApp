@@ -33,15 +33,19 @@ function Shell() {
       const previous = routeRef.current
       routeRef.current = next
       const changedPage = previous.tab !== next.tab
-      const direction = TABS.findIndex(t => t.key === next.tab) >= TABS.findIndex(t => t.key === previous.tab) ? 'forward' : 'back'
+      const changedManage = previous.tab === 'manage' && next.tab === 'manage' &&
+        (['section', 'doc', 'topic', 'scenario'] as const).some(key => previous.manage?.[key] !== next.manage?.[key])
+      const returningManage = changedManage && (!next.manage?.section ||
+        ((previous.manage?.doc || previous.manage?.topic || previous.manage?.scenario) && !next.manage?.doc && !next.manage?.topic && !next.manage?.scenario))
+      const direction = returningManage || TABS.findIndex(t => t.key === next.tab) < TABS.findIndex(t => t.key === previous.tab) ? 'back' : 'forward'
       const update = () => {
-        if (changedPage) {
+        if (changedPage || changedManage) {
           setDir(direction)
           window.scrollTo({ top: 0, behavior: 'instant' })
         }
         setRoute(next)
       }
-      if (changedPage) transitionView(update, direction, 'page')
+      if (changedPage || changedManage) transitionView(update, direction, changedPage ? 'page' : 'content')
       else update()
     }
     window.addEventListener('hashchange', onHash)
@@ -83,7 +87,7 @@ function Shell() {
         ) : route.tab === 'stats' ? (
           <StatsPage goTrades={goTrades} />
         ) : (
-          <ManagePage goTrades={goTrades} />
+          <ManagePage goTrades={goTrades} query={route.manage} />
         )}
       </main>
 

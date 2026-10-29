@@ -1,6 +1,7 @@
 import { Collapse, Tag } from 'animal-island-ui'
 import { useApp } from '../../store/useApp'
 import { CheckList } from '../../components/CheckGrid'
+import { buildManageHash } from '../../ui/nav'
 
 /** 基准快照 + 数量守恒（V9.10 从概览挪来）：体检性质的内容放管理页，概览专心看树 */
 export function ManageChecks() {
@@ -32,7 +33,8 @@ export function ManageChecks() {
         answer={<CheckList checks={ledger.checks} />}
       />
       <p className="tiny muted" style={{ margin: '8px 0 0' }}>
-        这两项是台账自检：基准对文档 §03 的固定数字，守恒查买入 − 卖出 + 回补 = 净持仓等恒等式。
+        基准快照只用于固定样本，不要求你的台账与样本一致。数量守恒通过也不能保证来源、归属和备份引用全部正确。
+        <a href={buildManageHash({ section: 'guide', topic: '39' })}>查看核对顺序与处理步骤</a>
       </p>
     </div>
   )

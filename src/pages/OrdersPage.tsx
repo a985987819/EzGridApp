@@ -170,7 +170,8 @@ export function OrdersPage({
     [view.targets, view.lots, effectiveStock, merges, plans, sandboxByRow],
   )
 
-  const buySplits = view.buySplits
+  // 与卖档/下一轮/逐笔台账使用同一个选股范围，再做建议合并与区间判断。
+  const buySplits = useMemo(() => view.buySplits.filter(b => b.stockName === effectiveStock), [view.buySplits, effectiveStock])
   const orderById = new Map(orders.map((o) => [o.id, o]))
   const sellShown = range ? targetRows.filter((r) => within(r.priceCents)) : targetRows
   const sellOutRows = range ? targetRows.filter((r) => !within(r.priceCents)) : []
@@ -1423,6 +1424,7 @@ export function OrdersPage({
       <Modal open={trade!==null} title={trade?.side==='sell'?'记卖出成交':'记买入成交'} typewriter={false} onClose={()=>!savingTrade&&setTrade(null)}
         footer={<div className="row"><Button type="primary" disabled={savingTrade} onClick={()=>void saveTrade()}>保存成交</Button><Button disabled={savingTrade} onClick={()=>setTrade(null)}>取消</Button></div>}>
         <div onKeyDown={enterSubmit(() => void saveTrade())}>
+        <p className="tiny muted" style={{ marginTop: 0 }}>股票：{trade?.buy?.stockName ?? effectiveStock}</p>
         <div className="form-grid">
           <label><span>实际成交价</span><Input value={tradePrice} onChange={(e)=>setTradePrice(e.target.value)} data-field="tradePrice" /></label>
           <label><span>实际成交量</span><Input value={tradeQty} onChange={(e)=>setTradeQty(e.target.value)} data-field="tradeQty" /></label>
@@ -1530,14 +1532,14 @@ export function OrdersPage({
                 <Input value={execPrice} placeholder={centsToYuan(execDefaults.priceCents)} onChange={(e) => setExecPrice(e.target.value)} data-field="execPrice" />
               </label>
               <label>
-                <span>其中奖励股数（已成交不可撤）</span>
+                <span>其中奖励股数（100 股 / 手）</span>
                 <Input value={execReward} placeholder={String(execDefaults.reward)} onChange={(e) => setExecReward(e.target.value)} data-field="execReward" />
               </label>
             </div>
             <p className="tiny muted" style={{ margin: 0 }}>
               留空采用框内默认值；奖励股数填 0 表示本次不买奖励股。
-              回补成交会平掉空头敞口，并按「成交价 + 该股间隔」自动生成一笔可卖批次（回到待卖）。
-              这笔卖如果挂着高位买单，成交后绑定自动解除，先卖 + 后买就是一笔正常完成的订单。
+              本次基础股抵减待回补数量，新库存按「成交价 + 该股间隔」生成可卖批次。
+              已分配的高位份额按实际回补量永久了结，原始亏损和回本链保留；回补节省不计盈利。
             </p>
           </div>
         )}

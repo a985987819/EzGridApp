@@ -1,32 +1,31 @@
-import { useState } from 'react'
+import { lazy, Suspense } from 'react'
 import { Card } from 'animal-island-ui'
 import { ManageImport } from './manage/ManageImport'
 import { ManageStocks } from './manage/ManageStocks'
 import { ManageBackup } from './manage/ManageBackup'
 import { ManageChecks } from './manage/ManageChecks'
-import { IconChart, IconChevron, IconDownload, IconGrid, IconUpload } from '../ui/icons'
-import type { TradesQuery } from '../ui/nav'
-import { transitionView } from '../ui/transitions'
+import { IconBook, IconChart, IconChevron, IconDownload, IconGrid, IconUpload } from '../ui/icons'
+import { navigateManage, type ManageQuery, type ManageSection, type TradesQuery } from '../ui/nav'
 
-type Section = 'stocks' | 'import' | 'checks' | 'backup'
+const ManageGuide = lazy(() => import('./manage/ManageGuide'))
 
-const SECTIONS: { key: Section; label: string; desc: string; Icon: typeof IconGrid }[] = [
+const SECTIONS: { key: ManageSection; label: string; desc: string; Icon: typeof IconGrid }[] = [
+  { key: 'guide', label: '操作指南', desc: '按情况找步骤 · 场景核对 · 完整文档', Icon: IconBook },
   { key: 'stocks', label: '股票设置', desc: '网格间隔 · 涨跌幅规则 · 启用开关', Icon: IconGrid },
   { key: 'import', label: '导入数据', desc: 'Excel / CSV 批量写入本地台账', Icon: IconUpload },
   { key: 'checks', label: '校验', desc: '基准快照 · 数量守恒', Icon: IconChart },
   { key: 'backup', label: '备份', desc: '完整 Excel / JSON 备份与恢复', Icon: IconDownload },
 ]
 
-export function ManagePage({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
-  const [section, setSection] = useState<Section | null>(null)
-  const current = SECTIONS.find((s) => s.key === section)
+export function ManagePage({ goTrades, query }: { goTrades: (q: TradesQuery) => void; query?: ManageQuery }) {
+  const current = SECTIONS.find((s) => s.key === query?.section)
 
   if (!current) {
     return (
       <div className="stack">
         <div className="page-title">
           <h2>管理</h2>
-          <p>股票 · 导入 · 校验 · 备份</p>
+          <p>指南 · 股票 · 导入 · 校验 · 备份</p>
         </div>
         <Card>
           <div className="manage-menu" data-testid="manage-menu">
@@ -36,7 +35,7 @@ export function ManagePage({ goTrades }: { goTrades: (q: TradesQuery) => void })
                 type="button"
                 className="manage-item"
                 data-manage-entry={key}
-                onClick={() => transitionView(() => setSection(key))}
+                onClick={() => navigateManage({ section: key })}
               >
                 <span className="manage-ico"><Icon /></span>
                 <span className="manage-main">
@@ -59,14 +58,18 @@ export function ManagePage({ goTrades }: { goTrades: (q: TradesQuery) => void })
           type="button"
           className="manage-back"
           data-testid="manage-back"
-          onClick={() => transitionView(() => setSection(null), 'back')}
+          onClick={() => navigateManage()}
         >
           <IconChevron width={14} height={14} style={{ transform: 'rotate(180deg)' }} />
           管理
         </button>
         <strong>{current.label}</strong>
       </div>
-      {current.key === 'stocks' ? (
+      {current.key === 'guide' ? (
+        <Suspense fallback={<div className="empty-box" role="status">正在打开操作指南…</div>}>
+          <ManageGuide query={query ?? { section: 'guide' }} />
+        </Suspense>
+      ) : current.key === 'stocks' ? (
         <ManageStocks />
       ) : current.key === 'import' ? (
         <ManageImport goTrades={goTrades} />
