@@ -6,6 +6,7 @@ import { ManageBackup } from './manage/ManageBackup'
 import { ManageChecks } from './manage/ManageChecks'
 import { IconChart, IconChevron, IconDownload, IconGrid, IconUpload } from '../ui/icons'
 import type { TradesQuery } from '../ui/nav'
+import { transitionView } from '../ui/transitions'
 
 type Section = 'stocks' | 'import' | 'checks' | 'backup'
 
@@ -35,7 +36,7 @@ export function ManagePage({ goTrades }: { goTrades: (q: TradesQuery) => void })
                 type="button"
                 className="manage-item"
                 data-manage-entry={key}
-                onClick={() => setSection(key)}
+                onClick={() => transitionView(() => setSection(key))}
               >
                 <span className="manage-ico"><Icon /></span>
                 <span className="manage-main">
@@ -58,7 +59,7 @@ export function ManagePage({ goTrades }: { goTrades: (q: TradesQuery) => void })
           type="button"
           className="manage-back"
           data-testid="manage-back"
-          onClick={() => setSection(null)}
+          onClick={() => transitionView(() => setSection(null), 'back')}
         >
           <IconChevron width={14} height={14} style={{ transform: 'rotate(180deg)' }} />
           管理

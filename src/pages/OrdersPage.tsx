@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Button, Card, Input, Modal, Tag, notificationOpen } from 'animal-island-ui'
 import { Select } from '../ui/Select'
 import { useApp } from '../store/useApp'
@@ -20,6 +20,8 @@ import { useFlashOnAppear } from '../ui/motion'
 import { todayIso, money, price, qty, signedMoney, tone } from '../ui/format'
 import { DateField } from '../ui/DateField'
 import { useScrollHold } from '../ui/scrollHold'
+import { scrollToPageTop, useScrollHeader } from '../ui/scrollHeader'
+import { transitionView } from '../ui/transitions'
 import { enterSubmit } from '../ui/enterSave'
 import type { TradesQuery } from '../ui/nav'
 import type { BuySplit, RebuyOrder } from '../domain/types'
@@ -111,27 +113,7 @@ export function OrdersPage({
   const [upText, setUpText] = useState('')
   const [downText, setDownText] = useState('')
 
-  // V9.42：往下滑把吸顶设置收成一行摘要，回顶才展开。阈值留回差，避免在临界点反复收放
-  // V9.44：收放是「文档高度变化」，必须禁用滚动锚定（styles.css）+ 动画过渡，
-  // 否则浏览器补偿滚动会把 scrollY 拉回阈值内，收→放→收 连环触发（表现为顶部抽搐闪烁）
-  const [compact, setCompact] = useState(false)
-  useEffect(() => {
-    let frame = 0
-    const onScroll = () => {
-      if (frame) return
-      frame = requestAnimationFrame(() => {
-        frame = 0
-        const y = window.scrollY
-        setCompact((wasCompact) => (wasCompact ? y > 24 : y > 96))
-      })
-    }
-    onScroll()
-    window.addEventListener('scroll', onScroll, { passive: true })
-    return () => {
-      window.removeEventListener('scroll', onScroll)
-      if (frame) cancelAnimationFrame(frame)
-    }
-  }, [])
+  const stickyRef = useScrollHeader('is-compact')
 
   const range =
     limitOverride && limitOverride.stock === effectiveStock
@@ -953,15 +935,14 @@ export function OrdersPage({
 
   return (
     <div className="stack">
-      <div className={`page-sticky orders-sticky${compact ? ' is-compact' : ''}`} data-sticky="orders">
-      <div className="orders-compact-slot" aria-hidden={!compact}>
+      <div ref={stickyRef} className="page-sticky scroll-header orders-sticky" data-sticky="orders">
+      <div data-scroll-summary className="orders-compact-slot" aria-hidden="true">
         <div className="orders-compact-inner">
           <button
             type="button"
             className="orders-compact"
             data-testid="orders-compact"
-            tabIndex={compact ? 0 : -1}
-            onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+            onClick={scrollToPageTop}
             aria-label="回到顶部展开挂单设置"
           >
             <span className="oc-stock">{effectiveStock || '未选股'}</span>
@@ -979,7 +960,7 @@ export function OrdersPage({
           </button>
         </div>
       </div>
-      <div className="orders-setup-collapse">
+      <div data-scroll-expanded className="orders-setup-collapse">
         <div className="orders-setup-collapse-inner">
       <div className="orders-setup">
       <div className="page-title">
@@ -989,10 +970,10 @@ export function OrdersPage({
             size="small"
             type={sandbox.active ? 'primary' : 'default'}
             data-sandbox-toggle
-            onClick={() => {
+            onClick={() => transitionView(() => {
               setSandboxActive(!sandbox.active)
               setSandboxHedgeRow(null)
-            }}
+            })}
           >
             {sandbox.active ? '退出沙盒' : '沙盒'}
           </Button>
@@ -1060,8 +1041,10 @@ export function OrdersPage({
             value={effectiveStock}
             onChange={(v) => {
               // 数据都按股票记，切股只动 stockName；回来时昨收 / 确认 / 手工区间都还在
-              patchOrdersSession({ stockName: v })
-              setEditingLimit(false)
+              transitionView(() => {
+                patchOrdersSession({ stockName: v })
+                setEditingLimit(false)
+              })
             }}
             aria-label="选择股票"
           />

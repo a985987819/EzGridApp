@@ -8,6 +8,7 @@ import { TreeTrunk } from '../components/TreeTrunk'
 import { RepairChainCard } from '../components/RepairChainCard'
 import { money, price, qty, signedMoney, tone } from '../ui/format'
 import type { TradesQuery } from '../ui/nav'
+import { transitionView } from '../ui/transitions'
 
 export function Overview({
   goTrades,
@@ -132,7 +133,7 @@ export function Overview({
                   size="medium"
                   variant={current?.stockName === s.stockName ? 'solid' : 'soft'}
                   color={current?.stockName === s.stockName ? 'app-teal' : 'default'}
-                  onClick={() => setActive(s.stockName)}
+                  onClick={() => transitionView(() => setActive(s.stockName))}
                 >
                   {s.stockName}
                 </Tag>
@@ -234,7 +235,7 @@ export function Overview({
           <button
             type="button"
             className={`metric-cell${openMetric === 'target' ? ' on' : ''}`}
-            onClick={() => setOpenMetric(openMetric === 'target' ? null : 'target')}
+            onClick={() => transitionView(() => setOpenMetric(openMetric === 'target' ? null : 'target'))}
             data-metric="target"
             aria-label="可卖批次构成"
           >
@@ -245,7 +246,7 @@ export function Overview({
           <button
             type="button"
             className={`metric-cell${openMetric === 'exposure' ? ' on' : ''}`}
-            onClick={() => setOpenMetric(openMetric === 'exposure' ? null : 'exposure')}
+            onClick={() => transitionView(() => setOpenMetric(openMetric === 'exposure' ? null : 'exposure'))}
             data-metric="exposure"
             aria-label="待回补构成"
           >
@@ -256,7 +257,7 @@ export function Overview({
           <button
             type="button"
             className={`metric-cell${openMetric === 'net' ? ' on' : ''}`}
-            onClick={() => setOpenMetric(openMetric === 'net' ? null : 'net')}
+            onClick={() => transitionView(() => setOpenMetric(openMetric === 'net' ? null : 'net'))}
             data-metric="net"
             aria-label="净持仓构成"
           >
@@ -317,7 +318,7 @@ export function Overview({
               {openMetric === 'target' ? '可卖批次构成' : openMetric === 'exposure' ? '待回补构成' : '净持仓构成'}
             </strong>
             <div className="spacer" />
-            <Button size="small" type="text" onClick={() => setOpenMetric(null)}>收起</Button>
+            <Button size="small" type="text" onClick={() => transitionView(() => setOpenMetric(null), 'back')}>收起</Button>
           </div>
 
           {openMetric === 'target' &&

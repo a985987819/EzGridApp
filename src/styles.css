@@ -13,12 +13,12 @@
   --line: #e4dccd;
   --line-strong: #cbbfa9;
   --line-soft: #efe9de;
-  /* V9.37 动效：一套缓动三档时长（1=微交互 2=结构位移 3=强调） */
-  --ease-soft: cubic-bezier(0.22, 1, 0.36, 1);
-  --ease-back: cubic-bezier(0.34, 1.5, 0.64, 1);
-  --dur-1: 0.16s;
-  --dur-2: 0.24s;
-  --dur-3: 0.42s;
+  /* 动效统一节奏：微交互 / 面板 / 页面，不给滚动中的文档高度加动画。 */
+  --ease-soft: cubic-bezier(0.2, 0.75, 0.25, 1);
+  --ease-back: cubic-bezier(0.2, 0.9, 0.3, 1.08);
+  --dur-1: 140ms;
+  --dur-2: 220ms;
+  --dur-3: 300ms;
   --block-bg: rgba(255, 255, 255, 0.55);
   --head-bg: rgba(240, 232, 216, 0.72);
 }
@@ -673,36 +673,43 @@ button { font-family: inherit; }
   opacity: 0.9;
 }
 
-/* ---------- 挂单页吸顶设置：下滑收成一行，回顶展开（V9.42 / V9.44 动画化） ----------
-   用 grid-template-rows 0fr↔1fr 过渡高度：两个块同时收/放，吸顶块总高度连续变化，
-   不再瞬间 display:none 造成内容跳变。滚动锚定已在 html 上禁用，scrollY 不被打回。 */
-.orders-sticky { transition: padding var(--dur-2) var(--ease-soft); }
-.orders-sticky.is-compact { padding: 4px 2px 6px; }
-
-.orders-compact-slot {
-  display: grid;
-  grid-template-rows: 0fr;
-  transition: grid-template-rows var(--dur-3) var(--ease-soft);
+/* ---------- 自然滚动的顶部设置 ----------
+   完整设置保留原高度；负top让它原生滚出，只将最后一行吸在顶部。
+   摘要绝对定位在这条固定高度的末端，仅交叉淡入，不再每帧重排整张台账。 */
+.scroll-header {
+  top: calc(var(--header-h) - var(--scroll-hide-height, 0px));
+  background: #faf8f0;
+  backdrop-filter: none;
 }
-.orders-sticky.is-compact .orders-compact-slot { grid-template-rows: 1fr; }
-.orders-compact-inner { overflow: hidden; min-height: 0; display: flex; }
-
-.orders-setup-collapse {
-  display: grid;
-  grid-template-rows: 1fr;
-  transition: grid-template-rows var(--dur-3) var(--ease-soft);
+.scroll-header [data-scroll-expanded] {
+  opacity: 1;
+  transition: opacity var(--dur-2) var(--ease-soft), visibility 0s;
 }
-.orders-sticky.is-compact .orders-setup-collapse { grid-template-rows: 0fr; }
-.orders-setup-collapse-inner { overflow: hidden; min-height: 0; }
-
-.orders-setup {
-  transition: opacity var(--dur-2) var(--ease-soft), visibility var(--dur-2) var(--ease-soft);
-}
-.orders-sticky.is-compact .orders-setup {
+.scroll-header[data-compact='true'] [data-scroll-expanded] {
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
+  transition: opacity var(--dur-1) ease-out, visibility 0s var(--dur-1);
 }
+.scroll-header [data-scroll-summary] {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  bottom: 8px;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  translate: 0 4px;
+  transition: opacity var(--dur-2) var(--ease-soft), translate var(--dur-2) var(--ease-soft), visibility 0s var(--dur-2);
+}
+.scroll-header[data-compact='true'] [data-scroll-summary] {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  translate: 0 0;
+  transition-delay: 0s;
+}
+.orders-compact-inner { display: flex; }
 .orders-compact {
   display: flex;
   align-items: center;
@@ -720,13 +727,6 @@ button { font-family: inherit; }
   text-align: left;
   white-space: nowrap;
   cursor: pointer;
-  opacity: 0;
-  transform: translateY(-4px);
-  transition: opacity var(--dur-2) var(--ease-soft), transform var(--dur-2) var(--ease-soft);
-}
-.orders-sticky.is-compact .orders-compact {
-  opacity: 1;
-  transform: none;
 }
 .orders-compact:active { opacity: 0.72; }
 .orders-compact .oc-stock {
@@ -798,27 +798,22 @@ button { font-family: inherit; }
   color: #a09080;
 }
 
-/* ---------- 明细页吸顶：下滑只留标题计数，筛选项回顶再出来（V9.42） ---------- */
-.trades-sticky { transition: padding 0.18s var(--ease-soft); }
-.trades-sticky.is-condensed { padding: 4px 2px 6px; }
-.trades-sticky.is-condensed .page-title { margin-bottom: 0; }
-/* V9.60：收起从 [hidden] 瞬切改成 grid-rows 连续收放（同挂单页 V9.44 模式），
-   内容淡出并不可点；文档高度连续变化，吸顶不再跳变 */
-.trades-collapse {
-  display: grid;
-  grid-template-rows: 1fr;
-  transition: grid-template-rows var(--dur-3) var(--ease-soft);
+/* 明细摘要也提供回顶入口，完整筛选与摘要共享同一份计数。 */
+.trades-compact {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 30px;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
 }
-.trades-collapse.closed { grid-template-rows: 0fr; }
-.trades-collapse-inner { overflow: hidden; min-height: 0; }
-.trades-filters {
-  transition: opacity var(--dur-2) var(--ease-soft), visibility var(--dur-2) var(--ease-soft);
-}
-.trades-sticky.is-condensed .trades-filters {
-  opacity: 0;
-  visibility: hidden;
-  pointer-events: none;
-}
+.trades-compact strong { font-size: 20px; }
+.trades-compact span:first-of-type { margin-left: auto; color: var(--animal-text-color-secondary, #9f927d); font-size: 11.5px; }
 
 /* ---------- 明细抽屉：合并同价买单（V9.45，只做关联不改数据） ---------- */
 .merge-row { gap: 8px; cursor: pointer; }
@@ -1203,18 +1198,16 @@ button { font-family: inherit; }
 .line.clickable { cursor: pointer; }
 .line.clickable:active { background: rgba(25, 200, 185, 0.07); }
 
-/* ————— V9.37 动效层｜一套缓动、三档时长 —————
-   原则：只动 transform / opacity / 色彩，不动 layout 尺寸——唯一的例外是「删除」那一行
-   用 max-height 收高度（只影响被删的那行，且只持续 300ms）。
-   切页带方向感：往右边的 tab 走，新页从右边进来，回来则从左进。 */
+/* ————— 动效层：页面快照切换 / 首次模块展示 / 用户主动展开 —————
+   滚动只做透明度与位移；高度动画仅用于用户主动展开的details和删除单行。 */
 @keyframes page-in {
-  from { opacity: 0; transform: translate3d(0, 10px, 0); }
+  from { opacity: 0.45; }
 }
-@keyframes page-in-forward {
-  from { opacity: 0; transform: translate3d(20px, 8px, 0) scale(0.994); }
+@keyframes page-exit {
+  to { opacity: 0; transform: translateX(calc(-1 * var(--page-shift, 14px))); }
 }
-@keyframes page-in-back {
-  from { opacity: 0; transform: translate3d(-20px, 8px, 0) scale(0.994); }
+@keyframes page-enter {
+  from { opacity: 0; transform: translateX(var(--page-shift, 14px)); }
 }
 @keyframes reveal-in {
   from { opacity: 0; transform: translate3d(0, -8px, 0); }
@@ -1258,24 +1251,39 @@ button { font-family: inherit; }
   38% { transform: scale(1.16) translateY(-1px); }
   100% { transform: scale(1); }
 }
-/* 指标格进场：只给前四格错开一点，多了会显得拖 */
-@keyframes rise-in {
-  from { opacity: 0; transform: translate3d(0, 8px, 0); }
-}
-
-/* 切页：底导航按「往右还是往左」给方向 */
+/* 初次加载淡入。真实切页由浏览器保留离场快照，避免复制活跃React树/画布/弹层。 */
 .app-main > * {
-  animation: page-in var(--dur-2, 0.24s) var(--ease-soft, cubic-bezier(0.22, 1, 0.36, 1)) backwards;
+  animation: page-in 180ms var(--ease-soft) backwards;
 }
-.app-main[data-dir='forward'] > * {
-  animation-name: page-in-forward;
+:root[data-direction='back'] { --page-shift: -14px; }
+:root[data-transition='content'] { --page-shift: 0px; }
+.app-nav { view-transition-name: app-nav; }
+::view-transition { pointer-events: none; }
+::view-transition-group(root) { animation-duration: var(--dur-3); }
+::view-transition-old(root) {
+  animation: page-exit 180ms var(--ease-soft) both;
+  mix-blend-mode: normal;
 }
-.app-main[data-dir='back'] > * {
-  animation-name: page-in-back;
+::view-transition-new(root) {
+  animation: page-enter var(--dur-3) var(--ease-soft) both;
+  mix-blend-mode: normal;
 }
-/* 管理页 tab 切换：面板内容轻浮现 */
-[class*='animal-tabContentInner'] > * {
-  animation: page-in var(--dur-2, 0.22s) var(--ease-soft, cubic-bezier(0.22, 1, 0.36, 1)) backwards;
+::view-transition-group(app-nav),
+::view-transition-new(app-nav) { animation: none; }
+::view-transition-old(app-nav) { display: none; }
+
+/* 首次滚入的模块提前64px准备；展示后不重播，不影响元素实际占位。 */
+[data-reveal='pending'] { opacity: 0; translate: 0 10px; }
+[data-reveal='shown'] { opacity: 1; translate: none; }
+details > summary { cursor: pointer; }
+details > summary::marker { color: #9f927d; }
+details[data-opening='true'] { overflow: hidden; }
+details:focus-within { scroll-margin-top: 64px; }
+/* 短暂高亮独立于滚入位移；不要为整页列表永久保留will-change图层。 */
+[data-reveal][data-anim='new'] { opacity: 1; translate: none; }
+
+@supports not (view-transition-name: app-nav) {
+  .app-main > * { animation-duration: var(--dur-2); }
 }
 /* 条件展开（概览三格构成等）：从上方滑入 */
 .reveal {
@@ -1336,24 +1344,6 @@ button:not(:disabled):active {
   animation: chip-in 0.2s var(--ease-back, cubic-bezier(0.34, 1.5, 0.64, 1)) backwards;
 }
 
-/* —— 数据行进场：列表里的行轻微上浮，只给前六行错开，后面一起进（多了会像波浪） —— */
-.data-block > .line {
-  animation: rise-in 0.26s var(--ease-soft, cubic-bezier(0.22, 1, 0.36, 1)) backwards;
-}
-.data-block > .line:nth-child(2) { animation-delay: 0.03s; }
-.data-block > .line:nth-child(3) { animation-delay: 0.06s; }
-.data-block > .line:nth-child(4) { animation-delay: 0.09s; }
-.data-block > .line:nth-child(5) { animation-delay: 0.12s; }
-.data-block > .line:nth-child(6) { animation-delay: 0.15s; }
-
-/* —— 指标格进场错位（概览 / 统计） —— */
-.metric-strip > * {
-  animation: rise-in 0.34s var(--ease-soft, cubic-bezier(0.22, 1, 0.36, 1)) backwards;
-}
-.metric-strip > *:nth-child(2) { animation-delay: 0.04s; }
-.metric-strip > *:nth-child(3) { animation-delay: 0.08s; }
-.metric-strip > *:nth-child(4) { animation-delay: 0.12s; }
-
 /* —— 系统开了「减少动态效果」：全部退化为瞬切（不是变慢） —— */
 @media (prefers-reduced-motion: reduce) {
   .app-main > *,
@@ -1375,6 +1365,15 @@ button:not(:disabled):active {
   .trade-item {
     transition: none;
   }
+  .scroll-header [data-scroll-expanded],
+  .scroll-header [data-scroll-summary],
+  .chain-bar > i,
+  .hot-bar > i,
+  .trend-bar { transition: none !important; }
+  [data-reveal='pending'] { opacity: 1; translate: none; }
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) { animation: none !important; }
   button:not(:disabled):active {
     transform: none;
   }

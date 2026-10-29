@@ -8,6 +8,8 @@ import { StatsPage } from './pages/StatsPage'
 import { ManagePage } from './pages/ManagePage'
 import { IconChart, IconGear, IconGrid, IconList, IconTag } from './ui/icons'
 import { navigate, parseHash, type Tab, type TradesQuery } from './ui/nav'
+import { transitionView } from './ui/transitions'
+import { usePageMotion } from './ui/pageMotion'
 import './styles.css'
 
 const TABS: { key: 'overview' | 'trades' | 'orders' | 'stats' | 'manage'; label: string; Icon: typeof IconGrid }[] = [
@@ -21,25 +23,35 @@ const TABS: { key: 'overview' | 'trades' | 'orders' | 'stats' | 'manage'; label:
 function Shell() {
   // tab 与明细筛选都由 hash 承载（S7）：#/trades?stock=… 可以直达
   const [route, setRoute] = useState(parseHash)
+  const [dir, setDir] = useState<'forward' | 'back'>('forward')
+  const routeRef = useRef(route)
+  const mainRef = useRef<HTMLElement>(null)
+  usePageMotion(mainRef, route.tab)
   useEffect(() => {
-    const onHash = () => setRoute(parseHash())
+    const onHash = () => {
+      const next = parseHash()
+      const previous = routeRef.current
+      routeRef.current = next
+      const changedPage = previous.tab !== next.tab
+      const direction = TABS.findIndex(t => t.key === next.tab) >= TABS.findIndex(t => t.key === previous.tab) ? 'forward' : 'back'
+      const update = () => {
+        if (changedPage) {
+          setDir(direction)
+          window.scrollTo({ top: 0, behavior: 'instant' })
+        }
+        setRoute(next)
+      }
+      if (changedPage) transitionView(update, direction, 'page')
+      else update()
+    }
     window.addEventListener('hashchange', onHash)
     return () => window.removeEventListener('hashchange', onHash)
   }, [])
   const { ready, ledger } = useApp()
 
-  // V9.37 切页方向：新页按「往右走」还是「往左走」决定从左/右滑入（底部导航 5 个 tab 的顺序）
-  const tabIdx = TABS.findIndex((t) => t.key === route.tab)
-  const prevTabIdx = useRef(tabIdx)
-  const dir: 'forward' | 'back' = tabIdx >= prevTabIdx.current ? 'forward' : 'back'
-  useEffect(() => {
-    prevTabIdx.current = tabIdx
-  }, [tabIdx])
-
   // V9.66：跨页深链（树/统计/挂单跳明细）落在页面顶部——筛选区是展开状态、不用再滚回去找；
   // 明细页内部的筛选点击不走这里，不会把人顶上去
   const goTrades = (q: TradesQuery) => {
-    if (route.tab !== 'trades') window.scrollTo({ top: 0 })
     navigate('trades', q)
   }
 
@@ -52,13 +64,14 @@ function Shell() {
       if (route.tab === 'trades') lastTradesRef.current = parseHash().query
       navigate(key)
     }
-    window.scrollTo({ top: 0 })
+    // 跨页滚动复位放在快照更新内，避免先把旧页面闪回页顶再切换。
+    if (key === route.tab) window.scrollTo({ top: 0, behavior: 'instant' })
   }
   const pendingOrders = ledger.orders.length
 
   return (
     <div className="app">
-      <main className="app-main" data-dir={dir}>
+      <main ref={mainRef} className="app-main" data-dir={dir}>
         {!ready ? (
           <div className="empty-box">初始化本地库…</div>
         ) : route.tab === 'overview' ? (

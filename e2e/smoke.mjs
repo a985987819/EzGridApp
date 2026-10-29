@@ -792,18 +792,19 @@ try {
   await sleep(700)
   const condensedRaw = await evaluate(`(() => {
     const sticky = document.querySelector('[data-sticky="trades"]')
-    const filters = document.querySelector('.trades-filters')
     const sort = document.querySelector('.sort-chips')
     const sr = sort?.getBoundingClientRect()
+    const summary = sticky?.querySelector('[data-scroll-summary]')
+    const rect = summary?.getBoundingClientRect()
     return JSON.stringify({
-      // V9.60：收起改 grid-rows 连续动画——容器高度收到 0 + 内容 visibility hidden
+      // 完整设置保留原占位；可见的顶部只剩摘要，隐藏控件不进入键盘焦点。
       filtersHidden: (() => {
-        const wrap = document.querySelector('.trades-collapse')
-        const f = document.querySelector('.trades-filters')
-        return wrap ? wrap.getBoundingClientRect().height < 1 && f && getComputedStyle(f).visibility === 'hidden' : null
+        const wrap = sticky?.querySelector('[data-scroll-expanded]')
+        return Boolean(wrap?.inert && getComputedStyle(wrap).visibility === 'hidden')
       })(),
       sortOut: !sr || sr.bottom <= 0,
-      title: document.querySelector('[data-sticky="trades"] .page-title')?.textContent.replace(/\s+/g, ' ').trim() ?? '',
+      title: summary?.textContent.replace(/\s+/g, ' ').trim() ?? '',
+      summaryVisible: Boolean(summary && !summary.inert && Number(getComputedStyle(summary).opacity) > .99 && rect.top >= 0 && rect.bottom < 70),
       position: sticky ? getComputedStyle(sticky).position : 'missing',
       h: Math.round(sticky?.getBoundingClientRect().height ?? 0),
       y: Math.round(window.scrollY),
@@ -813,8 +814,8 @@ try {
   console.log('  收起后:', condensedRaw)
   check('下滑后筛选项隐藏', condensed.filtersHidden === true && condensed.y > 96, condensedRaw)
   check('下滑后排序方式离开视野', condensed.sortOut === true, condensedRaw)
-  check('收起后标题与计数仍在吸顶', condensed.position === 'sticky' && condensed.title.includes('明细') && condensed.title.includes('笔'), condensedRaw)
-  check('收起后吸顶高度变小', condensed.h > 0 && condensed.h < tradesFullH / 2, `full=${tradesFullH} condensed=${condensed.h}`)
+  check('收起后标题与计数仍在吸顶', condensed.position === 'sticky' && condensed.summaryVisible && condensed.title.includes('明细') && condensed.title.includes('笔'), condensedRaw)
+  check('摘要收放保持原占位、不推挤台账', condensed.h === Math.round(tradesFullH), `full=${tradesFullH} compact=${condensed.h}`)
   const condensedShot = await send('Page.captureScreenshot', { format: 'png' })
   writeFileSync(join(OUT, 'mobile-trades-condensed.png'), Buffer.from(condensedShot.data, 'base64'))
   await evaluate(`window.scrollTo(0, 0)`)
@@ -1409,11 +1410,13 @@ try {
     const sticky = document.querySelector('[data-sticky="orders"]')
     const setup = document.querySelector('.orders-setup')
     const barStyle = bar ? getComputedStyle(bar) : null
+    const summary = sticky?.querySelector('[data-scroll-summary]')
+    const rect = bar?.getBoundingClientRect()
     return JSON.stringify({
       exists: Boolean(bar),
       text: bar?.textContent.replace(/\s+/g, ' ').trim() ?? '',
       compact: sticky ? sticky.classList.contains('is-compact') : null,
-      barVisible: barStyle ? Number(barStyle.opacity) > 0.9 && barStyle.visibility !== 'hidden' : false,
+      barVisible: Boolean(barStyle && summary && !summary.inert && Number(getComputedStyle(summary).opacity) > .99 && barStyle.visibility !== 'hidden' && rect.top >= 0 && rect.bottom < 70),
       setupHidden: setup ? getComputedStyle(setup).visibility === 'hidden' : null,
       position: sticky ? getComputedStyle(sticky).position : 'missing',
       h: Math.round(sticky?.getBoundingClientRect().height ?? 0),
@@ -1431,7 +1434,7 @@ try {
   )
   check('完整设置已隐藏', compactBar.setupHidden === true, compactRaw)
   check('收起后仍吸顶', compactBar.position === 'sticky', compactRaw)
-  check('收起后高度明显变小', compactBar.h > 0 && compactBar.h < fullH / 2, `full=${fullH} compact=${compactBar.h}`)
+  check('摘要收放保持原占位、不推挤挂单', compactBar.h === Math.round(fullH), `full=${fullH} compact=${compactBar.h}`)
   const compactShot = await send('Page.captureScreenshot', { format: 'png' })
   writeFileSync(join(OUT, 'mobile-orders-compact.png'), Buffer.from(compactShot.data, 'base64'))
   check('点摘要回顶', await evaluate(`document.querySelector('[data-testid="orders-compact"]')?.click() ?? true`))

@@ -21,6 +21,8 @@ import { exportLedgerWorkbook } from '../io/ledgerWorkbook'
 import { useFlashOnAppear } from '../ui/motion'
 import { useKeyboardInset } from '../ui/viewport'
 import { useScrollHold } from '../ui/scrollHold'
+import { scrollToPageTop, useScrollHeader } from '../ui/scrollHeader'
+import { transitionView } from '../ui/transitions'
 import { enterSubmit } from '../ui/enterSave'
 import { DateField } from '../ui/DateField'
 import { TradeItem, buyDateOf, isDone, sellDateOf, type TradeRow } from '../components/TradeItem'
@@ -196,17 +198,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   const [showDeleted, setShowDeleted] = useState(urlQuery.del === true)
   // V9.5：默认隐藏「已完成」行（卖完且无待回补），URL 带 showDone=1 时放开
   const [hideDone, setHideDone] = useState(urlQuery.showDone !== true)
-  // V9.42：往下滑把股票 tab / 状态筛选收起来，只留标题计数；回顶才展开。阈值留回差防抖
-  const [filtersHidden, setFiltersHidden] = useState(false)
-  useEffect(() => {
-    const onScroll = () => {
-      const y = window.scrollY
-      setFiltersHidden((wasHidden) => (wasHidden ? y > 24 : y > 96))
-    }
-    onScroll()
-    window.addEventListener('scroll', onScroll, { passive: true })
-    return () => window.removeEventListener('scroll', onScroll)
-  }, [])
+  const stickyRef = useScrollHeader('is-condensed')
   const [openRow, setOpenRow] = useState<number | null>(null)
   // V9.40/V9.55：弹层打开时库会把 body 锁成 overflow:hidden，文档高度塌回一屏、scrollY 被清零；
   // 打开前记下位置、全关掉后补回去——否则编辑完一笔要从头往下划才能找回这一行。
@@ -719,14 +711,22 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
 
   return (
     <div className="stack">
-      <div className={`page-sticky trades-sticky${filtersHidden ? ' is-condensed' : ''}`} data-sticky="trades">
+      <div ref={stickyRef} className="page-sticky scroll-header trades-sticky" data-sticky="trades">
+        <div data-scroll-summary className="trades-summary" aria-hidden="true">
+          <button type="button" className="trades-compact" data-testid="trades-compact" onClick={scrollToPageTop} aria-label="回到顶部展开明细筛选">
+            <strong>明细</strong>
+            <span>{filtered.length} / {rows.length} 笔</span>
+            <span className="muted" aria-hidden="true">↑</span>
+          </button>
+        </div>
+        <div data-scroll-expanded>
         <div className="page-title">
           <h2>明细</h2>
           <p>{filtered.length} / {rows.length} 笔</p>
         </div>
 
-        {/* V9.60：收起改连续收放动画（grid-rows，同挂单页 V9.44）——[hidden] 瞬切会让吸顶高度跳变 */}
-        <div className={`trades-collapse${filtersHidden ? ' closed' : ''}`} aria-hidden={filtersHidden}>
+        {/* 完整筛选保留自然高度，随滚动离开视口；摘要只做淡入淡出。 */}
+        <div className="trades-collapse">
           <div className="trades-collapse-inner">
             <div className="trades-filters">
         <div className="stock-tabs" style={{ marginBottom: 8 }}>
@@ -734,7 +734,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
             size="medium"
             variant={stockFilter === 'all' ? 'solid' : 'soft'}
             color={stockFilter === 'all' ? 'app-teal' : 'default'}
-            onClick={() => setStockFilter('all')}
+            onClick={() => transitionView(() => setStockFilter('all'))}
           >
             全部
           </Tag>
@@ -744,7 +744,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
               size="medium"
               variant={stockFilter === n ? 'solid' : 'soft'}
               color={stockFilter === n ? 'app-teal' : 'default'}
-              onClick={() => setStockFilter(n)}
+              onClick={() => transitionView(() => setStockFilter(n))}
             >
               {n}
             </Tag>
@@ -759,11 +759,11 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
               type="button"
               className={`filter-chip toggle${statuses.includes(k) ? ' on' : ''}`}
               aria-pressed={statuses.includes(k)}
-              onClick={() => {
+              onClick={() => transitionView(() => {
                 // 「已卖完」和「隐藏已完成」天然互斥：勾已卖完时自动放开隐藏，避免空列表
                 if (k === 'soldout' && !statuses.includes(k)) setHideDone(false)
                 setStatuses((s) => (s.includes(k) ? s.filter((x) => x !== k) : [...s, k]))
-              }}
+              })}
             >
               {STATUS_LABEL[k]}
             </button>
@@ -774,7 +774,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
             className={`filter-chip toggle${hideDone ? ' on' : ''}`}
             aria-pressed={hideDone}
             data-action="hide-done"
-            onClick={() => setHideDone((v) => !v)}
+            onClick={() => transitionView(() => setHideDone((v) => !v))}
           >
             隐藏已完成
           </button>
@@ -786,20 +786,21 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
         {activeChips.length > 0 && (
           <div className="filter-chips" data-testid="active-chips">
             {activeChips.map((c) => (
-              <button key={c.key} type="button" className="filter-chip" onClick={c.clear}>
+              <button key={c.key} type="button" className="filter-chip" onClick={() => transitionView(c.clear)}>
                 {c.label}
                 <span className="x" aria-hidden>
                   ×
                 </span>
               </button>
             ))}
-            <button type="button" className="filter-chip reset" onClick={resetFilters} data-action="reset-filters">
+            <button type="button" className="filter-chip reset" onClick={() => transitionView(resetFilters)} data-action="reset-filters">
               清空筛选
             </button>
           </div>
         )}
             </div>
           </div>
+        </div>
         </div>
       </div>
 
@@ -826,11 +827,11 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                 type="button"
                 className={`filter-chip toggle${active ? ' on' : ''}`}
                 aria-pressed={active}
-                onClick={() => {
+                onClick={() => transitionView(() => {
                   if (sortBy === c.desc) setSortBy(c.asc)
                   else if (sortBy === c.asc) setSortBy('rowDesc')
                   else setSortBy(c.desc)
-                }}
+                })}
               >
                 {c.label}
                 {active && <span aria-hidden>{sortBy === c.asc ? '↑' : '↓'}</span>}
