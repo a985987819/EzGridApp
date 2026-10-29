@@ -135,11 +135,13 @@ describe('挂单建议回归',()=>{
   const l=buildLedger([buy(2,500,500),{...buy(3,600,300),targetPriceCents:700}],[stock])
   expect(mergeTargetRows({...l,merges:[]})[0]).toMatchObject({qty:800,priceCents:700,expectProfitCents:130000})
  })
- it('同价待回补和下一轮建议汇总，金额包含所有建议',()=>{
+ it('同价待回补和下一轮建议保持两组，金额合计不变',()=>{
   const l=buildLedger([sell(9,700,500),{...buy(2,500,300),soldQty:300}],[stock])
   const next=buildNextRoundBuyRows({...l,merges:[]})
   const board=buildBuySuggestions(l.buySplits,next,[])
-  expect(board[0]).toMatchObject({qty:l.orders[0].remainingQty+300,amountCents:500*(l.orders[0].remainingQty+300)});expect(board[0].sources).toHaveLength(2)
+  expect(board).toHaveLength(2)
+  expect(board.reduce((sum,r)=>sum+r.qty,0)).toBe(l.orders[0].remainingQty+300)
+  expect(board.reduce((sum,r)=>sum+r.amountCents,0)).toBe(500*(l.orders[0].remainingQty+300))
  })
  it('下一轮成交部分消耗建议，软删买入后额度恢复',()=>{
   const anchor={...buy(2,500,500),soldQty:500}
@@ -187,7 +189,7 @@ describe('挂单建议回归',()=>{
   expect(base[0]).toMatchObject({priceCents:500,qty:500})
   const edited=buildBuySuggestions(l.buySplits,[],[{id:'p',refId:base[0].key,kind:'buy',priceCents:450,qty:200,at:1}])
   expect(edited[0]).toMatchObject({priceCents:450,qty:200,amountCents:90000,edited:true})
-  expect(edited[0].sources).toEqual(base[0].sources)
+  expect(edited[0].sources).toEqual(base[0].sources.map(s=>({...s,qty:200})))
   const bigger=buildBuySuggestions(l.buySplits,[],[{id:'p',refId:base[0].key,kind:'buy',priceCents:450,qty:900,at:1}])
   expect(bigger[0].qty).toBe(500)
  })
@@ -221,14 +223,14 @@ describe('V9.54 先卖后买的待买排最前',()=>{
   const edited=buildBuySuggestions(l.buySplits,[],[{id:'p',refId:'buy:T:500',kind:'buy',priceCents:700,qty:500,at:1}])
   expect(edited.map((r)=>r.priceCents)).toEqual([700,650])
  })
- it('同价合并里有先卖后买来源 → 整条按先卖后买排/标',()=>{
+ it('同价先卖后买和可选P列再买保持两组',()=>{
   // 裸卖 9（P 500）+ 先买后卖 3 的 P 也是 500 → 合成一条，带先卖后买标记
   const samePrice=rec(3,{buyPriceCents:1000,buyQtyRaw:500,targetPriceCents:1000,soldQty:500,earlyBuyPriceCents:500})
   const l=buildLedger([samePrice,sell(9,700,500)],[stock])
   const board=buildBuySuggestions(l.buySplits,[],[])
-  expect(board).toHaveLength(1)
-  expect(board[0]).toMatchObject({priceCents:500,sellFirst:true})
-  expect(board[0].sources.map((s)=>s.kind==='order'&&s.sellFirst===true)).toEqual([false,true])
+  expect(board).toHaveLength(2)
+  expect(board.map(r=>r.sellFirst).sort()).toEqual([false,true])
+  expect(board.every(r=>r.sources.length===1)).toBe(true)
  })
 })
 
@@ -236,7 +238,7 @@ describe('V9.55 改单撞价后重新合并',()=>{
  /** 两个不同派生价的待买：450（先买后卖走 P 列）+ 500（裸卖）；卖出都不赚钱 → 没有组池奖励干扰数量 */
  const twoRows=()=>buildLedger(
    [
-     rec(3,{buyPriceCents:1000,buyQtyRaw:500,targetPriceCents:1000,soldQty:500,earlyBuyPriceCents:450}),
+     rec(3,{buyDateSerial:null,buyPriceCents:null,buyQtyRaw:null,targetPriceCents:450,soldQty:500,earlyBuyPriceCents:450}),
      rec(9,{buyDateSerial:null,targetPriceCents:500,soldQty:500,earlyBuyPriceCents:500}),
    ],
    [stock],
@@ -249,7 +251,7 @@ describe('V9.55 改单撞价后重新合并',()=>{
   expect(board).toHaveLength(1)
   expect(board[0]).toMatchObject({priceCents:500,qty:1000,edited:true})
   expect(board[0].sources).toHaveLength(2)
-  expect(board[0].members?.map((m)=>m.key)).toEqual(['buy:T:450','buy:T:500'])
+  expect(board[0].members?.map((m)=>m.key)).toEqual(['buy:cover:T:450','buy:cover:T:500'])
  })
  it('合并行再改单：两份各挂一份计划，合计正好是填的量（不再拆回两行）',()=>{
   const l=twoRows()

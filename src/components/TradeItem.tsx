@@ -52,8 +52,8 @@ export function TradeItem({
   const deleted = Boolean(rec.deletedAt)
   const holding = (lot?.remainingQty ?? 0) > 0
   const awaitingBuy = !holding && sell?.rebuyStatus === 'pending'
-  const buyP = rec.buyPriceCents ?? rec.earlyBuyPriceCents
-  const buyQ = lot ? lot.qty : rec.soldQty ?? 0
+  const buyP = rec.soldLotId ? null : rec.buyPriceCents
+  const buyQ = lot ? lot.qty : rec.buyQtyRaw ?? 0
   // V9.26.1 状态区分：文字一律默认色；待卖（红）/待买（蓝）用左边框 + 右下角挂单角标表达
   const stateCls = holding ? ' pending-sell' : awaitingBuy ? ' pending-buy' : ''
   const targetP = lot?.targetPriceCents ?? rec.targetPriceCents
@@ -80,15 +80,15 @@ export function TradeItem({
         <span className="path num">
           {buyP !== null ? (
             <span>
-              买 {price(buyP)}
+              实际买入 {price(buyP)}
               {buyQ > 0 && <b> × {qty(buyQ)}</b>}
             </span>
           ) : (
-            '无买入批次'
+            rec.soldLotId ? `来源成本 ${price(rec.buyPriceCents)}` : (sell?.actualRebuyQty ?? 0) > 0 ? `已买回 ${qty(sell!.actualRebuyQty!)} 股，见流水` : '尚未买回'
           )}
-          {rec.soldQty ? ` · 卖 ${qty(rec.soldQty)}` : ''}
+          {rec.soldQty ? ` · 实际卖出 ${price(sell?.priceCents ?? rec.targetPriceCents)} × ${qty(rec.soldQty)}` : ''}
           {' → '}
-          <span>目标 {price(targetP)}</span>
+          {holding ? <span>计划卖价 {price(targetP)}</span> : awaitingBuy ? <span>计划回补 {price(sell?.rebuyPriceCents ?? rec.earlyBuyPriceCents)}</span> : <span>本笔卖出已完成</span>}
         </span>
         <span className="right-qty num">
           {lot ? `剩余 ${qty(lot.remainingQty)}` : rec.soldQty ? `已卖 ${qty(rec.soldQty)}` : ''}
@@ -97,7 +97,7 @@ export function TradeItem({
       {/* 买入 / 卖出日期都显示；没有就显示 —（先卖后买的行买入日期本来就空） */}
       <div className="dates num">
         <span className={buyDateOf(row) === null ? 'missing' : undefined}>
-          买入 <b>{buyDateOf(row) ?? '—'}</b>
+          {rec.soldLotId ? '来源买入' : '买入'} <b>{buyDateOf(row) ?? '—'}</b>
         </span>
         <span className="sep" aria-hidden />
         <span className={sellDateOf(row) === null ? 'missing' : undefined}>

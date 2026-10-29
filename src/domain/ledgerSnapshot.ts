@@ -3,11 +3,12 @@ import { buildRecordNoIndex } from './recordNo'
 import { buildNextRoundBuyRows } from './buyBoard'
 import { buildBuySuggestions, consumedNextRounds } from './suggestions'
 import { mergeTargetRows } from './merge'
+import type { BookingReceipt } from './booking'
 import type { AuditLog, ExtraBuyTarget, ExtraTarget, HedgeLink, LotMergeLink, RawRecord, RebuyExecution, RepairChainLink, StockConfig, TradePlan } from './types'
 
 /** 全量交换格式：只保存派生输入，稳定身份沿用内部主键，与工作表行位置无关。 */
 export interface LedgerSnapshot {
-  schemaVersion: 11
+  schemaVersion: 11 | 12
   exportedAt: string
   settings: { deriveSellPrice: boolean }
   stocks: StockConfig[]
@@ -21,6 +22,7 @@ export interface LedgerSnapshot {
   hedges: HedgeLink[]
   merges: LotMergeLink[]
   chainLinks: RepairChainLink[]
+  bookingReceipts?: BookingReceipt[]
 }
 
 export type SnapshotCell = string | number | boolean | null

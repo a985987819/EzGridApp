@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from 'react'
 import { notificationOpen } from 'animal-island-ui'
+import { bookingPayload, similarFacts, tradeFacts, type BookingOptions, type BookingReceipt } from '../domain/booking'
 import { db, type ImportBatch } from './db'
 import { activeDependents, validateExecutionInput } from '../domain/dependencies'
 import { buildNextRoundBuyRows } from '../domain/buyBoard'
@@ -33,7 +34,7 @@ import {
   type SandboxDraft,
   type SandboxState,
 } from '../domain/sandbox'
-import { importDiffFields, IMPORT_FIELD_LABEL, importFieldValue, planImport } from '../domain/importPlan'
+import { importDiffFields, IMPORT_FIELD_LABEL, importFieldValue, planImport, type ImportChoices } from '../domain/importPlan'
 import { validateBackup } from '../domain/backup'
 import type {
   AuditLog,
@@ -94,6 +95,11 @@ const LEDGER_TX_TABLES = () => [
   db.chainLinks,
   db.buyTargets,
   db.auditLogs,
+  db.bookingReceipts,
+  db.plans,
+  db.merges,
+  db.batches,
+  db.meta,
 ]
 
 /** `sell:12` → 12；合成卖出（sell:hedged:* / sell:closed:*）与沙盒行认不出 → null */
@@ -135,6 +141,9 @@ interface AppContextValue {
   merges: LotMergeLink[]
   /** 回本链归属（V9.46）：锚点行 + 后续归属的真实买出行；盈亏仍纯派生 */
   chainLinks: RepairChainLink[]
+  bookingReceipts: BookingReceipt[]
+  reviewBooking: (id: string, reviewed: boolean) => Promise<void>
+  voidBooking: (id: string) => Promise<void>
   ledger: Ledger
   /** 界面行身份（V9.43）：按录入顺序派生的「第 N 笔」，Excel 行号退成追溯信息 */
   recordNo: RecordNoIndex
@@ -144,20 +153,21 @@ interface AppContextValue {
   preview: ParseResult | null
   setPreview: (p: ParseResult | null) => void
   batches: ImportBatch[]
-  commitImport: (p: ParseResult, fileName: string) => Promise<ImportOutcome>
+  commitImport: (p: ParseResult, fileName: string, choices?: ImportChoices) => Promise<ImportOutcome>
   rollbackBatch: (batchId: string) => Promise<number>
-  editRecord: (sourceRow: number, draft: Partial<Record<EditableKey, string>>) => Promise<number>
+  editRecord: (sourceRow: number, draft: Partial<Record<EditableKey, string>>, options?: BookingOptions) => Promise<number>
   softDelete: (sourceRow: number) => Promise<void>
   restore: (sourceRow: number) => Promise<void>
-  addManualRecord: (input: ManualInput) => Promise<number>
+  addManualRecord: (input: ManualInput, options?: BookingOptions) => Promise<number>
   reorderStocks: (orderedIds: string[]) => Promise<void>
   setStockEnabled: (id: string, enabled: boolean) => Promise<void>
-  recordLotSales: (sources: {lotId:string;targetId?:string;qty:number}[], qty:number, priceCents:number, date:string) => Promise<void>
-  recordBuySuggestion: (sources: BuySource[], qty:number, priceCents:number, date:string) => Promise<void>
-  recordRebuy: (order: RebuyOrder, qty: number, priceCents: number, rewardQty: number, note?: string, splitKey?: string) => Promise<void>
+  recordLotSales: (sources: {lotId:string;targetId?:string;qty:number}[], qty:number, priceCents:number, date:string, options?: BookingOptions) => Promise<BookingReceipt>
+  recordBuySuggestion: (sources: BuySource[], qty:number, priceCents:number, date:string, options?: BookingOptions) => Promise<BookingReceipt>
+  recordRebuy: (order: RebuyOrder, qty: number, priceCents: number, rewardQty: number, note?: string, splitKey?: string, options?: BookingOptions) => Promise<BookingReceipt>
   removeRebuy: (id: string) => Promise<void>
   setPlan: (kind: 'buy' | 'sell', refId: string, priceCents: number, qty: number) => Promise<void>
   clearPlan: (refId: string) => Promise<void>
+  savePlans: (kind: 'buy' | 'sell', entries: { key: string; priceCents: number; qty: number }[], clearRefs?: string[]) => Promise<void>
   /** 保存/替换一条裸卖的挂钩分配（合计应等于卖单股数，buildLedger 里还会再校验） */
   setHedgeLink: (sellRow: number, items: { row: number; qty: number }[]) => Promise<void>
   clearHedgeLink: (sellRow: number) => Promise<void>
@@ -240,6 +250,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [hedges, setHedges] = useState<HedgeLink[]>([])
   const [merges, setMerges] = useState<LotMergeLink[]>([])
   const [chainLinks, setChainLinks] = useState<RepairChainLink[]>([])
+  const [bookingReceipts, setBookingReceipts] = useState<BookingReceipt[]>([])
   const [batches, setBatches] = useState<ImportBatch[]>([])
   const [deriveSellPrice, setDeriveSellPriceState] = useState(false)
   const setDeriveSellPrice = useCallback((v: boolean) => {
@@ -274,7 +285,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [ordersSession])
 
   const reloadRecords = useCallback(async () => {
-    const [r, a, x, pl, et, hd, mg, cl, bt] = await Promise.all([
+    const [r, a, x, pl, et, hd, mg, cl, bt, receipts] = await db.transaction('r', LEDGER_TX_TABLES(), () => Promise.all([
       db.records.toArray(),
       db.auditLogs.toArray(),
       db.rebuyExecutions.toArray(),
@@ -284,7 +295,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       db.merges.toArray(),
       db.chainLinks.toArray(),
       db.buyTargets.toArray(),
-    ])
+      db.bookingReceipts.toArray(),
+    ]))
     setRecords(r)
     setAudits(a)
     setExecutions(x)
@@ -294,7 +306,69 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setMerges(mg)
     setChainLinks(cl)
     setBuyTargets(bt)
+    setBookingReceipts(receipts)
   }, [])
+
+  const reviewBooking = async (id: string, reviewed: boolean) => {
+    await db.transaction('rw', LEDGER_TX_TABLES(), async () => {
+      let receipt = await db.bookingReceipts.get(id)
+      if (!receipt) {
+        const fact = tradeFacts(await db.records.toArray(), await db.rebuyExecutions.toArray(), await db.bookingReceipts.toArray()).find(f => f.id === id)
+        if (!fact || fact.voided || fact.priceCents === null) throw new Error('成交不存在、已撤销或实际价格尚未补全')
+        receipt = { id, payload: 'historical-review', kind: fact.side, stockName: fact.stockName, qty: fact.qty, priceCents: fact.priceCents, date: fact.date, recordRows: fact.rows, executionIds: fact.executionIds, at: Date.now() }
+      }
+      const currentFact = tradeFacts(await db.records.toArray(), await db.rebuyExecutions.toArray(), [receipt]).find(f => f.id === id)
+      if (!currentFact || currentFact.voided || currentFact.priceCents === null) throw new Error('这笔成交已撤销或实际价格不完整，不能标为已核对')
+      receipt = { ...receipt, qty: currentFact.qty, priceCents: currentFact.priceCents, date: currentFact.date }
+      await db.bookingReceipts.put({ ...receipt, reviewedAt: reviewed ? Date.now() : undefined })
+      await db.auditLogs.add(audit(id, '成交核对', receipt.reviewedAt ? '已核对' : '待核对', reviewed ? '已核对' : '待核对', 'booking', 'order'))
+    })
+    await reloadRecords()
+  }
+
+  const saveBooking = useCallback(async (
+    fact: Pick<BookingReceipt, 'kind' | 'stockName' | 'qty' | 'priceCents' | 'date'>,
+    payload: unknown, options: BookingOptions | undefined, write: () => Promise<void | { recordRows: number[] }>,
+  ): Promise<BookingReceipt> => {
+    if (!Number.isSafeInteger(fact.qty) || fact.qty <= 0 || !Number.isSafeInteger(fact.priceCents) || fact.priceCents <= 0) throw new Error('成交价量必须是大于0的安全整数')
+    const id = options?.commandId ?? crypto.randomUUID()
+    const signature = bookingPayload({ payload, externalRef: options?.externalRef?.trim() || undefined })
+    const receipt = await db.transaction('rw', LEDGER_TX_TABLES(), async () => {
+      const receipts = await db.bookingReceipts.toArray()
+      const beforeRecords = await db.records.toArray(), beforeExecs = await db.rebuyExecutions.toArray()
+      const previous = receipts.find(r => r.id === id)
+      if (previous) {
+        if (previous.payload !== signature) throw new Error('该保存编号已用于不同内容，请重新打开表单')
+        if (previous.voidedAt || tradeFacts(beforeRecords, beforeExecs, [previous]).find(f => f.id === previous.id)?.voided !== false) throw new Error(`成交 ${previous.id} 已撤销或来源不存在，请勿重复恢复`)
+        return previous
+      }
+      if (!fact.stockName.trim()) throw new Error('成交来源已变化，无法确定股票，请重新打开表单')
+      const externalRef = options?.externalRef?.trim() || undefined
+      const external = externalRef ? receipts.find(r => r.externalRef === externalRef) : undefined
+      if (external) {
+        const actual = tradeFacts(beforeRecords, beforeExecs, [external]).find(f => f.id === external.id)
+        if (!actual || actual.voided) throw new Error(`该凭据的成交 ${external.id} 已撤销，请在成交流水核对`)
+        if (actual.qty !== external.qty || actual.priceCents !== external.priceCents || actual.date !== external.date) throw new Error(`该凭据的成交 ${external.id} 已更正，请核对原成交`)
+        if (external.kind !== fact.kind || external.stockName !== fact.stockName || external.date !== fact.date || external.qty !== fact.qty || external.priceCents !== fact.priceCents) throw new Error(`凭据已记为 ${external.id}，方向、股票、日期或价量不一致，请核对原成交`)
+        return external
+      }
+      if (fact.kind !== 'import' && !options?.allowSimilar) {
+        const candidates = similarFacts(tradeFacts(beforeRecords, beforeExecs, receipts), fact.kind, fact.stockName, fact.date, fact.priceCents, fact.qty)
+        if (candidates.length) throw new Error(`发现同股同日同价同量成交：${candidates.map(c => c.id).join('、')}。请查看已有成交，或确认这是另一笔后再保存`)
+      }
+      const allocation = await write()
+      const rows = new Set(beforeRecords.map(r => r.sourceRow)), execIds = new Set(beforeExecs.map(e => e.id))
+      const recordRows = allocation?.recordRows ?? (await db.records.toArray()).filter(r => !rows.has(r.sourceRow)).map(r => r.sourceRow)
+      const executionIds = (await db.rebuyExecutions.toArray()).filter(e => !execIds.has(e.id)).map(e => e.id)
+      const next: BookingReceipt = { id, payload: signature, ...fact, at: Date.now(), recordRows, executionIds, ...(externalRef ? { externalRef } : {}) }
+      await db.bookingReceipts.add(next)
+      return next
+    })
+    try { await reloadRecords() } catch {
+      notificationOpen({ message: '成交已保存', description: `编号 ${receipt.id}，页面刷新失败，请勿重复新增；刷新后可查成交流水`, type: 'info' })
+    }
+    return receipt
+  }, [reloadRecords])
 
   useEffect(() => {
     let alive = true
@@ -304,7 +378,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         await db.stocks.bulkPut(DEFAULT_STOCKS)
       }
       // 单一账户（V9.32：账户功能已删除）
-      const [sRaw, r, a, b, x, backupMeta, pl, et, fontMeta, hd, mg, cl, bt, deriveMeta] = await Promise.all([
+      const [sRaw, r, a, b, x, backupMeta, pl, et, fontMeta, hd, mg, cl, bt, deriveMeta, receipts] = await Promise.all([
         db.stocks.toArray(),
         db.records.toArray(),
         db.auditLogs.toArray(),
@@ -319,6 +393,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         db.chainLinks.toArray(),
         db.buyTargets.toArray(),
         db.meta.get('deriveSellPrice'),
+        db.bookingReceipts.toArray(),
       ])
       if (!alive) return
       // 老库补齐 order / enabled 并压平序号
@@ -336,6 +411,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setMerges(mg)
       setChainLinks(cl)
       setBuyTargets(bt)
+      setBookingReceipts(receipts)
       setBatches(b)
       setBasename(b[0]?.fileName ?? '—')
       setLastBackupAt(backupMeta ? Number(backupMeta.value) : null)
@@ -393,18 +469,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
   ])
 
   const commitImport = useCallback(
-    async (p: ParseResult, fileName: string): Promise<ImportOutcome> => {
+    async (p: ParseResult, fileName: string, choices: ImportChoices = {}): Promise<ImportOutcome> => {
+      const outcome = await db.transaction('rw', LEDGER_TX_TABLES(), async () => {
       const existing = await db.records.toArray()
       // v9.20 决策 C：同 key 跳过之外，再按行身份（股票+买入日期+买入价+份额）
       // 匹配更新卖出侧字段——Excel 改了已卖行重导，更新而不是并存新旧行
-      const plan = planImport(existing, p.records, p.absentFields ?? p.missingColumns)
+      const plan = planImport(existing, p.records, p.absentFields ?? p.missingColumns, choices, tradeFacts(existing, await db.rebuyExecutions.toArray(), await db.bookingReceipts.toArray()))
+      if (plan.conflicts.length) throw new Error(`还有 ${plan.conflicts.length} 行匹配不明确，请先在预览中选择来源`)
       const execs=await db.rebuyExecutions.toArray()
       for(const u of plan.updates){
         if(activeDependents(u.from.sourceRow,existing,execs).length>0)throw new Error('导入将更改已有后续成交的记录，请先撤销后续成交再同步')
         const done=execs.filter((e)=>e.sellExecId===`sell:${u.from.sourceRow}`)
         if(done.length>0 && ((u.to.soldQty??0)<done.reduce((a,e)=>a+e.qty-e.rewardQty,0) || u.to.earlyBuyPriceCents===null))throw new Error('导入将减少已回补订单的卖出量或清空回补价，请先核对成交')
       }
-      const batchId = `batch:${Date.now()}`
+      const importedAt = Math.max(Date.now(), ...((await db.batches.toArray()).map(b => b.importedAt + 1)))
+      const batchId = `batch:${importedAt}`
       const fresh = plan.fresh.map((r) => ({
         ...r,
         origin: 'excel' as const,
@@ -414,13 +493,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
         id: batchId,
         fileName,
         sheetName: p.sheetName,
-        importedAt: Date.now(),
+        importedAt,
         recordCount: p.records.length,
         addedCount: fresh.length,
         updatedCount: plan.updates.length,
       }
       await db.transaction('rw', db.records, db.batches, db.auditLogs, async () => {
-        if (fresh.length) await db.records.bulkPut(fresh)
+        if (fresh.length) await db.records.bulkAdd(fresh)
         for (const u of plan.updates) {
           const to = { ...u.to, editedAt: Date.now() }
           await db.records.put(to)
@@ -443,10 +522,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
           )
         }
       })
+      return { added: fresh.length, duplicated: plan.unchanged, updated: plan.updates.length, batch }
+      })
       await reloadRecords()
       setBatches(await db.batches.orderBy('importedAt').reverse().toArray())
       setBasename(fileName)
-      return { added: fresh.length, duplicated: plan.unchanged, updated: plan.updates.length, batch }
+      return outcome
     },
     [reloadRecords],
   )
@@ -456,6 +537,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const all=await db.records.toArray()
       const rows = all.filter((r) => r.batchId === batchId)
       const rowSet = new Set(rows.map((r) => r.sourceRow))
+      if (all.some(r => !rowSet.has(r.sourceRow) && r.nextRoundOfRow !== undefined && rowSet.has(r.nextRoundOfRow))) throw new Error('这批导入已有下一轮买入依赖，请先核对后续交易；不能回滚来源')
       const execs=await db.rebuyExecutions.toArray()
       if(rows.some((r)=>activeDependents(r.sourceRow,all,execs).some((child)=>!rows.some((v)=>v.sourceRow===child.sourceRow))))throw new Error('这批导入已有后续卖出，请先撤销后续成交')
       /**
@@ -467,7 +549,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       let cleaned: ReturnType<typeof cleanupRowLinks> | null = null
       await db.transaction(
         'rw',
-        [db.records, db.batches, db.auditLogs, db.hedges, db.buyTargets, db.extraTargets, db.merges, db.chainLinks, db.plans],
+        [db.records, db.batches, db.auditLogs, db.hedges, db.buyTargets, db.extraTargets, db.merges, db.chainLinks, db.plans, db.bookingReceipts],
         async () => {
           /**
            * V9.56：行号会被下一次导入复用（importPlan 见空就用 Excel 行号），所以指向这些行的
@@ -505,6 +587,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             await db.plans.clear()
             if (cleaned.plans.length) await db.plans.bulkPut(cleaned.plans)
           }
+          for (const receipt of await db.bookingReceipts.toArray()) if (receipt.recordRows.some(row => rowSet.has(row))) await db.bookingReceipts.put({ ...receipt, recordRows: receipt.recordRows.filter(row => !rowSet.has(row)), voidedAt: Date.now() })
           await db.records.bulkDelete(rows.map((r) => r.sourceRow))
           await db.batches.delete(batchId)
           if (rows.length) {
@@ -542,7 +625,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [deriveSellPrice])
 
   const editRecord = useCallback(
-    async (sourceRow: number, draft: Partial<Record<EditableKey, string>>) => {
+    async (sourceRow: number, draft: Partial<Record<EditableKey, string>>, options?: BookingOptions) => {
       const current = await db.records.get(sourceRow)
       if (!current) throw new Error(`找不到第 ${sourceRow} 行`)
       const { record, changes, errors } = applyEdits(current, draft)
@@ -564,16 +647,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       if (changes.length === 0) return 0
       const entityId = `record:${sourceRow}`
-      await db.transaction('rw', db.records, db.auditLogs, async () => {
+      const write = async () => {
         await db.records.put(record)
         await db.auditLogs.bulkAdd(
           changes.map((c) => audit(entityId, c.label, c.oldValue, c.newValue, 'edit')),
         )
-      })
-      await reloadRecords()
+        return { recordRows: [sourceRow] }
+      }
+      if (current.buyPriceCents === null && record.buyPriceCents !== null && (record.buyQtyRaw ?? 0) > 0) {
+        await saveBooking({ kind: 'buy', stockName: record.stockName, qty: record.buyQtyRaw!, priceCents: record.buyPriceCents, date: serialToIso(record.buyDateSerial) }, { sourceRow, draft }, options, write)
+      } else {
+        await db.transaction('rw', db.records, db.auditLogs, write)
+        await reloadRecords()
+      }
       return changes.length
     },
-    [reloadRecords,currentLedger],
+    [reloadRecords,currentLedger,saveBooking],
   )
 
   const softDelete = useCallback(
@@ -581,6 +670,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const current = await db.records.get(sourceRow)
       if (!current) return
       const allRows = await db.records.toArray()
+      if ((await db.bookingReceipts.toArray()).some(r => !r.voidedAt && r.recordRows.includes(sourceRow) && r.recordRows.length + r.executionIds.length > 1)) throw new Error('这行属于一次合并成交，请在管理 → 成交流水撤销整笔，不能只删除一份分配')
+      if (allRows.some(r => r.nextRoundOfRow === sourceRow && !r.deletedAt)) throw new Error('这笔已有下一轮买入，请先核对并撤销后续成交')
       if(activeDependents(sourceRow,allRows,await db.rebuyExecutions.toArray()).length>0)throw new Error('这笔交易已有后续卖出，请先撤销后续成交')
       /**
        * V9.56：这一行正被裸卖挂钩占着股数时不许删。挂账是**会计输入**（批次暂记卖出、
@@ -607,6 +698,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     async (sourceRow: number) => {
       const current = await db.records.get(sourceRow)
       if (!current) return
+      if ((await db.bookingReceipts.toArray()).some(r => r.voidedAt && r.recordRows.includes(sourceRow))) throw new Error('这行所属整笔成交已撤销，不能单独恢复一份分配；请核对原凭据后重新登记')
       if(current.soldLotId){
         const state=await currentLedger()
         const lot=state.ledger.lots.find((l)=>l.id===current.soldLotId)
@@ -628,17 +720,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   /** 真正写一条手动记录（不刷新内存态）：沙盒「记为成交」要连写多条再用一次 reload */
   const createManualRecord = useCallback(
-    async (input: ManualInput) => {
-      const all = await db.records.toArray()
-      const maxRow = all.reduce((a, r) => Math.max(a, r.sourceRow), MANUAL_ROW_BASE - 1)
-      const sourceRow = Math.max(maxRow + 1, MANUAL_ROW_BASE)
+    async (input: ManualInput, options?: BookingOptions) => {
       const cfg = stocks.find((s) => s.name === input.stockName)
-      const { record, errors } = buildManualRecord(input, sourceRow, {
+      const { record: draft, errors } = buildManualRecord(input, MANUAL_ROW_BASE, {
         intervalCents: cfg?.intervalCents ?? 0,
       })
       if (errors.length) throw new Error(errors.join('；'))
-      await db.transaction('rw', db.records, db.auditLogs, async () => {
-        await db.records.put(record)
+      const receipt = await saveBooking({ kind: input.kind, stockName: input.stockName, qty: input.kind === 'buy' ? draft.buyQtyRaw! : draft.soldQty!,
+        priceCents: input.kind === 'buy' ? draft.buyPriceCents! : draft.targetPriceCents!, date: serialToIso(input.kind === 'buy' ? draft.buyDateSerial : draft.sellDateSerial) },
+        { input, anchorRow: options?.anchorRow }, options, async () => {
+        const all = await db.records.toArray()
+        const sourceRow = Math.max(MANUAL_ROW_BASE - 1, ...all.map(r => r.sourceRow)) + 1
+        const { record } = buildManualRecord(input, sourceRow, { intervalCents: cfg?.intervalCents ?? 0 })
+        await db.records.add(record)
+        if (options?.anchorRow !== undefined) {
+          const anchor = all.find(r => r.sourceRow === options.anchorRow && !r.deletedAt)
+          if (!anchor || anchor.stockName !== record.stockName) throw new Error('回本链锚点已变化，请重新选择')
+          const id = `chainlink:${anchor.sourceRow}`
+          const link = await db.chainLinks.get(id)
+          if (link?.closedAt) throw new Error('这条链已结束，请重新打开后再归属')
+          await db.chainLinks.put({ id, anchorRow: anchor.sourceRow, stockName: anchor.stockName, memberRows: [...(link?.memberRows ?? []), sourceRow], closedAt: null, at: Date.now() })
+          await db.auditLogs.add(audit(id, '新增并归属', '', `record:${sourceRow}`, 'booking', 'chain'))
+        }
         await db.auditLogs.add(
           audit(
             `record:${sourceRow}`,
@@ -649,18 +752,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
           ),
         )
       })
-      return sourceRow
+      return receipt.recordRows[0]
     },
-    [stocks],
+    [stocks, saveBooking],
   )
 
   const addManualRecord = useCallback(
-    async (input: ManualInput) => {
-      const sourceRow = await createManualRecord(input)
-      await reloadRecords()
+    async (input: ManualInput, options?: BookingOptions) => {
+      const sourceRow = await createManualRecord(input, options)
       return sourceRow
     },
-    [createManualRecord, reloadRecords],
+    [createManualRecord],
   )
 
   const reorderStocks = useCallback(async (orderedIds: string[]) => {
@@ -687,12 +789,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
 
 
-  const recordLotSales = async (sources:{lotId:string;targetId?:string;qty:number}[], qty:number, priceCents:number, date:string) => {
+  const recordLotSales = async (sources:{lotId:string;targetId?:string;qty:number}[], qty:number, priceCents:number, date:string, options?: BookingOptions) => {
     if(!Number.isInteger(qty)||qty<=0||!Number.isInteger(priceCents)||priceCents<=0||isoToSerial(date)===null)throw new Error('成交数量、价格或日期不合法')
-    await db.transaction('rw',LEDGER_TX_TABLES(),async()=>{
+    const stockName = (await currentLedger()).ledger.lots.find(l => l.id === sources[0]?.lotId)?.stockName ?? ''
+    return saveBooking({ kind: 'sell', stockName, qty, priceCents, date: serialToIso(isoToSerial(date)) },
+      { sources, qty, priceCents, date }, options, async()=>{
       const {records:r,ledger:l}=await currentLedger()
       const seen=new Set<string>()
       const usedByLot=new Map<string,number>()
+      const stockNames = new Set(sources.map(s => l.lots.find(lot => lot.id === s.lotId)?.stockName))
+      if (stockNames.size !== 1 || stockNames.has(undefined)) throw new Error('成交来源必须属于同一股票')
       let left=qty
       let row=Math.max(MANUAL_ROW_BASE-1,...r.map((v)=>v.sourceRow))+1
       for(const source of sources) {
@@ -713,10 +819,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       if(left>0)throw new Error('成交数量超过可卖量')
     })
-    await reloadRecords()
   }
 
-  const recordBuySuggestion = async (sources:BuySource[],qty:number,priceCents:number,date:string) => {
+  const recordBuySuggestion = async (sources:BuySource[],qty:number,priceCents:number,date:string, options?: BookingOptions) => {
     const serial=isoToSerial(date)
     if(!Number.isInteger(qty)||qty<=0||!Number.isInteger(priceCents)||priceCents<=0||serial===null)throw new Error('成交数量、价格或日期不合法')
     /**
@@ -728,13 +833,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const dayIso=serialToIso(serial)
     const atNoon=dayIso===null?NaN:new Date(`${dayIso}T12:00:00`).getTime()
     if(!Number.isFinite(atNoon))throw new Error('成交日期不合法')
-    await db.transaction('rw',LEDGER_TX_TABLES(),async()=>{
+    const stockName = (await db.records.get(sources[0]?.row ?? -1))?.stockName ?? ''
+    return saveBooking({ kind: 'buy', stockName, qty, priceCents, date: dayIso }, { sources, qty, priceCents, date }, options, async()=>{
       const {records:r,ledger:l}=await currentLedger()
       const next=buildNextRoundBuyRows({...l,merges:[],consumed:consumedNextRounds(r)})
       let left=qty
       let row=Math.max(MANUAL_ROW_BASE-1,...r.map((v)=>v.sourceRow))+1
       const seen=new Set<string>()
       const timestamp=Date.now()
+      const names = new Set(sources.map(s => r.find(row => row.sourceRow === s.row)?.stockName))
+      if (names.size !== 1 || names.has(undefined)) throw new Error('成交来源必须属于同一股票')
       for(const source of sources){
         if(left<=0)break
         const key=source.kind==='order'&&source.splitKey?source.splitKey:source.kind+':'+source.row
@@ -777,12 +885,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       if(left>0)throw new Error('成交数量超过建议数量')
     })
-    await reloadRecords()
   }
 
   const recordRebuy = useCallback(
-    async (order: RebuyOrder, qty: number, priceCents: number, rewardQty: number, note?: string, splitKey?: string) => {
-      await db.transaction('rw',LEDGER_TX_TABLES(),async()=>{
+    async (order: RebuyOrder, qty: number, priceCents: number, rewardQty: number, note?: string, splitKey?: string, options?: BookingOptions) => {
+      const date = new Date().toLocaleDateString('sv-SE')
+      return saveBooking({ kind: 'buy', stockName: order.stockName, qty, priceCents, date }, { orderId: order.id, qty, priceCents, rewardQty, splitKey }, options, async()=>{
         const {ledger:l}=await currentLedger()
         const fresh=l.orders.find((o)=>o.id===order.id)
         if(!fresh)throw new Error('待买单已变化，请刷新后重试')
@@ -794,17 +902,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
         await db.rebuyExecutions.add(exec)
         await db.auditLogs.add(audit(fresh.id,'记回补成交',`已回补 ${fresh.execQty}`,`已回补 ${fresh.execQty+qty}（${qty} 股 @ ${(priceCents/100).toFixed(2)}）`,'rebuy','order'))
       })
-      await reloadRecords()
     },
-    [reloadRecords,currentLedger],
+    [saveBooking,currentLedger],
   )
 
   const removeRebuy = useCallback(
     async (id: string) => {
-      await db.transaction('rw', db.records, db.rebuyExecutions, db.auditLogs, async () => {
+      await db.transaction('rw', LEDGER_TX_TABLES(), async () => {
         const exec = await db.rebuyExecutions.get(id)
-        const children=(await db.records.toArray()).some((r)=>!r.deletedAt && r.soldLotId===`lot:exec:${id}`)
-        if(children)throw new Error('该回补批次已有卖出，请先撤销后续卖出')
+        const children=(await db.records.toArray()).some((r)=>r.soldLotId===`lot:exec:${id}`)
+        if(children)throw new Error('该回补批次已有卖出或软删除历史引用，不能撤销来源；请先核对后续卖出与历史')
+        for (const t of await db.extraTargets.where('lotId').equals(`lot:exec:${id}`).toArray()) await db.extraTargets.delete(t.id)
+        for (const p of await db.plans.toArray()) if (p.refId === `target:lot:exec:${id}`) await db.plans.delete(p.id)
+        for (const receipt of await db.bookingReceipts.toArray()) if (receipt.executionIds.includes(id)) {
+          if (receipt.executionIds.length > 1 || receipt.recordRows.length > 0) throw new Error('该成交回执包含多个分配，请从成交流水核对整笔后处理，不能只撤销其中一份')
+          await db.bookingReceipts.put({ ...receipt, voidedAt: Date.now() })
+        }
         await db.rebuyExecutions.delete(id)
         if (exec) {
           await db.auditLogs.add({
@@ -837,6 +950,51 @@ export function AppProvider({ children }: { children: ReactNode }) {
     await db.plans.delete(`plan:${refId}`)
     setPlans(await db.plans.toArray())
   }, [])
+
+  const savePlans = async (kind: 'buy' | 'sell', entries: { key: string; priceCents: number; qty: number }[], clearRefs: string[] = []) => {
+    if (entries.some(e => !Number.isSafeInteger(e.qty) || e.qty <= 0 || !Number.isSafeInteger(e.priceCents) || e.priceCents <= 0)) throw new Error('计划价量不合法')
+    await db.transaction('rw', db.plans, db.auditLogs, async () => {
+      for (const ref of clearRefs) {
+        const previous = await db.plans.get(`plan:${ref}`)
+        await db.plans.delete(`plan:${ref}`)
+        if (previous) await db.auditLogs.add(audit(ref, '清除挂单计划', `${previous.priceCents}/${previous.qty}`, '', 'plan', 'order'))
+      }
+      for (const e of entries) {
+        const previous = await db.plans.get(`plan:${e.key}`)
+        await db.plans.put({ id: `plan:${e.key}`, kind, refId: e.key, priceCents: e.priceCents, qty: e.qty, at: Date.now() })
+        await db.auditLogs.add(audit(e.key, '挂单计划', previous ? `${previous.priceCents}/${previous.qty}` : '', `${e.priceCents}/${e.qty}`, 'plan', 'order'))
+      }
+    })
+    await reloadRecords()
+  }
+
+  const voidBooking = async (id: string) => {
+    await db.transaction('rw', LEDGER_TX_TABLES(), async () => {
+      const receipt = await db.bookingReceipts.get(id)
+      if (!receipt || receipt.voidedAt) throw new Error('成交不存在或已撤销')
+      const all = await db.records.toArray(), execs = await db.rebuyExecutions.toArray()
+      const affected = all.filter(r => receipt.recordRows.includes(r.sourceRow))
+      if (affected.some(r => !r.soldLotId && r.buyPriceCents !== null && (r.buyQtyRaw ?? 0) > 0 && (r.soldQty ?? 0) > 0)) throw new Error('这笔含历史同行买卖，请在原明细核对更正；不能只撤销一个方向并影响另一方向')
+      for (const row of receipt.recordRows) {
+        if (all.some(r => r.nextRoundOfRow === row && !r.deletedAt && !receipt.recordRows.includes(r.sourceRow))) throw new Error('这笔已有下一轮买入，请先核对并撤销后续成交')
+        if (activeDependents(row, all, execs).some(r => !receipt.recordRows.includes(r.sourceRow)) || execs.some(e => e.sellExecId === `sell:${row}` && !receipt.executionIds.includes(e.id))) throw new Error('这笔已有后续卖出或回补，请先核对并撤销后续成交')
+      }
+      for (const execId of receipt.executionIds) {
+        if (all.some(r => r.soldLotId === `lot:exec:${execId}`)) throw new Error('回补批次已有后续卖出或软删除历史引用，不能撤销来源')
+      }
+      const state = await currentLedger()
+      if (state.ledger.effectiveHedges.some(h => h.items.some(i => receipt.recordRows.includes(i.row)) && !receipt.recordRows.includes(h.sellRow))) throw new Error('本次库存仍被高位分配占用，请先核对关联卖出')
+      for (const r of affected) await db.records.put({ ...r, deletedAt: Date.now() })
+      for (const execId of receipt.executionIds) {
+        await db.rebuyExecutions.delete(execId)
+        for (const t of await db.extraTargets.where('lotId').equals(`lot:exec:${execId}`).toArray()) await db.extraTargets.delete(t.id)
+        for (const plan of await db.plans.toArray()) if (plan.refId === `target:lot:exec:${execId}`) await db.plans.delete(plan.id)
+      }
+      await db.bookingReceipts.put({ ...receipt, voidedAt: Date.now(), reviewedAt: undefined })
+      await db.auditLogs.add(audit(id, '撤销整笔成交', `${receipt.qty} 股；${receipt.recordRows.length + receipt.executionIds.length} 份分配`, '已撤销', 'booking', 'order'))
+    })
+    await reloadRecords()
+  }
 
   const addExtraTarget = useCallback(
     async (lotId: string, priceCents: number, qty: number) => {
@@ -1139,7 +1297,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       for (const it of link?.items ?? []) {
         const dep = sandbox.items.find((x) => x.kind === 'buy' && sandboxRowOf(x) === it.row)
         if (dep && !committedIds.has(dep.id)) {
-          const row = await createManualRecord(sandboxBuyInput(dep))
+          const row = await createManualRecord(sandboxBuyInput(dep), { commandId: `sandbox:${dep.id}` })
           remap.set(sandboxRowOf(dep), row)
           committedIds.add(dep.id)
         }
@@ -1147,6 +1305,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       const newRow = await createManualRecord(
         item.kind === 'sell' ? sandboxSellInput(item) : sandboxBuyInput(item),
+        { commandId: `sandbox:${item.id}` },
       )
       remap.set(itemRow, newRow)
 
@@ -1234,8 +1393,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       db.hedges.clear(),
       db.merges.clear(),
       db.chainLinks.clear(),
+      db.bookingReceipts.clear(),
     ])
     setRecords([])
+    setBookingReceipts([])
     setBatches([])
     setAudits([])
     setExecutions([])
@@ -1252,8 +1413,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const exportBackup = useCallback(async () => {
-    const [s, r, b, a, x, pl, et, hd, mg, cl, bt] = await db.transaction('r',
-      [db.stocks, db.records, db.batches, db.auditLogs, db.rebuyExecutions, db.plans, db.extraTargets, db.hedges, db.merges, db.chainLinks, db.buyTargets],
+    const [s, r, b, a, x, pl, et, hd, mg, cl, bt, receipts] = await db.transaction('r',
+      [db.stocks, db.records, db.batches, db.auditLogs, db.rebuyExecutions, db.plans, db.extraTargets, db.hedges, db.merges, db.chainLinks, db.buyTargets, db.bookingReceipts],
       () => Promise.all([
       db.stocks.toArray(),
       db.records.toArray(),
@@ -1266,6 +1427,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       db.merges.toArray(),
       db.chainLinks.toArray(),
       db.buyTargets.toArray(),
+      db.bookingReceipts.toArray(),
     ]))
     const stamp = String(Date.now())
     await db.meta.put({ key: 'lastBackupAt', value: stamp })
@@ -1273,7 +1435,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return JSON.stringify(
       {
         // 版本 11：V9.50 加卖单拆买（buyTargets）；旧版本恢复时会丢掉这些分段。
-        schemaVersion: 11,
+        schemaVersion: 12,
         exportedAt: new Date().toISOString(),
         settings: { deriveSellPrice },
         stocks: s,
@@ -1287,6 +1449,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         hedges: hd,
         merges: mg,
         chainLinks: cl,
+        bookingReceipts: receipts,
       },
       null,
       2,
@@ -1309,16 +1472,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
         hedges?: HedgeLink[]
         merges?: LotMergeLink[]
         chainLinks?: RepairChainLink[]
+        bookingReceipts?: BookingReceipt[]
       }
       if (data.settings !== undefined && (typeof data.settings !== 'object' || data.settings === null || typeof data.settings.deriveSellPrice !== 'boolean')) throw new Error('备份计算设置不合法')
       const version = data.schemaVersion ?? 1
-      if (version > 11) throw new Error('备份版本高于当前程序，拒绝导入（P11）')
+      if (version > 12) throw new Error('备份版本高于当前程序，拒绝导入（P11）')
+      if (!Array.isArray(data.records)) throw new Error('这不是完整备份：缺少交易记录表，拒绝混合恢复')
       // P11 之外的第二道闸：结构坏掉的备份整包拒绝，不让半截 JSON 污染本地库
       const problem = validateBackup(data)
       if (problem) throw new Error(`备份内容校验失败：${problem}`)
       await db.transaction(
         'rw',
-        [db.stocks, db.records, db.batches, db.auditLogs, db.rebuyExecutions, db.plans, db.extraTargets, db.hedges, db.merges, db.chainLinks, db.buyTargets, db.meta],
+        LEDGER_TX_TABLES(),
         async () => {
         if (data.settings) await db.meta.put({ key: 'deriveSellPrice', value: String(data.settings.deriveSellPrice) })
         if (data.stocks) {
@@ -1353,6 +1518,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // V9.46：回本链归属同样整表替换（老备份没有这段就清空）
         await db.chainLinks.clear()
         if (data.chainLinks) await db.chainLinks.bulkPut(data.chainLinks)
+        await db.bookingReceipts.clear()
+        if (data.bookingReceipts) await db.bookingReceipts.bulkAdd(data.bookingReceipts)
         await db.auditLogs.clear()
         if (data.auditLogs) {
           // 保留审计身份；旧备份未带 id 时 Dexie 仍会自动分配。
@@ -1375,6 +1542,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     ready,
     stocks,
     records,
+    bookingReceipts,
+    reviewBooking,
+    voidBooking,
+    savePlans,
     audits,
     executions,
     ledger,

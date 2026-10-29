@@ -121,6 +121,8 @@ export interface SellExecution {
   dateMissing: boolean
   priceSource: PriceSource
   rebuyRemainingQty?: number
+  /** 已由同行买入、独立真实买入或回补成交买回的基础股；不含奖励、挂钩交割。 */
+  actualRebuyQty?: number
   rebuyPriceCents?: number | null
   rebuyStatus: RebuyStatus
   /**

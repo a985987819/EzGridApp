@@ -4,6 +4,7 @@ import { activeStockNames } from '../domain/stocks'
 import { recordNoLabel } from '../domain/recordNo'
 import type { StockSummary } from '../domain/types'
 import { useApp } from '../store/useApp'
+import { saleFacts } from '../domain/booking'
 import { TreeTrunk } from '../components/TreeTrunk'
 import { RepairChainCard } from '../components/RepairChainCard'
 import { money, price, qty, signedMoney, tone } from '../ui/format'
@@ -20,7 +21,7 @@ export function Overview({
   /** 沙盒横幅里回挂单页继续模拟 */
   goOrders?: () => void
 }) {
-  const { ledger, sandbox, sandboxLedger, baseline, records, recordNo, basename, stocks, lastBackupAt, ordersSession } = useApp()
+  const { ledger, sandbox, sandboxLedger, baseline, records, recordNo, basename, stocks, lastBackupAt, ordersSession, bookingReceipts } = useApp()
   const [active, setActive] = useState('')
   const [openMetric, setOpenMetric] = useState<'target' | 'exposure' | 'net' | null>(null)
   /** 沙盒开着且有模拟条目：整页指标与树都改用预览账本（真实 + 模拟，纯派生） */
@@ -278,7 +279,7 @@ export function Overview({
           <Tag size="small" variant="soft" color="app-blue">
             已实现 {signedMoney(t.profitCents)}
             <span className="profit-count">
-              共计<b>{t.sellCount}</b>次
+              共计<b>{saleFacts(viewLedger.sells, bookingReceipts).length}</b>次
             </span>
           </Tag>
           <Tag size="small" variant="soft" color="app-orange">待卖 {money(t.targetAmountCents)}</Tag>

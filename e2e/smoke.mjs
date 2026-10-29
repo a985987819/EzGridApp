@@ -234,7 +234,7 @@ try {
   check('切到管理页', await nav('manage'))
   check(
     '管理页是按钮入口',
-    (await evaluate(`document.querySelectorAll('[data-manage-entry]').length`)) === 5 &&
+    (await evaluate(`document.querySelectorAll('[data-manage-entry]').length`)) === 6 &&
       Boolean(await evaluate(`Boolean(document.querySelector('[data-manage-entry="guide"]'))`)),
   )
   text = await bodyText()

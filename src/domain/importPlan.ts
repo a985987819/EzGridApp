@@ -14,6 +14,7 @@ import { centsToYuan } from './money'
 import { deriveBuyQty } from './qty'
 import { serialToIso } from './defaults'
 import type { RawRecord } from './types'
+import { similarFacts, type TradeFact } from './booking'
 
 export interface ImportUpdate {
   from: RawRecord
@@ -25,7 +26,9 @@ export interface ImportPlan {
   updates: ImportUpdate[]
   /** 同 key 跳过 + 身份命中但内容无变化的行数 */
   unchanged: number
+  conflicts: { incoming: RawRecord; candidates: RawRecord[]; reason: string }[]
 }
+export type ImportChoices = Record<number, number | 'new' | 'skip'>
 
 export function identityKeyOf(
   r: Pick<RawRecord, 'stockName' | 'buyDateSerial' | 'buyPriceCents' | 'buyQtyRaw' | 'qtyNeedsDerive'>,
@@ -73,7 +76,7 @@ export function importFieldValue(r: RawRecord, k: ImportUpdatableKey): string {
   return String(v)
 }
 
-export function planImport(existing: RawRecord[], incoming: RawRecord[], missingColumns: readonly string[] = []): ImportPlan {
+export function planImport(existing: RawRecord[], incoming: RawRecord[], missingColumns: readonly string[] = [], choices: ImportChoices = {}, facts: readonly TradeFact[] = []): ImportPlan {
   // 身份 → 本地行队列：同一身份多行（例如同价同日多笔买入）按出现次序配对，不串行
   const byIdentity = new Map<string, RawRecord[]>()
   for (const r of existing) {
@@ -91,9 +94,45 @@ export function planImport(existing: RawRecord[], incoming: RawRecord[], missing
   const fresh: RawRecord[] = []
   const updates: ImportUpdate[] = []
   let unchanged = 0
+  const conflicts: ImportPlan['conflicts'] = []
+  const claimed = new Set<number>()
+  // 先预留所有精确匹配，子集/重排不能被较早的模糊行抢占。
+  const exact = new Map<RawRecord, RawRecord>()
   for (const r of incoming) {
-    const local = byIdentity.get(identityKeyOf(r))?.shift()
+    const matches = existing.filter(local => !claimed.has(local.sourceRow) && !local.soldLotId && local.importKey === r.importKey && identityKeyOf(local) === identityKeyOf(r))
+    if (matches.length === 1) { exact.set(r, matches[0]); claimed.add(matches[0].sourceRow) }
+  }
+  for (const r of incoming) {
+    if (choices[r.sourceRow] === 'skip') { const reservedMatch = exact.get(r); if (reservedMatch) claimed.delete(reservedMatch.sourceRow); unchanged++; continue }
+    const choice = choices[r.sourceRow]
+    const candidates = (byIdentity.get(identityKeyOf(r)) ?? []).filter(local => !claimed.has(local.sourceRow))
+    let local = exact.get(r)
+    if (choice === 'new') { if (local) claimed.delete(local.sourceRow); local = undefined }
+    else if (typeof choice === 'number') {
+      const selected = existing.find(local => local.sourceRow === choice && !local.soldLotId && identityKeyOf(local) === identityKeyOf(r))
+      if (!selected || (claimed.has(choice) && selected !== local)) {
+        conflicts.push({ incoming: r, candidates, reason: '所选来源已变化或被其它行使用，请重新核对' }); continue
+      }
+      if (local && local !== selected) claimed.delete(local.sourceRow)
+      local = selected
+    } else if (!local) {
+      // 同内容多重性也可能是合法重复成交，不能靠队列顺序判断哪一笔。
+      const identical = candidates.filter(candidate => importDiffFields(candidate, r).length === 0)
+      if (candidates.some(c => c.deletedAt) || candidates.length > 1 || (r.buyPriceCents === null && candidates.length > 0 && identical.length === 0)) {
+        conflicts.push({ incoming: r, candidates, reason: '同身份存在多个记录、已删除历史或裸卖缺稳定身份，需选择已有记录或明确新增' }); continue
+      }
+      local = candidates[0]
+    }
+    if (local?.deletedAt && choice === undefined) { conflicts.push({ incoming: r, candidates: [local], reason: '这笔已删除，请选择跳过或核对后另记，不能自动恢复' }); continue }
+    if (local) claimed.add(local.sourceRow)
     if (!local) {
+      const similar = [
+        ...(r.buyPriceCents !== null && r.buyQtyRaw ? similarFacts(facts, 'buy', r.stockName, serialToIso(r.buyDateSerial), r.buyPriceCents, r.buyQtyRaw) : []),
+        ...(r.targetPriceCents !== null && r.soldQty ? similarFacts(facts, 'sell', r.stockName, serialToIso(r.sellDateSerial), r.targetPriceCents, r.soldQty) : []),
+      ]
+      if (choice !== 'new' && similar.length) {
+        conflicts.push({ incoming: r, candidates: [], reason: `已存在相似成交 ${similar.map(f => f.id).join('、')}；若已记过请选择跳过，确为另一笔才新增` }); continue
+      }
       let id = r.sourceRow
       if (used.has(id)) {
         while (used.has(nextId) || reserved.has(nextId)) nextId++
@@ -125,5 +164,5 @@ export function planImport(existing: RawRecord[], incoming: RawRecord[], missing
     if (importDiffFields(local, merged).length > 0) updates.push({ from: local, to: merged })
     else unchanged += 1
   }
-  return { fresh, updates, unchanged }
+  return { fresh, updates, unchanged, conflicts }
 }

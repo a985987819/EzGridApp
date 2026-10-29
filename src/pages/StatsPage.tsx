@@ -7,9 +7,11 @@ import { money, price, qty, signedMoney, tone } from '../ui/format'
 import { monthRange, type TradesQuery } from '../ui/nav'
 import { recordNoLabel } from '../domain/recordNo'
 import { buildNanoIdIndex } from '../ui/nanoid'
+import { saleFacts } from '../domain/booking'
 
 export function StatsPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
-  const { ledger, stocks } = useApp()
+  const { ledger, stocks, bookingReceipts } = useApp()
+  const actualSales = useMemo(() => saleFacts(ledger.sells, bookingReceipts), [ledger.sells, bookingReceipts])
   const t = ledger.totals
   const active = activeStocks(stocks)
   const enabledNames = new Set(active.map((s) => s.name))
@@ -50,7 +52,7 @@ export function StatsPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) 
           <div>
             <div className="k">卖出</div>
             <div className="v money">{money(t.sellAmountCents)}</div>
-            <div className="s">{t.sellCount} 笔 / {qty(t.sellQty)} 股</div>
+            <div className="s">{actualSales.length} 笔 / {qty(t.sellQty)} 股</div>
           </div>
           <div>
             <div className="k">实现盈利</div>
@@ -159,7 +161,7 @@ export function StatsPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) 
       </Card>
 
       {/* V9.61 近 12 个月盈利趋势：红盈绿亏，条高按绝对值 */}
-      <TrendCard monthly={ledger.monthly} />
+      <TrendCard monthly={ledger.monthly.map(m => ({ ...m, sellCount: actualSales.filter(s => (s.soldAt?.slice(0, 7) ?? '未填日期') === m.month).length }))} />
 
       <CalendarCard goTrades={goTrades} />
 
@@ -192,7 +194,7 @@ export function StatsPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) 
                   </Tag>
                 )}
               </div>
-              <div className="t2 num">{m.sellCount} 笔 · {qty(m.sellQty)} 股 · {money(m.sellAmountCents)}</div>
+              <div className="t2 num">{actualSales.filter(s => (s.soldAt?.slice(0, 7) ?? '未填日期') === m.month).length} 笔 · {qty(m.sellQty)} 股 · {money(m.sellAmountCents)}</div>
             </div>
             <div className="right">
               <div className={`num ${tone(m.profitCents)}`} style={{ fontWeight: 700 }}>
@@ -217,7 +219,7 @@ export function StatsPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) 
             <div className="left" style={{ flex: 1 }}>
               <div className="t1">
                 {s.stockName}
-                <span className="t2" style={{ marginLeft: 6, fontWeight: 400 }}>{s.rows} 条 · {s.sellCount} 笔卖出</span>
+                <span className="t2" style={{ marginLeft: 6, fontWeight: 400 }}>{s.rows} 条 · {actualSales.filter(sale => sale.stockName === s.stockName).length} 笔卖出</span>
               </div>
               <div className="grid-4" style={{ marginTop: 4, textAlign: 'left' }}>
                 <div>
@@ -334,7 +336,7 @@ function price2(cents: number | null): string {
 
 /** 成交日历：按月看每天卖出了什么、赚了多少（红盈绿亏） */
 function CalendarCard({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
-  const { ledger, records, recordNo } = useApp()
+  const { ledger, records, recordNo, bookingReceipts } = useApp()
   const nano = useMemo(() => buildNanoIdIndex(records), [records])
   const today = new Date()
   // 本地时区的今天：toISOString 是 UTC，东八区早上 8 点前会落到昨天
@@ -369,7 +371,7 @@ function CalendarCard({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
   // 按天聚合：一个格子一条「左当日总盈利 / 右成交笔数」（V9.7 修正口径）
   const events = useMemo(() => {
     const byDay = new Map<string, { count: number; qty: number; profit: number }>()
-    for (const s of ledger.sells) {
+    for (const s of saleFacts(ledger.sells, bookingReceipts)) {
       if (s.soldAt === null) continue
       const old = byDay.get(s.soldAt)
       const next = old ?? { count: 0, qty: 0, profit: 0 }
@@ -391,10 +393,10 @@ function CalendarCard({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
         </span>
       ),
     }))
-  }, [ledger.sells])
+  }, [ledger.sells, bookingReceipts])
 
-  const daySells = ledger.sells.filter((s) => s.soldAt === selected)
-  const missing = ledger.sells.filter((s) => s.dateMissing).length
+  const daySells = saleFacts(ledger.sells, bookingReceipts).filter((s) => s.soldAt === selected)
+  const missing = saleFacts(ledger.sells, bookingReceipts).filter((s) => s.dateMissing).length
 
   return (
     <Card>

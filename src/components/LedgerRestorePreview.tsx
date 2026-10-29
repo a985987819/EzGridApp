@@ -31,6 +31,7 @@ export function LedgerRestorePreview({ preview, onClose }: { preview: LedgerWork
       <div>{s.records.length} 笔记录 · {s.rebuyExecutions.length} 笔回补成交 · {preview.views['核对_回本链'].length} 条回本链</div>
       <div>已实现盈利 {money(Number(totals.profitCents))} · 待买 {String(totals.rebuyRemainingQty)} 股 · 待卖 {String(totals.targetQty)} 股</div>
       <div>{s.hedges.length} 条人工高位关联 · {s.chainLinks.length} 条人工链设置 · 自动关联重新推导</div>
+      {(s.bookingReceipts?.length ?? 0) > 0 && <div>{s.bookingReceipts!.length} 条成交回执 · 核对与撤销状态一并恢复</div>}
       <strong>{preview.differences.length ? '与导出时快照有变化，请核对' : '核对通过：回本链、挂单、奖励及记录序号与导出时一致'}</strong>
       {preview.differences.length > 0 && <div>{preview.differences.map((d) => <details key={d.sheet}><summary>{d.sheet}：内容变化（原 {d.before} 行 → 重算 {d.after} 行）</summary><ul>{d.examples.map((e, i) => <li key={i}>{e}</li>)}</ul><p className="tiny muted">每张表最多展示 12 项；完整结果见重算核对表。</p></details>)}</div>}
       <details><summary>查看重算后的回本链</summary>

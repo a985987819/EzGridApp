@@ -20,6 +20,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Select } from '../ui/Select'
 import { useApp } from '../store/useApp'
+import { saleFacts } from '../domain/booking'
 import type { Ledger, SellTarget } from '../domain/types'
 import { price } from '../ui/format'
 import { atlasStyle } from './treeStyleAtlas'
@@ -101,20 +102,21 @@ export function TreeTrunk({
   /** 沙盒预览：用真实 + 模拟的账本画树（V9.39）；不传就读全局真实账本 */
   ledger?: Ledger
 }) {
-  const { ledger: appLedger } = useApp()
+  const { ledger: appLedger, bookingReceipts } = useApp()
   const ledger = ledgerOverride ?? appLedger
+  const actualSells = useMemo(() => saleFacts(ledger.sells, bookingReceipts), [ledger.sells, bookingReceipts])
   // V9.31 年份筛选：只筛「已成交」（按卖出日期年份）——待买/待卖是当前挂单，不随年份消失。
   // 数据里出现过哪些年份就列哪些，将来多年度数据直接可切。
   const years = useMemo(() => {
     const set = new Set<string>()
-    for (const s of ledger.sells) if (s.soldAt) set.add(s.soldAt.slice(0, 4))
+    for (const s of actualSells) if (s.soldAt) set.add(s.soldAt.slice(0, 4))
     return [...set].sort()
-  }, [ledger.sells])
+  }, [actualSells])
   const [year, setYear] = useState('all')
   const effYear = year !== 'all' && years.includes(year) ? year : 'all'
   const scopedSells = useMemo(
-    () => (effYear === 'all' ? ledger.sells : ledger.sells.filter((s) => (s.soldAt ?? '').startsWith(effYear))),
-    [ledger.sells, effYear],
+    () => (effYear === 'all' ? actualSells : actualSells.filter((s) => (s.soldAt ?? '').startsWith(effYear))),
+    [actualSells, effYear],
   )
   const levels = useMemo(
     () => aggregate(stockName, scopedSells, ledger.targets, ledger.orders),

@@ -489,6 +489,20 @@ button { font-family: inherit; }
 .form-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
 .form-grid label span { color: var(--animal-text-color-secondary, #9f927d); }
 
+/* 成交确认包含来源与防重信息，内容随移动端可用宽度换行，避免库的 flex-start 产生横向滚动。 */
+.booking-modal { width: min(540px, calc(100vw - 24px)); }
+.booking-modal [class*='animal-body'] { align-items: stretch; font-size: 14px; }
+.booking-modal [class*='animal-body'] > div { width: 100%; min-width: 0; }
+.booking-modal .form-grid, .booking-check, .booking-check label { min-width: 0; max-width: 100%; }
+.booking-modal [class*='animal-wrapper'], .booking-modal input { min-width: 0; max-width: 100%; }
+.booking-check { margin: 10px 0; overflow-wrap: anywhere; }
+.booking-check > label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; }
+.booking-check input[type='checkbox'] { flex: none; }
+@media (max-width: 420px) {
+  .booking-modal [class*='animal-modalClipped'] { padding: 28px 28px 20px; }
+  .booking-modal [class*='animal-title'] { font-size: 22px; }
+}
+
 .hist-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .hist-list li { font-size: 12px; display: flex; gap: 6px; flex-wrap: wrap; }
 .hist-list .when { color: var(--animal-text-color-secondary, #9f927d); font-variant-numeric: tabular-nums; }

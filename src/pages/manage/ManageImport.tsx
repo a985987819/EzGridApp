@@ -13,6 +13,8 @@ import { downloadBytes, downloadText, toCsv } from '../../ui/csv'
 import { money, price, qty } from '../../ui/format'
 import type { TradesQuery } from '../../ui/nav'
 import { IconDownload, IconUpload } from '../../ui/icons'
+import { planImport, type ImportChoices } from '../../domain/importPlan'
+import { tradeFacts } from '../../domain/booking'
 
 const ANOMALY_LABEL: Record<string, string> = {
   needsPrice: '待补价格',
@@ -37,6 +39,9 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
   const {
     stocks,
     records,
+    executions,
+    bookingReceipts,
+    recordNo,
     preview,
     setPreview,
     commitImport,
@@ -50,6 +55,10 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
   /** V9.59：独立模式兜底唤起要用（见 pickFile.ts 与 label 的 onClick） */
   const importInputRef = useRef<HTMLInputElement>(null)
   const [lastFile, setLastFile] = useState('导入文件.xlsx')
+  const [choices, setChoices] = useState<ImportChoices>({})
+  const facts = useMemo(() => tradeFacts(records, executions, bookingReceipts), [records, executions, bookingReceipts])
+  const importPlan = useMemo(() => preview ? planImport(records, preview.records, preview.absentFields ?? preview.missingColumns, choices, facts) : null, [records, preview, choices, facts])
+  const initialConflicts = useMemo(() => preview ? planImport(records, preview.records, preview.absentFields ?? preview.missingColumns, {}, facts).conflicts : [], [records, preview, facts])
 
   const previewLedger = useMemo(
     () => (preview ? buildLedger(preview.records, stocks, { deriveSellPrice }) : null),
@@ -75,6 +84,7 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
   }, [preview, records])
 
   async function handleFile(file: File) {
+    setChoices({})
     setBusy(true)
     setLedgerPreview(null)
     setPreview(null)
@@ -97,10 +107,10 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
   }
 
   async function onCommit() {
-    if (!preview) return
+    if (!preview || busy) return
     setBusy(true)
     try {
-      const out = await commitImport(preview, lastFile)
+      const out = await commitImport(preview, lastFile, choices)
       setPreview(null)
       notificationOpen({
         message: '已写入本地',
@@ -283,8 +293,19 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
               </div>
             )}
             <CheckList checks={previewChecks} />
+            {importPlan && <div className="hint-block" data-testid="import-plan">
+              <strong>实际写入计划：新增 {importPlan.fresh.length} · 更新 {importPlan.updates.length} · 无变化/跳过 {importPlan.unchanged} · 待选择 {importPlan.conflicts.length}</strong>
+              <p className="tiny muted">上方数字是文件本身的预演；下方计划才是写入当前台账的变更。提交时会再次核对最新数据。</p>
+              {initialConflicts.map(c => <label key={c.incoming.sourceRow} className="stack tight" style={{ marginTop: 10 }}>
+                <span>Excel 第 {c.incoming.sourceRow} 行 · {c.incoming.stockName}：{c.reason}</span>
+                <select aria-label={`第${c.incoming.sourceRow}行导入处理`} value={String(choices[c.incoming.sourceRow] ?? '')} onChange={e => setChoices(old => ({ ...old, [c.incoming.sourceRow]: e.target.value === 'skip' || e.target.value === 'new' ? e.target.value : Number(e.target.value) }))}>
+                  <option value="" disabled>请选择处理方式</option><option value="skip">已记过 / 暂不确定，跳过本行</option><option value="new">核对后确认为另一笔，新增</option>
+                  {c.candidates.filter(r => !r.deletedAt).map(r => <option key={r.sourceRow} value={r.sourceRow}>更新第 {recordNo.of(r.sourceRow)} 笔 · 卖出 {r.soldQty ?? 0} 股 · 售价 {price(r.targetPriceCents)}</option>)}
+                </select>
+              </label>)}
+            </div>}
             <div className="row" style={{ marginTop: 12 }}>
-              <Button type="primary" block loading={busy} onClick={() => void onCommit()}>
+              <Button type="primary" block loading={busy} disabled={(importPlan?.conflicts.length ?? 0) > 0} onClick={() => void onCommit()}>
                 写入本地
               </Button>
               <Button onClick={() => setPreview(null)}>放弃</Button>

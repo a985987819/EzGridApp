@@ -230,9 +230,9 @@ try {
   await settle()
   const rewardResult=await evaluate(`({done:testApp.ledger.orders[0].doneRewardQty,used:testApp.ledger.groups[0].usedProfitCents,remaining:testApp.ledger.orders[0].remainingQty,sources:testApp.executions.map(e=>e.buyTargetId),bad:testApp.ledger.checks.filter(c=>!c.ok)})`)
   check('同订单拆档合并700股正确记录200奖励及1000元已用利润',rewardResult.done===200&&rewardResult.used===100000&&rewardResult.remaining===0&&rewardResult.sources.every(Boolean)&&rewardResult.bad.length===0,JSON.stringify(rewardResult))
-  await act(`await testApp.removeRebuy(testApp.executions.find(e=>e.rewardQty>0).id)`)
-  check('撤销奖励成交恢复额度，基础股不重复扣档',await evaluate(`testApp.ledger.orders[0].remainingQty===400&&testApp.ledger.buySplits.find(b=>b.priceCents===450).qty===0&&testApp.ledger.buySplits.find(b=>b.priceCents===500).qty===400&&testApp.ledger.groups[0].usedProfitCents===0`))
-  await act(`await testApp.removeRebuy(testApp.executions[0].id)`)
+  check('合并成交不能仅撤销一份分配',Boolean(await rejects(`await testApp.removeRebuy(testApp.executions.find(e=>e.rewardQty>0).id)`)))
+  await act(`await testApp.voidBooking(testApp.bookingReceipts.find(r=>r.executionIds.length===2&&!r.voidedAt).id)`)
+  check('撤销整笔恢复基础量与奖励额度',await evaluate(`testApp.ledger.orders[0].remainingQty===700&&testApp.ledger.groups[0].usedProfitCents===0&&testApp.executions.length===0`))
   await act(`const split=testApp.ledger.buySplits.find(b=>b.priceCents===500);await testApp.recordRebuy(testApp.ledger.orders[0],400,500,200,undefined,split.key)`)
   check('单档先成交奖励档也保存来源，其它300股基础档不变',await evaluate(`testApp.executions[0].rewardQty===200&&Boolean(testApp.executions[0].buyTargetId)&&testApp.ledger.buySplits.find(b=>b.priceCents===450).qty===300&&testApp.ledger.buySplits.find(b=>b.priceCents===500).qty===0&&testApp.ledger.checks.every(c=>c.ok)`))
 

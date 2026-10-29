@@ -59,16 +59,16 @@ describe('导入按行身份匹配更新（v9.20 决策 C）', () => {
     expect(plan.updates).toHaveLength(0)
   })
 
-  it('同身份多行按次序配对（先卖后买多笔同价）', () => {
+  it('同身份多行有歧义时必须选择，不能按次序更新', () => {
     const a = rec({ stockName: '柳工', sourceRow: 60, buyPriceCents: null, buyQtyRaw: null, soldQty: 500 })
     const b = rec({ stockName: '柳工', sourceRow: 61, buyPriceCents: null, buyQtyRaw: null, soldQty: 500, sellDateSerial: 46101 })
     const fileA = rec({ stockName: '柳工', buyPriceCents: null, buyQtyRaw: null, soldQty: 500, importKey: 'fa' })
     const fileB = rec({ stockName: '柳工', buyPriceCents: null, buyQtyRaw: null, soldQty: 600, importKey: 'fb' })
     const plan = planImport([a, b], [fileA, fileB])
-    // fileA 与 a 完全一致 → 无变化；fileB 卖出量变了 → 配到 b
-    expect(plan.updates).toHaveLength(1)
-    expect(plan.updates[0].from.sourceRow).toBe(61)
-    expect(plan.updates[0].to.soldQty).toBe(600)
+    expect(plan.updates).toHaveLength(0)
+    expect(plan.conflicts).toHaveLength(2)
+    const resolved = planImport([a, b], [fileA, fileB], [], { [fileA.sourceRow]: 61 })
+    expect(resolved.conflicts.length).toBeGreaterThan(0)
   })
 
   it('D 列公式派生的份额参与身份：老文件无缓存值、新文件有 → 还是同一批买入', () => {

@@ -42,6 +42,7 @@ const TABLES = [
   { key: 'buyTargets', name: '卖单拆买', columns: cols('id|分档ID|s;sellRow|卖出记录ID|i;priceCents|买价（分）|i;qty|股数|i;at|设置时间戳|i') },
   { key: 'batches', name: '导入批次', columns: cols('id|批次ID|s;fileName|原文件名|s;sheetName|原工作表|s;importedAt|导入时间戳|i;recordCount|记录数|i;addedCount|新增数|i;updatedCount|更新数|i?') },
   { key: 'auditLogs', name: '操作历史', columns: cols('id|审计ID|i?;entity|实体类型|s|record,stock,order,merge,chain;entityId|实体ID|s;field|字段|t;oldValue|旧值|t;newValue|新值|t;at|时间戳|i;source|来源|t') },
+  { key: 'bookingReceipts', name: '成交回执', columns: cols('id|操作编号|s;payload|提交内容（勿改）|t;kind|方向|s|buy,sell,import;stockName|股票|s;qty|总股数|i;priceCents|实际价格（分）|i;date|成交日期|s~;at|记账时间戳|i;recordRowsJson|记录分配（JSON）|t;executionIdsJson|回补分配（JSON）|t;externalRef|凭据身份|s?;reviewedAt|核对时间|i?;voidedAt|撤销时间|i?') },
 ] as const
 const ORDER = '原始顺序（勿改）'
 const NULL = '〈null〉'
@@ -65,6 +66,7 @@ export function isLedgerWorkbook(wb: WorkBook): boolean {
 function sourceTables(s: LedgerSnapshot): Record<string, Row[]> {
   const raw = Object.fromEntries(TABLES.filter((t) => t.key in s).map((t) => [t.key, s[t.key as keyof LedgerSnapshot]]))
   return { ...raw,
+    bookingReceipts: (s.bookingReceipts ?? []).map(r => ({ ...r, recordRowsJson: JSON.stringify(r.recordRows), executionIdsJson: JSON.stringify(r.executionIds) })),
     hedges: s.hedges.map((h) => ({ id: h.id, sellRow: h.sellRow, at: h.at })),
     hedgeItems: s.hedges.flatMap((h) => h.items.map((it) => ({ parentId: h.id, ...it }))),
     chainLinks: s.chainLinks.map((c) => ({ id: c.id, anchorRow: c.anchorRow, stockName: c.stockName, closedAt: c.closedAt, at: c.at })),
@@ -84,7 +86,7 @@ export async function exportLedgerWorkbook(snapshot: LedgerSnapshot): Promise<Ui
     X.utils.book_append_sheet(wb, ws, name)
   }
   append(LEDGER_META_SHEET, [
-    ['项目', '值'], ['格式', FORMAT], ['格式版本', VERSION], ['计算口径版本', 2],
+    ['项目', '值'], ['格式', FORMAT], ['格式版本', VERSION], ['计算口径版本', 2], ['备份结构版本', snapshot.schemaVersion],
     ['导出时间', snapshot.exportedAt], ['推定已成交售价', snapshot.settings.deriveSellPrice],
     ['恢复方式', '整库替换，不增量合并；恢复前自动下载当前 JSON 快照。'],
     ['编辑范围', '交易数据、股票设置、人工关联、成交和挂单计划可编辑；核对_ 开头的表仅为快照，恢复时重新计算。'],
@@ -160,6 +162,7 @@ export async function parseLedgerWorkbook(buffer: ArrayBuffer | Uint8Array): Pro
   if (typeof meta.get('导出时间') !== 'string' || !Number.isFinite(Date.parse(meta.get('导出时间') as string))) throw new Error('台账说明：导出时间不合法')
   const tables: Record<string, Row[]> = {}
   for (const t of TABLES) {
+    if (t.key === 'bookingReceipts' && !wb.SheetNames.includes(t.name)) { tables[t.key] = []; continue }
     const [headers, ...rows] = await readRows(wb, t.name)
     const columns = [{ key: '__order', label: ORDER, type: 'i' }, ...t.columns]
     const indices = columns.map((c) => {
@@ -205,13 +208,21 @@ export async function parseLedgerWorkbook(buffer: ArrayBuffer | Uint8Array): Pro
   attach('hedges', 'hedgeItems', 'items', true)
   attach('chainLinks', 'chainMembers', 'memberRows', false)
   attach('merges', 'mergeMembers', 'rows', false)
-  const snapshot = { ...tables, schemaVersion: 11, exportedAt: meta.get('导出时间'), settings: { deriveSellPrice: meta.get('推定已成交售价') } } as unknown as LedgerSnapshot
+  tables.bookingReceipts = tables.bookingReceipts.map(r => {
+    const { recordRowsJson, executionIdsJson, ...rest } = r
+    try { return { ...rest, recordRows: JSON.parse(String(recordRowsJson)), executionIds: JSON.parse(String(executionIdsJson)) } }
+    catch { throw new Error(`成交回执 ${String(r.id)}：分配JSON不合法`) }
+  })
+  const schemaVersion = meta.get('备份结构版本') ?? 11
+  if (schemaVersion !== 11 && schemaVersion !== 12) throw new Error('台账说明：不支持的备份结构版本')
+  const snapshot = { ...tables, schemaVersion, exportedAt: meta.get('导出时间'), settings: { deriveSellPrice: meta.get('推定已成交售价') } } as unknown as LedgerSnapshot
+  if (schemaVersion === 11 && snapshot.bookingReceipts?.length === 0) delete snapshot.bookingReceipts
   const problem = validateBackup(snapshot)
   if (problem) {
     const match = /^(\w+)\[(\d+)\]/.exec(problem)
     const table = TABLES.find((t) => t.key === match?.[1])
     const record = match ? tables[match[1]]?.[Number(match[2])] : undefined
-    throw new Error(`${table ? `工作表「${table.name}」记录 ${String(record?.id ?? record?.sourceRow ?? '?')}：` : ''}${problem}`)
+    throw new Error(`${table ? `工作表「${table.name}」记录 ${String(record?.id ?? record?.sourceRow ?? '?')}：` : ''}${problem.replace(/^records 记录/, '交易数据 记录')}`)
   }
   validateRelations(snapshot)
   const views = snapshotViews(snapshot)

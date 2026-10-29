@@ -23,6 +23,7 @@ export interface BackupShape {
   hedges?: unknown
   merges?: unknown
   chainLinks?: unknown
+  bookingReceipts?: unknown
 }
 
 type Obj = Record<string, unknown>
@@ -42,6 +43,10 @@ function checkRecords(records: unknown[]): string | null {
     if(rec.nextRoundOfRow!==undefined && !isRow(rec.nextRoundOfRow))return `records[${i}] 下一轮来源不合法`
     if (typeof rec.importKey !== 'string' || rec.importKey === '') return `records[${i}] 缺 importKey`
     if (typeof rec.stockName !== 'string' || rec.stockName === '') return `records[${i}] 缺 stockName`
+    for (const key of ['buyPriceCents', 'buyQtyRaw', 'soldQty', 'targetPriceCents', 'earlyBuyPriceCents', 'rawProfitCents'] as const) {
+      if (rec[key] !== undefined && rec[key] !== null && (!Number.isSafeInteger(rec[key]) || (key !== 'rawProfitCents' && (rec[key] as number) < 0))) return `records[${i}] ${key} 必须是有限安全整数`
+    }
+    for (const key of ['buyDateSerial', 'sellDateSerial', 'deletedAt', 'editedAt']) if (rec[key] !== undefined && rec[key] !== null && !isNum(rec[key])) return `records[${i}] ${key} 不合法`
   }
   return null
 }
@@ -70,6 +75,7 @@ function checkExecutions(list: unknown[]): string | null {
     if (!isNum(e.at)) return `rebuyExecutions[${i}] 缺 at`
     if (typeof e.groupKeyAtExecution !== 'string') return `rebuyExecutions[${i}] 缺 groupKeyAtExecution`
     if (e.buyTargetId !== undefined && (typeof e.buyTargetId !== 'string' || e.buyTargetId === '')) return `rebuyExecutions[${i}] 买入来源档不合法`
+    if (!Number.isSafeInteger(e.qty) || (e.qty as number) <= 0 || !Number.isSafeInteger(e.priceCents) || (e.priceCents as number) <= 0 || !Number.isSafeInteger(e.rewardQty) || (e.rewardQty as number) < 0 || (e.rewardQty as number) > (e.qty as number) || (e.rewardQty as number) % 100 !== 0) return `rebuyExecutions[${i}] 股数、价格或奖励不合法`
   }
   return null
 }
@@ -285,12 +291,57 @@ function checkReferences(data: BackupShape): string | null {
 
 /** 通过返回 null；不通过返回中文原因，恢复方直接抛错 */
 export function validateBackup(data: BackupShape): string | null {
+  if (!isObj(data)) return '备份必须是对象'
   for (const t of TABLES) {
     const value = data[t.key]
     if (value === undefined) continue
     if (!Array.isArray(value)) return `${t.key} 不是数组`
     const problem = t.check(value)
     if (problem) return problem
+    const keys = new Set<unknown>()
+    for (const row of value as Obj[]) {
+      const key = row.sourceRow ?? row.id
+      if (keys.has(key)) return `${t.key} 主键重复：${String(key)}`
+      keys.add(key)
+    }
+  }
+  if (data.bookingReceipts !== undefined) {
+    if (!Array.isArray(data.bookingReceipts)) return 'bookingReceipts 不是数组'
+    const ids = new Set<string>(), refs = new Set<string>(), allocations = new Set<string>()
+    for (const r of data.bookingReceipts as Obj[]) {
+      if (!isObj(r) || typeof r.id !== 'string' || !r.id || ids.has(r.id) || typeof r.payload !== 'string' || !['buy','sell','import'].includes(String(r.kind)) || typeof r.stockName !== 'string' || !r.stockName.trim() || !isNum(r.at) || !Number.isSafeInteger(r.qty) || !Number.isSafeInteger(r.priceCents) || !Array.isArray(r.recordRows) || !Array.isArray(r.executionIds) || r.recordRows.some(row => !isRow(row)) || r.executionIds.some(id => typeof id !== 'string') || (r.date !== null && (typeof r.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(r.date)))) return 'bookingReceipts 回执结构或唯一身份不合法'
+      ids.add(r.id)
+      if ((r.qty as number) <= 0 || (r.priceCents as number) <= 0 || new Set(r.recordRows as number[]).size !== r.recordRows.length || new Set(r.executionIds as string[]).size !== r.executionIds.length || ['reviewedAt','voidedAt'].some(key => r[key] !== undefined && !isNum(r[key]))) return 'bookingReceipts 价量、状态或分配身份不合法'
+      if (!r.voidedAt && (r.recordRows as number[]).length + (r.executionIds as string[]).length === 0) return 'bookingReceipts 缺少来源分配'
+      if (!r.voidedAt) for (const key of [...(r.recordRows as number[]).map(row => `${String(r.kind)}:${row}`), ...(r.executionIds as string[]).map(id => `execution:${id}`)]) {
+        if (allocations.has(key)) return `bookingReceipts 来源分配重复：${key}`
+        allocations.add(key)
+      }
+      if (r.externalRef !== undefined) {
+        if (typeof r.externalRef !== 'string' || !r.externalRef || refs.has(r.externalRef)) return 'bookingReceipts 凭据身份重复或不合法'
+        refs.add(r.externalRef)
+      }
+      if (!r.voidedAt && Array.isArray(data.records) && r.recordRows.some(row => !(data.records as Obj[]).some(record => record.sourceRow === row))) return `bookingReceipts ${r.id} 记录分配来源不存在`
+      if (!r.voidedAt && Array.isArray(data.rebuyExecutions) && r.executionIds.some(id => !(data.rebuyExecutions as Obj[]).some(e => e.id === id))) return `bookingReceipts ${r.id} 回补分配来源不存在`
+    }
+  }
+  if (Array.isArray(data.records)) {
+    const rows = new Map((data.records as Obj[]).map(r => [r.sourceRow, r]))
+    const execs = Array.isArray(data.rebuyExecutions) ? data.rebuyExecutions as Obj[] : []
+    const visiting = new Set<unknown>(), visited = new Set<unknown>()
+    const walk = (id: unknown): boolean => {
+      if (visiting.has(id)) return false
+      if (visited.has(id)) return true
+      visiting.add(id)
+      const r = rows.get(id)
+      if (r?.nextRoundOfRow !== undefined && !walk(r.nextRoundOfRow)) return false
+      if (typeof r?.soldLotId === 'string') {
+        const parent = r.soldLotId.startsWith('lot:exec:') ? Number(String(execs.find(e => e.id === r.soldLotId!.toString().slice(9))?.sellExecId).slice(5)) : Number(r.soldLotId.slice(4))
+        if (rows.has(parent) && !walk(parent)) return false
+      }
+      visiting.delete(id); visited.add(id); return true
+    }
+    for (const id of rows.keys()) if (!walk(id)) return `records 记录 ${String(id)} 来源形成循环引用`
   }
   return checkReferences(data)
 }

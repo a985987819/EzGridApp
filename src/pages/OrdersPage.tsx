@@ -1,4 +1,6 @@
 import { useMemo, useState } from 'react'
+import { allocatePlan, bookingContributions } from '../domain/booking'
+import { BookingCheck, useBookingCheck } from '../components/BookingCheck'
 import { Button, Card, Input, Modal, Tag, notificationOpen } from 'animal-island-ui'
 import { Select } from '../ui/Select'
 import { useApp } from '../store/useApp'
@@ -68,8 +70,7 @@ export function OrdersPage({
     recordLotSales,
     recordBuySuggestion,
     removeRebuy,
-    setPlan,
-    clearPlan,
+    savePlans,
     merges,
     plans,
     sandbox,
@@ -238,7 +239,9 @@ export function OrdersPage({
   const [tradeQty,setTradeQty]=useState('')
   const [tradeDate,setTradeDate]=useState(todayIso())
   const [savingTrade,setSavingTrade]=useState(false)
+  const tradeCheck = useBookingCheck('order-trade', { side: trade?.side ?? 'buy', stockName: trade?.buy?.stockName ?? effectiveStock, date: tradeDate, priceCents: toCents(tradePrice), qty: Number(tradeQty) }, [trade, tradePrice, tradeQty, tradeDate])
   function openTrade(side:'buy'|'sell',row:BuySuggestion|TargetRow){
+    tradeCheck.reset()
     setTrade(side==='buy'?{side,buy:row as BuySuggestion}:{side,sell:row as TargetRow})
     setTradePrice(centsToYuan(row.priceCents));setTradeQty(String(row.qty));setTradeDate(todayIso())
   }
@@ -251,12 +254,11 @@ export function OrdersPage({
       const q=Number(inputOrDefault(tradeQty,String(r.qty)))
       if(p===null)throw new Error('成交价不合法')
       if(q>r.qty)throw new Error(`本次最多记录 ${r.qty} 股`)
-      if(trade.buy)await recordBuySuggestion(trade.buy.sources,q,p,tradeDate||todayIso())
-      else {
-        await recordLotSales(trade.sell!.targets.map((t)=>({lotId:t.lotId,targetId:t.id,qty:t.qty})),q,p,tradeDate||todayIso())
-      }
+      const receipt = trade.buy ? await recordBuySuggestion(trade.buy.sources,q,p,tradeDate||todayIso(),tradeCheck.options())
+        : await recordLotSales(trade.sell!.targets.map((t)=>({lotId:t.lotId,targetId:t.id,qty:t.qty})),q,p,tradeDate||todayIso(),tradeCheck.options())
+      tradeCheck.completed()
       setTrade(null)
-      notificationOpen({message:'成交已记录',description:'已按来源分配数量，更新持仓与回本链',type:'success'})
+      notificationOpen({message:'成交已记录',description:`编号 ${receipt.id} · 本次 ${receipt.qty} 股，已按来源分配；可在管理 → 成交流水核对`,type:'success'})
     }catch(e){notificationOpen({message:'记录失败',description:e instanceof Error?e.message:String(e),type:'error'})}
     finally{setSavingTrade(false)}
   }
@@ -299,6 +301,7 @@ export function OrdersPage({
         </details>
       </div>
       <div className="right num">{money(r.amountCents)}</div>
+      {r.legacyPlanConflict && <Tag size="small" color="app-orange">旧改单身份有歧义，请分别重设</Tag>}
       <div className="acts">
         {/* V9.53：改这一条推荐挂单（价格/数量），保存后行与记成交默认值都按改后的走，但不成交 */}
         <Button
@@ -312,7 +315,7 @@ export function OrdersPage({
              * 用户「打开→不动→保存」就会把合计量砍掉一半。合并行一律用整行现价现量。
              */
             const merged = (r.members?.length ?? 0) > 1
-            openPlan('buy', r.key, `买 ${r.stockName}`, r.priceCents, r.qty, merged ? null : plan?.priceCents, merged ? null : plan?.qty, r.members)
+            openPlan('buy', r.key, `买 ${r.stockName}`, r.priceCents, r.qty, merged ? null : plan?.priceCents, merged ? null : plan?.qty, r.members, r.planRefs)
           })}
         >
           改单
@@ -618,6 +621,7 @@ export function OrdersPage({
   const [execDefaults,setExecDefaults]=useState({qty:0,priceCents:0,reward:0})
   /** V9.55：保存回补成交在途保护（连点两下会记两笔） */
   const [savingExec, setSavingExec] = useState(false)
+  const execCheck = useBookingCheck('order-rebuy', { side: 'buy', stockName: execOrder?.stockName ?? '', date: todayIso(), priceCents: toCents(inputOrDefault(execPrice, centsToYuan(execDefaults.priceCents))), qty: Number(inputOrDefault(execQty, String(execDefaults.qty))) }, [execOrder?.id, execSplitKey, execQty, execPrice, execReward])
 
   // 沙盒：新增模拟待买 / 待卖（只活在内存，刷新即清空）
   const [sbKind, setSbKind] = useState<SandboxKind | null>(null)
@@ -669,25 +673,14 @@ export function OrdersPage({
       if (!Number.isInteger(q) || q <= 0) throw new Error('计划量要填正整数')
       const members = planRef.members && planRef.members.length > 1 ? planRef.members : null
       if (!members) {
-        await setPlan(planRef.kind, planRef.refId, p, q)
+        await savePlans(planRef.kind, [{ key: planRef.refId, priceCents: p, qty: q }], planRef.planRefs)
       } else {
         /**
          * V9.55：合并行要**按份写回**——每条原来的身份各挂一份计划价（同价），数量按各自份额
          * 分配、合计正好等于填的计划量。否则只有半边动：改完价合并行又会被拆回两行。
          * 每份至少 1 股（`setPlan` 不收 0），所以计划量比来源条数还小时按条数兜底。
          */
-        const total = members.reduce((a, m) => a + m.qty, 0)
-        const target = Math.min(q, total)
-        let remain = target
-        for (let i = 0; i < members.length; i += 1) {
-          const m = members[i]
-          const rest = members.length - i - 1
-          // 比例分配；给后面每条至少留 1 股（setPlan 不收 0），最后一条吃掉余数
-          const even = i === members.length - 1 ? remain : Math.round((target * m.qty) / total)
-          const take = Math.max(1, Math.min(m.qty, even, Math.max(1, remain - rest)))
-          remain = Math.max(0, remain - take)
-          await setPlan(planRef.kind, m.key, p, take)
-        }
+        await savePlans(planRef.kind, allocatePlan(members, q).map(m => ({ ...m, priceCents: p })), planRef.planRefs)
       }
       setPlanRef(null)
       notificationOpen({
@@ -701,6 +694,7 @@ export function OrdersPage({
   }
 
   function openExec(o: RebuyOrder, suggestion?: {qty:number;priceCents:number;splitKey?:string}) {
+    execCheck.reset()
     setExecOrder(o)
     setExecSplitKey(suggestion?.splitKey)
     const split=suggestion?.splitKey?buySplits.find((b)=>b.key===suggestion.splitKey):undefined
@@ -726,13 +720,12 @@ export function OrdersPage({
       if (!Number.isInteger(q) || q <= 0) throw new Error('股数要填正整数')
       if (p === null || p <= 0) throw new Error('回补价不合法')
       if (!Number.isInteger(r) || r < 0) throw new Error('奖励股数不合法')
-      await recordRebuy(execOrder, q, p, r, undefined, execSplitKey)
+      const receipt = await recordRebuy(execOrder, q, p, r, undefined, execSplitKey, execCheck.options())
+      execCheck.completed()
       setExecOrder(null)
       notificationOpen({
         message: '已记回补成交',
-        description: execOrder.exposure
-          ? `${q} 股 @ ${priceText}，敞口减少，已生成回补批次进待卖`
-          : `${q} 股 @ ${priceText}，已生成回补批次进待卖`,
+        description: `编号 ${receipt.id} · ${q} 股 @ ${priceText}，已生成库存；基础欠股剩 ${Math.max(0, execOrder.baseQty - execOrder.execQty + execOrder.doneRewardQty - q + r)} 股`,
         type: 'success',
       })
     } catch (e) {
@@ -1421,7 +1414,7 @@ export function OrdersPage({
         </details>
       </Card>
 
-      <Modal open={trade!==null} title={trade?.side==='sell'?'记卖出成交':'记买入成交'} typewriter={false} onClose={()=>!savingTrade&&setTrade(null)}
+      <Modal className="booking-modal" open={trade!==null} title={trade?.side==='sell'?'记卖出成交':'记买入成交'} typewriter={false} onClose={()=>!savingTrade&&setTrade(null)}
         footer={<div className="row"><Button type="primary" disabled={savingTrade} onClick={()=>void saveTrade()}>保存成交</Button><Button disabled={savingTrade} onClick={()=>setTrade(null)}>取消</Button></div>}>
         <div onKeyDown={enterSubmit(() => void saveTrade())}>
         <p className="tiny muted" style={{ marginTop: 0 }}>股票：{trade?.buy?.stockName ?? effectiveStock}</p>
@@ -1439,6 +1432,11 @@ export function OrdersPage({
           )}
           同价来源按列表顺序分配，部分成交仅扣减本次成交的数量。
         </p>
+        <BookingCheck check={tradeCheck} />
+        {trade && <div className="hint-block" data-testid="booking-contributions"><strong>本次来源分配</strong>
+          {trade.buy ? bookingContributions(trade.buy.sources, Number(tradeQty)).map((s, i) => <div className="tiny" key={i}>{recordNoLabel(s.row, recordNo)} · {s.kind === 'next' ? '可选下一轮' : trade.buy!.sellFirst ? '基础回补及所含奖励' : '可选再买'}：{qty(s.qty)} 股</div>)
+            : bookingContributions(trade.sell!.targets, Number(tradeQty)).map(t => <div className="tiny" key={t.id}>{lotLabel(t.lotId, recordNo)}：卖出 {qty(t.qty)} 股</div>)}
+        </div>}
         </div>
       </Modal>
 
@@ -1492,10 +1490,10 @@ export function OrdersPage({
                 const refs = new Set<string>([planRef.refId])
                 if (planRef.members && planRef.members.length > 1) for (const m of planRef.members) refs.add(m.key)
                 for (const ref of planRef.planRefs ?? []) refs.add(ref)
-                void Promise.all([...refs].map((ref) => clearPlan(ref))).then(() => {
+                void savePlans(planRef.kind, [], [...refs]).then(() => {
                   setPlanRef(null)
                   notificationOpen({ message: '已恢复建议价量', type: 'info' })
-                })
+                }).catch((error: unknown) => notificationOpen({ message: '清除失败', description: String(error), type: 'error' }))
               }}
             >
               清除改单（恢复建议）
@@ -1506,6 +1504,7 @@ export function OrdersPage({
 
       <Modal
         open={execOrder !== null}
+        className="booking-modal"
         title="记回补成交"
         typewriter={false}
         onClose={() => setExecOrder(null)}
@@ -1541,6 +1540,8 @@ export function OrdersPage({
               本次基础股抵减待回补数量，新库存按「成交价 + 该股间隔」生成可卖批次。
               已分配的高位份额按实际回补量永久了结，原始亏损和回本链保留；回补节省不计盈利。
             </p>
+            <p className="hint-block">基础欠股 {Math.max(0, execOrder.baseQty - execOrder.execQty + execOrder.doneRewardQty)} → {Math.max(0, execOrder.baseQty - execOrder.execQty + execOrder.doneRewardQty - Number(inputOrDefault(execQty, String(execDefaults.qty))) + Number(inputOrDefault(execReward, String(execDefaults.reward))))} 股；本次新增库存 {inputOrDefault(execQty, String(execDefaults.qty))} 股（已含奖励）。</p>
+            <BookingCheck check={execCheck} />
           </div>
         )}
       </Modal>

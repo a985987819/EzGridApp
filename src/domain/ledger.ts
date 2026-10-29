@@ -547,6 +547,7 @@ export function buildLedger(
       rebuyPriceCents: sell.rebuyPriceCents ?? null,
     })
     covers.set(sell.sourceRow, cover)
+    sell.actualRebuyQty = Math.min(sell.qty, own + (execBaseBySell.get(sell.id) ?? 0) + (chainBuild.realCoverBySell.get(sell.sourceRow) ?? 0))
     sell.rebuyStatus = cover.pending ? 'pending' : 'repaid'
   }
 

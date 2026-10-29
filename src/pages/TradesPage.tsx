@@ -3,7 +3,7 @@ import { Button, Card, Drawer, Input, Modal, Switch, Tag, notificationOpen } fro
 import { Select } from '../ui/Select'
 import { useApp } from '../store/useApp'
 import { serialToIso } from '../domain/defaults'
-import { EDITABLE, fieldText, type EditableKey } from '../domain/edit'
+import { EDITABLE, fieldText, isoToSerial, type EditableKey } from '../domain/edit'
 import { activeStocks } from '../domain/stocks'
 import { sellsByRecord } from '../domain/suggestions'
 import { isSoldOut } from '../domain/tradeState'
@@ -30,6 +30,7 @@ import { HedgeBinder, HedgeSheet } from '../components/HedgeBinder'
 import { LotMergeBinder } from '../components/LotMergeBinder'
 import { RepairChainCard } from '../components/RepairChainCard'
 import { ChainBinder } from '../components/ChainBinder'
+import { BookingCheck, useBookingCheck } from '../components/BookingCheck'
 
 /** 状态筛选可多选（V9 可叠加）：命中的行要满足每一个勾选的状态 */
 const STATUS_KEYS = ['holding', 'soldout', 'pending', 'exposure', 'buyDateMissing', 'sellDateMissing', 'needsPrice'] as const
@@ -173,8 +174,6 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     removeExtraTarget,
     addBuyTarget,
     removeBuyTarget,
-    chainLinks,
-    setChainMembers,
     exportBackup,
   } = useApp()
   const [stockFilter, setStockFilter] = useState(urlQuery.stock ?? 'all')
@@ -205,6 +204,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState<Record<EditableKey, string>>(BLANK_DRAFT)
   const [adding, setAdding] = useState(false)
+  const [savingAdd, setSavingAdd] = useState(false)
   const [form, setForm] = useState<ManualInput>(BLANK_FORM)
   /** V9.46：从回本链点的「＋ 新增一笔」——新行落库后自动归入这条链 */
   const [pendingChainAnchor, setPendingChainAnchor] = useState<number | null>(null)
@@ -286,6 +286,8 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   // V9.35 新增表单的「按间隔自动算出来」提示：成交价改了 placeholder 就跟着变，省得自己减
   const formInterval = stockList.find((s) => s.name === form.stockName)?.intervalCents ?? 0
   const formDefaults = manualFormDefaults(form, todayIso(), formInterval)
+  const resolvedForm = resolveManualForm(form, todayIso(), formInterval)
+  const addCheck = useBookingCheck('manual', { side: form.kind, stockName: form.stockName, date: resolvedForm.date ?? null, priceCents: toCents(resolvedForm.price), qty: Number(resolvedForm.qty) }, [resolvedForm, pendingChainAnchor])
   const autoTarget = formDefaults.targetPrice
   const autoRebuy = formDefaults.rebuyPrice
   const enabledSet = useMemo(() => new Set(stockNames), [stockNames])
@@ -439,6 +441,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   }, [filtered, sortBy, recordNo])
 
   const current = visible.find((r) => r.rec.sourceRow === openRow) ?? null
+  const editCheck = useBookingCheck('backfill', { side: 'buy', stockName: current?.rec.stockName ?? '', date: serialToIso(isoToSerial(draft.buyDate)), priceCents: toCents(draft.buyPrice), qty: Number(draft.buyQty) }, [openRow, draft])
   const drawerOpen = current !== null
 
   /**
@@ -549,6 +552,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
    * 只想改卖出侧的人不该因为保存而把买入写进台账（这是账，不能靠"记得清空"）。
    */
   function startEdit(backfill = false) {
+    editCheck.reset()
     if (backfill && current) {
       const rec = current.rec
       const next = { ...draft }
@@ -563,7 +567,8 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   async function save() {
     if (openRow === null) return
     try {
-      const n = await editRecord(openRow, draft)
+      const n = await editRecord(openRow, draft, editCheck.options())
+      editCheck.completed()
       setEditing(false)
       notificationOpen({
         message: n === 0 ? '没有改动' : '已保存',
@@ -613,6 +618,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
 
   /** 链上「＋ 新增一笔归入本链」：按锚点股票打开新增表单，记住锚点等落库后自动归属 */
   function startAddIntoChain(anchorRow: number) {
+    addCheck.reset()
     const rec = records.find((r) => r.sourceRow === anchorRow)
     setPendingChainAnchor(anchorRow)
     setForm(blankForm(rec?.stockName ?? (stockFilter === 'all' ? stockNames[0] ?? '' : stockFilter)))
@@ -621,17 +627,17 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   }
 
   async function onAdd() {
+    if (savingAdd) return
+    setSavingAdd(true)
     try {
-      const row = await addManualRecord(resolveManualForm(form, todayIso(), formInterval))
+      const options = { ...addCheck.options(), ...(pendingChainAnchor !== null ? { anchorRow: pendingChainAnchor } : {}) }
+      const row = await addManualRecord(resolvedForm, options)
+      addCheck.completed()
       setAdding(false)
       const anchor = pendingChainAnchor
       setPendingChainAnchor(null)
       setForm(blankForm(form.stockName))
-      // V9.46：链上「＋ 新增一笔」→ 新行自动继承归属，不用回头再勾一次
-      if (anchor !== null) {
-        const link = chainLinks.find((l) => l.anchorRow === anchor)
-        await setChainMembers(anchor, [...(link?.memberRows ?? []), row])
-      }
+      // 新增、归属与回执已在 store 的同一事务完成。
       // V9.37：新行弹入 + 微光，承接「弹窗收成一条明细」的观感
       setFlashRow(row)
       window.setTimeout(() => setFlashRow((cur) => (cur === row ? null : cur)), 1800)
@@ -645,12 +651,12 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       }
       notificationOpen({
         message: `已新增第 ${recordNo.total + 1} 笔`,
-        description: form.kind === 'sell' && !form.buyPrice ? '先卖后买：之后可在明细里补买入信息' : undefined,
+        description: `成交编号 ${options.commandId} · 可在管理 → 成交流水核对`,
         type: 'success',
       })
     } catch (e) {
       notificationOpen({ message: '新增失败', description: e instanceof Error ? e.message : String(e), type: 'error' })
-    }
+    } finally { setSavingAdd(false) }
   }
 
   function exportCsv() {
@@ -991,6 +997,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
           <div className="stack">
             {editing ? (
               <>
+              {current.rec.buyPriceCents === null && draft.buyPrice && <BookingCheck check={editCheck} />}
               <div className="form-grid">
                 {EDITABLE.map((f) => {
                   // V9.50 用户拍板：成交数量是既成事实——买入/卖出份额只能看不能改，只放开对手价
@@ -1390,17 +1397,19 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
 
       <Modal
         open={adding}
+        className="booking-modal"
         title="新增一笔"
         typewriter={false}
-        onClose={() => setAdding(false)}
+        onClose={() => !savingAdd && setAdding(false)}
         footer={
           <div className="row nowrap" style={{ gap: 8 }}>
-            <Button type="primary" style={{ flex: 1 }} onClick={() => void onAdd()}>保存</Button>
-            <Button onClick={() => setAdding(false)}>取消</Button>
+            <Button type="primary" style={{ flex: 1 }} disabled={savingAdd} onClick={() => void onAdd()}>保存</Button>
+            <Button disabled={savingAdd} onClick={() => setAdding(false)}>取消</Button>
           </div>
         }
       >
         <div className="stack tight" onKeyDown={enterSubmit(() => void onAdd())}>
+          <BookingCheck check={addCheck} />
           <div className="type-toggle">
             <Button
               type={form.kind === 'buy' ? 'primary' : 'default'}

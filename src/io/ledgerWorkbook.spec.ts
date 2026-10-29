@@ -22,6 +22,12 @@ async function edit(editWorkbook: (wb: import('xlsx').WorkBook, X: Awaited<Retur
 }
 
 describe('完整台账 Excel 往返', () => {
+  it('结构12保留成交回执、来源凭据、核对与撤销状态', async () => {
+    const s = base()
+    s.schemaVersion = 12
+    s.bookingReceipts = [{ id: 'booking:test', payload: '{}', kind: 'buy', stockName: s.records[0].stockName, qty: 100, priceCents: 500, date: '2026-10-28', at: 1, reviewedAt: 2, voidedAt: 3, externalRef: 'broker/day/fill', recordRows: [s.records[0].sourceRow], executionIds: [] }]
+    expect((await parse(s)).snapshot).toEqual(s)
+  })
   it('真实 62 行重建六条先卖后买链，自动关联不变成人工关联', async () => {
     const s = base()
     const p = await parse(s)

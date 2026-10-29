@@ -1,4 +1,5 @@
 import Dexie, { type Table } from 'dexie'
+import type { BookingReceipt } from '../domain/booking'
 import type {
   AuditLog,
   ExtraBuyTarget,
@@ -41,6 +42,7 @@ class GridTradingDB extends Dexie {
   hedges!: Table<HedgeLink, string>
   merges!: Table<LotMergeLink, string>
   chainLinks!: Table<RepairChainLink, string>
+  bookingReceipts!: Table<BookingReceipt, string>
 
   constructor() {
     super('grid-trading')
@@ -87,6 +89,7 @@ class GridTradingDB extends Dexie {
     this.version(10).stores({
       buyTargets: 'id, sellRow',
     })
+    this.version(11).stores({ bookingReceipts: 'id, &externalRef, stockName, at' })
   }
 }
 
