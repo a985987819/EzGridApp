@@ -960,6 +960,34 @@ button { font-family: inherit; }
 .manage-arrow { flex: none; color: #bcae97; }
 .manage-bar { display: flex; align-items: center; gap: 8px; }
 .manage-bar strong { font-size: 15px; }
+
+/* A quiet version receipt: running and published builds always remain distinguishable. */
+.release-panel { min-width: 0; color: #725d42; }
+.release-heading { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.release-icon { display: inline-flex; color: #6b8b73; }
+.release-status { margin-left: auto; border: 1px solid var(--line-strong); border-radius: 20px; padding: 4px 9px; font-size: 10.5px; color: #8c7d67; }
+.release-status.is-current { background: #e5efdf; border-color: #bdcdb1; color: #4d6f49; }
+.release-status.is-available { background: #f9e8c8; border-color: #e1c38e; color: #93651e; }
+.release-compare { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); margin: 20px 0 12px; }
+.release-compare > div { min-width: 0; padding-right: 10px; }
+.release-compare > div + div { border-left: 1px solid var(--line-strong); padding-left: 14px; padding-right: 0; }
+.release-label { display: block; font-size: 11px; color: #9b8b73; margin-bottom: 7px; }
+.release-compare strong { font-size: 14px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.release-compare strong > span { display: block; margin-bottom: 2px; }
+.release-compare code { font-size: 12px; font-weight: 500; color: #8b7b63; }
+.release-compare small { display: block; margin-top: 7px; font-size: 10px; color: #9b8b73; line-height: 1.5; }
+.release-message { margin: 12px 0 6px; font-size: 12px; line-height: 1.8; }
+.release-checked { color: #9b8b73; font-size: 10px; margin: 0 0 16px; }
+.release-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.release-actions > button { flex: 1; }
+.release-note { color: #96866e; font-size: 11px; line-height: 1.8; margin: 14px 0; }
+.release-details { border: 0; padding: 14px 0 0; background: none; color: #66856c; font-size: 11px; cursor: pointer; }
+.release-result { background: #e5efdf; border-left: 3px solid #8eaa82; padding: 10px 12px; font-size: 12px; line-height: 1.7; }
+.release-result.is-error { border-color: #c59a57; background: #f8eaca; }
+.release-technical { border-top: 1px solid var(--line); margin-top: 20px; padding-top: 12px; font-size: 11px; }
+.release-technical dl { display: grid; gap: 7px; }
+.release-technical dt { color: #9b8b73; }
+.release-technical dd { margin: 0 0 5px; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .manage-back {
   display: inline-flex;
   align-items: center;

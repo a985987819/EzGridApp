@@ -20,6 +20,10 @@ export const IconCalendar = (p: SVGProps<SVGSVGElement>) => (
   </svg>
 )
 
+export const IconRefresh = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}><path d="M20 7v5h-5M4 17v-5h5" /><path d="M6.4 6.4A8 8 0 0 1 20 12M4 12a8 8 0 0 0 13.6 5.6" /></svg>
+)
+
 export const IconGrid = (p: SVGProps<SVGSVGElement>) => (
   <svg {...base(p)}>
     <rect x="3.5" y="3.5" width="7" height="7" rx="2" />

@@ -149,7 +149,7 @@ try {
   check('问题深链直达对应段落，保留待修复结论', await run(`location.hash.includes('anchor=c01') && document.querySelector('#c01').getBoundingClientRect().top>=0 && document.querySelector('#c01').getBoundingClientRect().top<160`) && (await text()).includes('本次仍可复现，待修复'))
   await click('[data-testid="guide-back"]')
   await click('[data-guide-mode="documents"]')
-  check('完整文档收录全部13篇本地指南与审计资料', await run(`document.querySelectorAll('[data-guide-doc]').length===13`))
+  check('完整文档收录全部14篇本地指南与审计资料', await run(`document.querySelectorAll('[data-guide-doc]').length===14`))
   await click('[data-guide-doc="workbook"]')
   check('完整文档有目录和可读表格', await run(`!!document.querySelector('.guide-toc') && !!document.querySelector('.guide-table table')`) && (await text()).includes('整数分'))
   await send('Emulation.setDeviceMetricsOverride', { width: 320, height: 740, deviceScaleFactor: 1, mobile: true })

@@ -19,6 +19,8 @@
 
 ## 命令
 
+版本更新（2026-10-29）：`scripts/buildVersion.ts` 同时生成编译内版本、`version.json`及带构建号的SW消息脚本；版本按内容摘要比较。`ui/appUpdate.ts`统一注册SW、联网检查、手动接管和刷新后校验；禁止恢复“普通刷新即生效”提示、后台强制重载所有标签，或用清空IndexedDB/整站数据实现更新。管理 → 版本与更新显示当前/线上/上次检查与强制更新。说明见 `docs/版本检查与更新.md`；回归 `node e2e/updates.mjs`（独立生产A→B双标签升级）。
+
 记账流程（2026-10-29）：`domain/booking.ts` 投影真实成交；`bookingReceipts` 保存一次操作和多份分配，JSON schemaVersion 12 / Dexie v11。新成交复用 `ui/bookingDraft.ts` 的草稿编号，写入统一走 store 的 `saveBooking`；不把合成高位卖出或生成的库存当新成交。欠股与可选再买使用分开的 `buy:cover` / `buy:optional` 身份，来源贡献同步缩量；合并改单与成交均原子保存。管理 → 成交流水提供凭据核对与整笔撤销；有后续成交或软删除历史引用时阻止删除来源。普通导入歧义需要显式选择，禁止按队列猜更新。操作说明见 `docs/成交记录与核对.md`；专项回归 `node e2e/booking.mjs http://127.0.0.1:5173`。
 
 管理 → 操作指南提供43个处理问题、108个核对场景及本地完整文档；正文唯一来源为 `docs/*.md`，`src/help/content.ts` 建立索引，页面懒加载。新增/修正规则要同步操作指南和操作边界，不能把历史审计快照当当前无缺陷结论。指南路由使用 `#/manage?section=guide`，问题/文档可分享与刷新，搜索只替换历史。回归：`node e2e/guide.mjs http://127.0.0.1:5173`；生产包加 `--offline` 验证离线阅读。O01 选股混单已修复，待处理业务问题见 `docs/操作边界与核对.md`。

@@ -2,6 +2,7 @@ import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 import { type Plugin } from 'vite'
+import { buildVersion } from './scripts/buildVersion'
 
 // GitHub Pages 是项目子路径（/EzGridApp/）；本地 dev / e2e 保持根路径，
 // 部署工作流里设 GITHUB_PAGES=true 才启用子路径 base
@@ -28,11 +29,14 @@ function stripChineseFont500(): Plugin {
   }
 }
 
-export default defineConfig({
+export default defineConfig(({ mode }) => {
+  const release = buildVersion(base, mode)
+  return {
   base,
-  plugins: [react(), stripChineseFont500(), VitePWA({
-    // V9.40：改 prompt——新版本只提示、不自动 reload；用户手动刷新页面才生效
+  plugins: [react(), stripChineseFont500(), release.plugin, VitePWA({
+    // 保持手动启用；注册、SKIP_WAITING与刷新后核对统一由ui/appUpdate管理。
     registerType: 'prompt',
+    injectRegister: false,
     includeAssets: ['pwa-192.png', 'pwa-512.png'],
     manifest: {
       name: '网格交易管理',
@@ -51,6 +55,9 @@ export default defineConfig({
       ],
     },
     workbox: {
+      importScripts: [release.workerInfoFile],
+      clientsClaim: true,
+      skipWaiting: false,
       // 库字体一起进预缓存——离线时整站可用（中文 500 字重已被上面的插件剥掉）
       globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
       navigateFallback: 'index.html',
@@ -76,4 +83,5 @@ export default defineConfig({
     environment: 'node',
     include: ['src/**/*.spec.ts'],
   },
+  }
 })

@@ -46,6 +46,10 @@ describe('monthRange（月度成交 → 明细日期区间）', () => {
 })
 
 describe('管理页和指南的深链', () => {
+  it('版本与更新入口可以分享和刷新', () => {
+    expect(buildManageHash({ section: 'updates' })).toBe('#/manage?section=updates')
+    expect(parseManageQuery('section=updates')).toEqual({ section: 'updates' })
+  })
   it('刷新/分享保留文档、搜索和阅读锚点', () => {
     const query = { section: 'guide' as const, doc: 'boundaries', anchor: 'c01', mode: 'issues' as const, q: '回本 库存', category: '回本链' }
     const hash = buildManageHash(query)

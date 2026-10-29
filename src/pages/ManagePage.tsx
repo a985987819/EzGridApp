@@ -5,7 +5,8 @@ import { ManageStocks } from './manage/ManageStocks'
 import { ManageBackup } from './manage/ManageBackup'
 import { ManageChecks } from './manage/ManageChecks'
 import { ManageActivity } from './manage/ManageActivity'
-import { IconBook, IconChart, IconChevron, IconDownload, IconGrid, IconUpload } from '../ui/icons'
+import { ManageUpdates } from './manage/ManageUpdates'
+import { IconBook, IconChart, IconChevron, IconDownload, IconGrid, IconUpload, IconRefresh } from '../ui/icons'
 import { navigateManage, type ManageQuery, type ManageSection, type TradesQuery } from '../ui/nav'
 
 const ManageGuide = lazy(() => import('./manage/ManageGuide'))
@@ -13,6 +14,7 @@ const ManageGuide = lazy(() => import('./manage/ManageGuide'))
 const SECTIONS: { key: ManageSection; label: string; desc: string; Icon: typeof IconGrid }[] = [
   { key: 'guide', label: '操作指南', desc: '按情况找步骤 · 场景核对 · 完整文档', Icon: IconBook },
   { key: 'activity', label: '成交流水', desc: '实际买卖 · 来源分配 · 凭据核对', Icon: IconChart },
+  { key: 'updates', label: '版本与更新', desc: '当前与线上版本 · 检查 · 强制更新', Icon: IconRefresh },
   { key: 'stocks', label: '股票设置', desc: '网格间隔 · 涨跌幅规则 · 启用开关', Icon: IconGrid },
   { key: 'import', label: '导入数据', desc: 'Excel / CSV 批量写入本地台账', Icon: IconUpload },
   { key: 'checks', label: '校验', desc: '基准快照 · 数量守恒', Icon: IconChart },
@@ -49,6 +51,7 @@ export function ManagePage({ goTrades, query }: { goTrades: (q: TradesQuery) => 
             ))}
           </div>
         </Card>
+        <ManageUpdates compact />
       </div>
     )
   }
@@ -71,6 +74,8 @@ export function ManagePage({ goTrades, query }: { goTrades: (q: TradesQuery) => 
         <Suspense fallback={<div className="empty-box" role="status">正在打开操作指南…</div>}>
           <ManageGuide query={query ?? { section: 'guide' }} />
         </Suspense>
+      ) : current.key === 'updates' ? (
+        <ManageUpdates />
       ) : current.key === 'activity' ? (
         <ManageActivity goTrades={goTrades} />
       ) : current.key === 'stocks' ? (

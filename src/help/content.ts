@@ -11,6 +11,7 @@ import motion from '../../docs/界面动效与滚动.md?raw'
 import history from '../../docs/审计修复记录-2026-10-27.md?raw'
 import booking from '../../docs/成交记录与核对.md?raw'
 import bookingPlan from '../../docs/记账流程与防重改进建议.md?raw'
+import updates from '../../docs/版本检查与更新.md?raw'
 import { buildManageHash, type ManageQuery } from '../ui/nav'
 
 export interface GuideDocument {
@@ -26,6 +27,7 @@ export const documents: readonly GuideDocument[] = [
   { id: 'boundaries', title: '操作边界与核对', file: '操作边界与核对.md', summary: '本次复核、当前处理办法与修复状态', kind: 'guide', body: boundaries },
   { id: 'manual', title: '使用手册', file: '使用手册.md', summary: '交易的一生、日常操作和数字口径', kind: 'guide', body: manual },
   { id: 'booking', title: '成交记录与核对', file: '成交记录与核对.md', summary: '一次记账、防重提示、来源分配和凭据核对', kind: 'guide', body: booking },
+  { id: 'updates', title: '版本检查与更新', file: '版本检查与更新.md', summary: '固定版本比较、手动刷新与强制更新结果', kind: 'guide', body: updates },
   { id: 'booking-plan', title: '记账流程改进方案', file: '记账流程与防重改进建议.md', summary: '初版规划与后续方向，当前功能以成交记录与核对为准', kind: 'history', body: bookingPlan },
   { id: 'kinds', title: '明细类型图鉴', file: 'detail-kinds.md', summary: '持仓、先卖后买、回补和链的类型速查', kind: 'rules', body: kinds },
   { id: 'scenarios', title: '网格交易场景与核对', file: '网格交易场景与核对.md', summary: '108 个场景、五个算例和核对公式', kind: 'rules', body: scenarios },
