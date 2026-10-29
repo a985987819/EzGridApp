@@ -42,7 +42,53 @@ export function StatsPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) 
         <p>按卖出日期归月，缺日期单列 · 点行可跳明细</p>
       </div>
 
-      <Card>
+      <CalendarCard goTrades={goTrades} />
+
+      <Card data-testid="stats-monthly">
+        <div className="sec-head">
+          <strong>月度成交</strong>
+          <div className="spacer" />
+          <span className="sec-sub">收益率 = 盈利 / 卖出额</span>
+        </div>
+        <div className="data-block">
+        {ledger.monthly.map((m) => (
+          <div
+            key={m.month}
+            className="line clickable"
+            onClick={() =>
+              // 月度成交本身就是已成交数据的汇总：跳明细时放开「隐藏已完成」，行数才对得上标签
+              goTrades(
+                m.dateMissing
+                  ? { status: ['sellDateMissing'], showDone: true }
+                  : { from: monthRange(m.month).from, to: monthRange(m.month).to, showDone: true },
+              )
+            }
+          >
+            <div className="left">
+              <div className="t1">
+                {m.month}
+                {m.dateMissing && (
+                  <Tag size="small" variant="soft" color="app-yellow" style={{ marginLeft: 6 }}>
+                    待补日期
+                  </Tag>
+                )}
+              </div>
+              <div className="t2 num">{actualSales.filter(s => (s.soldAt?.slice(0, 7) ?? '未填日期') === m.month).length} 笔 · {qty(m.sellQty)} 股 · {money(m.sellAmountCents)}</div>
+            </div>
+            <div className="right">
+              <div className={`num ${tone(m.profitCents)}`} style={{ fontWeight: 700 }}>
+                {signedMoney(m.profitCents)}
+              </div>
+              <div className="tiny muted num">
+                {m.sellAmountCents ? `${((m.profitCents / m.sellAmountCents) * 100).toFixed(2)}%` : '—'}
+              </div>
+            </div>
+          </div>
+        ))}
+        </div>
+      </Card>
+
+      <Card data-testid="stats-totals">
         <div className="metrics">
           <div>
             <div className="k">买入</div>
@@ -162,52 +208,6 @@ export function StatsPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) 
 
       {/* V9.61 近 12 个月盈利趋势：红盈绿亏，条高按绝对值 */}
       <TrendCard monthly={ledger.monthly.map(m => ({ ...m, sellCount: actualSales.filter(s => (s.soldAt?.slice(0, 7) ?? '未填日期') === m.month).length }))} />
-
-      <CalendarCard goTrades={goTrades} />
-
-      <Card>
-        <div className="sec-head">
-          <strong>月度成交</strong>
-          <div className="spacer" />
-          <span className="sec-sub">收益率 = 盈利 / 卖出额</span>
-        </div>
-        <div className="data-block">
-        {ledger.monthly.map((m) => (
-          <div
-            key={m.month}
-            className="line clickable"
-            onClick={() =>
-              // 月度成交本身就是已成交数据的汇总：跳明细时放开「隐藏已完成」，行数才对得上标签
-              goTrades(
-                m.dateMissing
-                  ? { status: ['sellDateMissing'], showDone: true }
-                  : { from: monthRange(m.month).from, to: monthRange(m.month).to, showDone: true },
-              )
-            }
-          >
-            <div className="left">
-              <div className="t1">
-                {m.month}
-                {m.dateMissing && (
-                  <Tag size="small" variant="soft" color="app-yellow" style={{ marginLeft: 6 }}>
-                    待补日期
-                  </Tag>
-                )}
-              </div>
-              <div className="t2 num">{actualSales.filter(s => (s.soldAt?.slice(0, 7) ?? '未填日期') === m.month).length} 笔 · {qty(m.sellQty)} 股 · {money(m.sellAmountCents)}</div>
-            </div>
-            <div className="right">
-              <div className={`num ${tone(m.profitCents)}`} style={{ fontWeight: 700 }}>
-                {signedMoney(m.profitCents)}
-              </div>
-              <div className="tiny muted num">
-                {m.sellAmountCents ? `${((m.profitCents / m.sellAmountCents) * 100).toFixed(2)}%` : '—'}
-              </div>
-            </div>
-          </div>
-        ))}
-        </div>
-      </Card>
 
       <Card>
         <div className="sec-head">
@@ -399,7 +399,7 @@ function CalendarCard({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
   const missing = saleFacts(ledger.sells, bookingReceipts).filter((s) => s.dateMissing).length
 
   return (
-    <Card>
+    <Card data-testid="stats-calendar">
       <div className="sec-head">
         <strong>成交日历</strong>
         <div className="spacer" />
@@ -421,6 +421,7 @@ function CalendarCard({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
         </div>
       </div>
       <Calendar
+        className="stats-calendar-widget"
         value={selected}
         onChange={setSelected}
         panelValue={panel}

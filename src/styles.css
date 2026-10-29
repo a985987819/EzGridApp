@@ -21,6 +21,8 @@
   --dur-3: 300ms;
   --block-bg: rgba(255, 255, 255, 0.55);
   --head-bg: rgba(240, 232, 216, 0.72);
+  --button-shadow-color: #bdaea0;
+  --button-shadow-depth: 4px;
 }
 
 * { box-sizing: border-box; }
@@ -1532,3 +1534,69 @@ button:not(:disabled):active {
 .sandbox-delta .was { text-decoration: line-through; opacity: 0.55; font-variant-numeric: tabular-nums; }
 .sandbox-delta .arrow { opacity: 0.45; }
 .sandbox-delta b { font-variant-numeric: tabular-nums; }
+
+/* 全站按钮共用实心下沿阴影，包括库按钮、导航/筛选和body中的弹层按钮。
+   库的text/link/ghost与disabled变体各自清阴影，故仅阴影属性在此统一覆盖。 */
+body button {
+  box-shadow: 0 var(--button-shadow-depth) 0 var(--button-shadow-color) !important;
+}
+@media (hover: hover) {
+  body button:not(:disabled):not([aria-disabled='true']):hover { --button-shadow-depth: 5px; }
+}
+body button:not(:disabled):not([aria-disabled='true']):active {
+  --button-shadow-depth: 1px;
+  transform: translateY(2px);
+}
+body button:disabled,
+body button[aria-disabled='true'] {
+  --button-shadow-depth: 2px;
+  cursor: not-allowed;
+}
+body button[class*='animal-btn-danger-'] { --button-shadow-color: #c77d70; }
+body button:is([class*='animal-btn-text-'], [class*='animal-btn-link-'], [class*='animal-btn-ghost-']) {
+  background: #f8f8f0;
+  border-color: var(--animal-border-color, #e0d8c8);
+}
+body button[class*='animal-btn-danger-']:is([class*='animal-btn-text-'], [class*='animal-btn-link-']) {
+  color: var(--animal-error-color, #e05a5a);
+}
+body button:focus-visible { outline: 2px solid #63866c; outline-offset: 3px; }
+
+.nav-btn,
+.guide-modes button,
+.guide-result,
+.guide-back,
+.guide-top,
+.guide-search button,
+.guide-article-meta button,
+.release-details,
+.drag-handle { background-color: #fffdf7; }
+.nav-btn.active { background-color: #e4f2ec; }
+.app-nav-inner { gap: 8px; padding-inline: 4px; }
+.guide-modes { gap: 6px; padding-bottom: 7px; border-bottom: none; }
+.guide-modes button { border-radius: 10px; }
+.guide-modes button[aria-pressed='true'] { background-color: #e5efdf; }
+.guide-results { display: grid; gap: 8px; border-top: none; }
+.guide-result { padding: 13px 10px; border: 1px solid var(--line-soft); border-radius: 12px; }
+.guide-back, .guide-top, .guide-article-meta button { padding-inline: 10px; border-radius: 10px; }
+.guide-search button { margin-block: 4px; padding: 7px 9px; border-radius: 9px; }
+.release-details { margin-top: 12px; padding: 8px 11px; border-radius: 10px; }
+.drag-handle { padding-inline: 4px; }
+.manage-menu { gap: 8px; }
+.manage-item { border: 1px solid var(--line-soft); border-radius: 12px; }
+.manage-item:last-child { border-bottom: 1px solid var(--line-soft); }
+.stock-tabs, .filter-chips.scroll { padding-bottom: 6px; }
+.metrics:has(> .metric-cell) { gap: 7px; padding-bottom: 4px; }
+.metrics > .metric-cell { background-color: #fffdf7; border-right: none; }
+.app-select-panel { padding-bottom: 7px; }
+.app-select-option + .app-select-option { margin-top: 5px; }
+@media (max-width: 420px) {
+  .stats-calendar-widget > [class*='animal-header-'] { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+  .stats-calendar-widget [class*='animal-monthLabel-'] { grid-column: 1 / -1; grid-row: 1; justify-self: center; white-space: nowrap; }
+  .stats-calendar-widget [class*='animal-headerGroup-'] { gap: 6px; padding-bottom: 4px; }
+  .stats-calendar-widget [class*='animal-headerGroup-']:last-child { justify-content: flex-end; }
+  .stats-calendar-widget [class*='animal-todayBtn-'] { white-space: nowrap; }
+}
+@media (prefers-reduced-motion: reduce) {
+  body button:not(:disabled):not([aria-disabled='true']):active { transform: none; }
+}

@@ -13,6 +13,8 @@
 
 ## 界面动效（2026-10-29，替代 V9.42/V9.44/V9.60 的滚动收高方案）
 
+- 全站按钮使用 `styles.css` 统一下沿实心阴影（默认4px/悬停5px/按下1px/禁用2px），包括文字链接变体、自定义按钮与弹层；保留危险色、选中及焦点状态。统计页优先展示成交日历与月度成交，其他模块放在其后。
+
 - 明细/挂单顶部使用 `ui/scrollHeader.ts`：完整设置保留原占位，原生 sticky 负 top 随滚动移出，摘要只交叉淡入。禁止再在滚动时切换高度、padding 或 React 状态；摘要/完整设置用 `inert` 隔离键盘焦点，弹层固定 body 时保持当前摘要状态。
 - 页面与面板切换统一调用 `ui/transitions.ts`；滚入展示与原生 details 展开由 `ui/pageMotion.ts` 管理。模块首次展示后不重新隐藏；尊重 `prefers-reduced-motion`，不支持 View Transition 时自动降级。
 - 规则、实测数据与维护说明见 `docs/界面动效与滚动.md`；回归：`node e2e/motion.mjs http://127.0.0.1:5173`。
