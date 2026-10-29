@@ -1,0 +1,35 @@
+{
+  "initial": {
+    "build": "A",
+    "controlled": true,
+    "active": "activated",
+    "notification": false
+  },
+  "downloaded": {
+    "build": "A",
+    "controlled": true,
+    "active": "activated",
+    "waiting": "installed",
+    "notification": false
+  },
+  "afterRefresh": {
+    "build": "A",
+    "controlled": true,
+    "active": "activated",
+    "waiting": "installed",
+    "notification": true
+  },
+  "afterSecondRefresh": {
+    "build": "A",
+    "controlled": true,
+    "active": "activated",
+    "waiting": "installed",
+    "notification": true
+  },
+  "afterAllSiteClientsClosed": {
+    "build": "B",
+    "controlled": true,
+    "active": "activated",
+    "notification": false
+  }
+}

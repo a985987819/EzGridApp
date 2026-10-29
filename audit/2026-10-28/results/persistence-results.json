@@ -1,0 +1,369 @@
+[
+  {
+    "name": "parallelManual",
+    "value": {
+      "ids": [
+        100000,
+        100000
+      ],
+      "records": [
+        {
+          "sourceRow": 100000,
+          "stockName": "T",
+          "buyDateSerial": 46315,
+          "buyPriceCents": 600,
+          "buyQtyRaw": 700,
+          "qtyNeedsDerive": false,
+          "targetPriceCents": null,
+          "targetNeedsDerive": true,
+          "soldQty": null,
+          "sellDateSerial": null,
+          "earlyBuyPriceCents": null,
+          "rawProfitCents": null,
+          "importKey": "manual:stock:T:100000:1793175884516",
+          "origin": "manual",
+          "batchId": null,
+          "editedAt": 1793175884516
+        }
+      ],
+      "audits": [
+        {
+          "entity": "record",
+          "entityId": "record:100000",
+          "field": "新增买入",
+          "oldValue": "",
+          "newValue": "T 500",
+          "at": 1793175884517,
+          "source": "create",
+          "id": 1
+        },
+        {
+          "entity": "record",
+          "entityId": "record:100000",
+          "field": "新增买入",
+          "oldValue": "",
+          "newValue": "T 600",
+          "at": 1793175884518,
+          "source": "create",
+          "id": 2
+        }
+      ]
+    }
+  },
+  {
+    "name": "rollbackNextSource",
+    "value": {
+      "count": 1,
+      "records": [
+        {
+          "sourceRow": 100000,
+          "stockName": "T",
+          "buyDateSerial": 46320,
+          "buyPriceCents": 500,
+          "buyQtyRaw": 500,
+          "qtyNeedsDerive": false,
+          "targetPriceCents": null,
+          "targetNeedsDerive": true,
+          "soldQty": null,
+          "sellDateSerial": null,
+          "earlyBuyPriceCents": null,
+          "rawProfitCents": null,
+          "importKey": "manual:stock:T:100000:1793175885010",
+          "origin": "manual",
+          "batchId": null,
+          "editedAt": 1793175885010,
+          "nextRoundOfRow": 2
+        }
+      ],
+      "validation": "records[0].nextRoundOfRow 指向不存在的行 2"
+    }
+  },
+  {
+    "name": "undoRebuyAfterUndoSale",
+    "value": {
+      "records": [
+        {
+          "sourceRow": 100000,
+          "stockName": "T",
+          "buyDateSerial": null,
+          "buyPriceCents": null,
+          "buyQtyRaw": null,
+          "qtyNeedsDerive": false,
+          "targetPriceCents": 700,
+          "targetNeedsDerive": false,
+          "soldQty": 500,
+          "sellDateSerial": 46315,
+          "earlyBuyPriceCents": 500,
+          "rawProfitCents": null,
+          "importKey": "manual:stock:T:100000:1793175885507",
+          "origin": "manual",
+          "batchId": null,
+          "rebuyPriceSource": "custom",
+          "editedAt": 1793175885508
+        },
+        {
+          "sourceRow": 100001,
+          "stockName": "T",
+          "buyDateSerial": 46323,
+          "buyPriceCents": 500,
+          "buyQtyRaw": null,
+          "qtyNeedsDerive": false,
+          "targetPriceCents": 700,
+          "targetNeedsDerive": false,
+          "soldQty": 500,
+          "sellDateSerial": 46321,
+          "earlyBuyPriceCents": 500,
+          "rawProfitCents": null,
+          "importKey": "manual:stock:T:100001:1793175885820",
+          "origin": "manual",
+          "batchId": null,
+          "rebuyPriceSource": "custom",
+          "editedAt": 1793175885820,
+          "soldLotId": "lot:exec:exec:rb:sell:100000:b1115691-01bd-4367-969c-979605c20cec",
+          "deletedAt": 1793175885982
+        }
+      ],
+      "execs": [],
+      "validation": "records[1].soldLotId 指向不存在的回补成交 lot:exec:exec:rb:sell:100000:b1115691-01bd-4367-969c-979605c20cec",
+      "restore": "备份内容校验失败：records[1].soldLotId 指向不存在的回补成交 lot:exec:exec:rb:sell:100000:b1115691-01bd-4367-969c-979605c20cec"
+    }
+  },
+  {
+    "name": "undoRebuyLeavesVirtualTargets",
+    "value": {
+      "targets": [
+        {
+          "id": "et:lot:exec:exec:rb:sell:100000:d0a9ff9c-dba5-41de-8b93-0d50040f1e54:1793175886811",
+          "lotId": "lot:exec:exec:rb:sell:100000:d0a9ff9c-dba5-41de-8b93-0d50040f1e54",
+          "priceCents": 600,
+          "qty": 200,
+          "at": 1793175886811
+        }
+      ],
+      "xlsx": "买单拆卖 et:lot:exec:exec:rb:sell:100000:d0a9ff9c-dba5-41de-8b93-0d50040f1e54:1793175886811：批次ID lot:exec:exec:rb:sell:100000:d0a9ff9c-dba5-41de-8b93-0d50040f1e54 不存在"
+    }
+  },
+  {
+    "name": "restoreMissingTables",
+    "value": {
+      "before": {
+        "records": 1,
+        "executions": 1
+      },
+      "after": {
+        "records": 1,
+        "executions": 0
+      },
+      "owed": [
+        500
+      ]
+    }
+  },
+  {
+    "name": "invalidImportDate",
+    "value": {
+      "manual": null,
+      "imported": 46083,
+      "iso": "2026-03-02"
+    }
+  },
+  {
+    "name": "jsonInvalidFields",
+    "value": {
+      "validation": null,
+      "ledger": {
+        "rows": 1,
+        "buyQty": 500,
+        "buyAmountCents": null,
+        "sellCount": 0,
+        "sellQty": 0,
+        "sellAmountCents": 0,
+        "profitCents": 0,
+        "targetCount": 1,
+        "targetQty": 500,
+        "targetAmountCents": 350000,
+        "expectProfitCents": null,
+        "rebuyCount": 0,
+        "rebuyBaseQty": 0,
+        "rebuyRewardQty": 0,
+        "rebuyQty": 0,
+        "rebuyAmountCents": 0,
+        "rewardQty": 0,
+        "rebuyExecQty": 0,
+        "exposureExecBaseQty": 0,
+        "rebuyRemainingQty": 0,
+        "netQty": 500,
+        "exposureQty": 0
+      }
+    }
+  },
+  {
+    "name": "nakedSellReimportSubset",
+    "value": {
+      "fresh": [],
+      "updates": [
+        {
+          "from": {
+            "sourceRow": 2,
+            "stockName": "T",
+            "buyDateSerial": null,
+            "buyPriceCents": null,
+            "buyQtyRaw": null,
+            "qtyNeedsDerive": false,
+            "targetPriceCents": 700,
+            "targetNeedsDerive": false,
+            "soldQty": 500,
+            "sellDateSerial": 46010,
+            "earlyBuyPriceCents": null,
+            "rawProfitCents": null,
+            "importKey": "sell-A"
+          },
+          "to": {
+            "sourceRow": 2,
+            "stockName": "T",
+            "buyDateSerial": null,
+            "buyPriceCents": null,
+            "buyQtyRaw": null,
+            "qtyNeedsDerive": false,
+            "targetPriceCents": 800,
+            "targetNeedsDerive": false,
+            "soldQty": 500,
+            "sellDateSerial": 46020,
+            "earlyBuyPriceCents": null,
+            "rawProfitCents": null,
+            "importKey": "sell-A"
+          }
+        }
+      ],
+      "unchanged": 0
+    }
+  },
+  {
+    "name": "fractionalImportQty",
+    "value": {
+      "record": {
+        "sourceRow": 2,
+        "stockName": "T",
+        "buyDateSerial": 46315,
+        "buyPriceCents": 500,
+        "buyQtyRaw": 500.5,
+        "qtyNeedsDerive": false,
+        "targetPriceCents": 700,
+        "targetNeedsDerive": false,
+        "soldQty": null,
+        "sellDateSerial": null,
+        "earlyBuyPriceCents": null,
+        "rawProfitCents": null,
+        "buyDateNeedsToday": false,
+        "sellDateNeedsToday": false,
+        "importKey": "T|46315|500|500.5|700||"
+      },
+      "buyQty": 500.5,
+      "anomalies": [],
+      "checks": []
+    }
+  },
+  {
+    "name": "excel1904Dates",
+    "value": {
+      "expected": "2026-10-20",
+      "serial": 44853,
+      "actual": "2022-10-19"
+    }
+  },
+  {
+    "name": "missingAudits",
+    "value": {
+      "before": 0,
+      "after": 0
+    }
+  },
+  {
+    "name": "reimportExistingKeyPublicAction",
+    "value": {
+      "before": [
+        [
+          2,
+          "sell-A",
+          700
+        ],
+        [
+          3,
+          "sell-B",
+          800
+        ]
+      ],
+      "outcome": {
+        "added": 0,
+        "updated": 1,
+        "duplicated": 0
+      },
+      "after": [
+        [
+          2,
+          "sell-A",
+          800
+        ],
+        [
+          3,
+          "sell-B",
+          800
+        ]
+      ]
+    }
+  },
+  {
+    "name": "jsonDuplicateIds",
+    "value": {
+      "validation": null,
+      "inputRows": 2,
+      "afterRows": 1,
+      "after": [
+        {
+          "row": 2,
+          "qty": 700,
+          "price": 600,
+          "key": "B"
+        }
+      ]
+    }
+  },
+  {
+    "name": "jsonCycleInvisible",
+    "value": {
+      "validation": null,
+      "records": 2,
+      "sells": 0,
+      "lots": 0,
+      "checks": [],
+      "xlsx": "交易数据 记录ID 2：卖出来源批次形成循环引用"
+    }
+  },
+  {
+    "name": "jsonMissingRewardQty",
+    "value": {
+      "validation": null,
+      "order": [
+        {
+          "remaining": 0,
+          "doneReward": null
+        }
+      ],
+      "isRewardNaN": true,
+      "hasInvalidChecks": [
+        {
+          "name": "各订单基础成交 ≤ 基础回补量",
+          "ok": false,
+          "actual": "未超额",
+          "expected": "奖励成交不能记成基础回补"
+        },
+        {
+          "name": "Σ已买回奖励金额 ≤ 组累计盈利",
+          "ok": false,
+          "actual": "NaN / 0 分",
+          "expected": "奖励按成交时价组和实际金额计入，不能超过该组盈利预算"
+        }
+      ]
+    }
+  }
+]

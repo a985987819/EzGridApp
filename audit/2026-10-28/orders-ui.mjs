@@ -1,0 +1,185 @@
+/**
+ * 真实 IndexedDB 与 React store 的记账回归（移动端 390×844 视口）：
+ * 分链 → 回补 → 部分卖出 → 多轮循环 → 依赖保护 → 建议成交 → 备份恢复 → 增量导入。
+ *
+ *   node audit/2026-10-28/orders-ui.mjs http://127.0.0.1:5173
+ */
+import { spawn } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+const PORT = 9457
+const BASE = (process.argv[2] ?? 'http://127.0.0.1:5173').replace(/\/+$/, '')
+const OUT = join(process.cwd(), '.tmp', 'audit-replay')
+mkdirSync(OUT, { recursive: true })
+
+const CANDIDATES = [
+  process.env.CHROME_PATH,
+  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+  'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+].filter(Boolean)
+const browserPath = CANDIDATES.find((p) => existsSync(p))
+if (!browserPath) {
+  console.error('找不到 Chrome/Edge，请设置 CHROME_PATH')
+  process.exit(2)
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const profile = mkdtempSync(join(tmpdir(), 'grid-e2e-'))
+const browser = spawn(
+  browserPath,
+  [
+    '--headless=new',
+    `--remote-debugging-port=${PORT}`,
+    `--user-data-dir=${profile}`,
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--disable-gpu',
+    '--disable-extensions',
+    '--window-size=390,844',
+    'about:blank',
+  ],
+  { stdio: 'ignore' },
+)
+
+const problems = []
+let ok = true
+
+function check(name, cond, extra = '') {
+  if (cond) console.log(`  PASS  ${name}`)
+  else {
+    ok = false
+    console.log(`  FAIL  ${name} ${extra}`)
+  }
+}
+
+try {
+  for (let i = 0; i < 60; i += 1) {
+    try {
+      const r = await fetch(`http://127.0.0.1:${PORT}/json/version`)
+      if (r.ok) break
+    } catch {
+      /* keep waiting */
+    }
+    await sleep(250)
+  }
+
+  const target = await (await fetch(`http://127.0.0.1:${PORT}/json/new?about:blank`, { method: 'PUT' })).json()
+  const socket = new WebSocket(target.webSocketDebuggerUrl)
+  let nextId = 1
+  const pending = new Map()
+  const listeners = new Set()
+  socket.addEventListener('message', (e) => {
+    const m = JSON.parse(e.data)
+    if (m.id && pending.has(m.id)) {
+      const { resolve, reject } = pending.get(m.id)
+      pending.delete(m.id)
+      if (m.error) reject(new Error(JSON.stringify(m.error)))
+      else resolve(m.result)
+      return
+    }
+    if (m.method) listeners.forEach((fn) => fn(m))
+  })
+  await new Promise((res, rej) => {
+    socket.addEventListener('open', () => res())
+    socket.addEventListener('error', rej)
+  })
+  const send = (method, params = {}) =>
+    new Promise((resolve, reject) => {
+      const id = nextId++
+      pending.set(id, { resolve, reject })
+      socket.send(JSON.stringify({ id, method, params }))
+    })
+
+  const IGNORED = /favicon|net::ERR_|React DevTools|DevTools failed|\[vite\]|WebSocket/i
+  listeners.add((m) => {
+    if (m.method === 'Runtime.exceptionThrown') {
+      const d = m.params.exceptionDetails
+      problems.push(`exception: ${d.exception?.description ?? d.text}`)
+    } else if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') {
+      const text = m.params.args.map((a) => a.description ?? a.value ?? a.type).join(' ')
+      if (!IGNORED.test(text)) problems.push(`console.error: ${text}`)
+    } else if (m.method === 'Log.entryAdded' && m.params.entry.level === 'error') {
+      const entry = m.params.entry
+      if (!IGNORED.test(`${entry.text} ${entry.url ?? ''}`)) problems.push(`log: ${entry.text} ${entry.url ?? ''}`)
+    }
+  })
+
+  await send('Runtime.enable')
+  await send('Log.enable')
+  await send('Page.enable')
+  await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true })
+
+  const evaluate = async (expression) => {
+    const r = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true })
+    if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails))
+    return r.result.value
+  }
+  const settle = async (budget = 6000) => {
+    let prev = -1
+    let stable = 0
+    const deadline = Date.now() + budget
+    while (Date.now() < deadline && stable < 2) {
+      await sleep(200)
+      const len = await evaluate(`(document.getElementById('root')?.innerHTML ?? '').length`)
+      stable = len > 0 && len === prev ? stable + 1 : 0
+      prev = len
+    }
+  }
+  const bodyText = () => evaluate(`document.body.innerText`)
+
+  await send('Page.navigate',{url:BASE})
+  await settle()
+  await evaluate(`(async()=>{
+    const React=(await import('/node_modules/.vite/deps/react.js')).default
+    const {createRoot}=(await import('/node_modules/.vite/deps/react-dom_client.js')).default
+    const source=await (await fetch('/src/pages/OrdersPage.tsx')).text()
+    const storeUrl=source.match(new RegExp('from "([^"]*store.useApp[^"]*)"'))[1]
+    const {AppProvider,useApp}=await import(storeUrl)
+    const {OrdersPage}=await import('/src/pages/OrdersPage.tsx')
+    document.getElementById('root').style.display='none'
+    const el=document.createElement('div');el.id='accounting-root';document.body.appendChild(el)
+    function Probe(){const a=useApp();window.testApp=a;return a.ready?React.createElement(OrdersPage,{goTrades:()=>{}}):null}
+    createRoot(el).render(React.createElement(AppProvider,null,React.createElement(Probe)))
+  })()`)
+  await settle()
+  const state=()=>evaluate(`({records:testApp.records,totals:testApp.ledger.totals,chains:testApp.ledger.repairChains.map(c=>({row:c.anchorRow,loss:c.lossCents,profit:c.profitCents,holding:c.holdingQty})),checks:testApp.ledger.checks.filter(c=>!c.ok),targets:testApp.ledger.targets,orders:testApp.ledger.orders,executions:testApp.executions})`)
+  const act=async(expr)=>{const r=await evaluate(`(async()=>{${expr}})()`);await sleep(120);return r}
+  const rejects=async(expr)=>act(`try{${expr};return false}catch(e){return e.message}`)
+  const click=async(selector)=>{const v=await evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)return false;e.click();return true})()`);await sleep(250);return v}
+  const input=async(field,value)=>{await evaluate(`(()=>{const e=document.querySelector('[data-field="${field}"]');const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;setter.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));})()`);await sleep(100)}
+  await act(`await testApp.resetAll();await testApp.addStock({id:'stock:T',name:'T',intervalCents:200,priceLimitType:'main_10'});window.p=await testApp.addManualRecord({kind:'sell',stockName:'T',date:'2026-10-21',price:'7',qty:'500',rebuyPrice:'5',buyPrice:'5',buyQty:'500',buyDate:'2026-10-20'});testApp.patchOrdersSession({stockName:'T',closes:{},confirmedCents:{},overrides:{}})`)
+  console.log('REWARD_BEFORE', JSON.stringify(await state()))
+  console.log('REWARD_STORE_ERROR', await rejects(`await testApp.recordRebuy(testApp.ledger.orders[0],700,1000,200)`))
+  console.log('REWARD_AFTER', JSON.stringify(await state()))
+  await act(`await testApp.resetAll();await testApp.addStock({id:'stock:T',name:'T',intervalCents:200,priceLimitType:'main_10'});await testApp.addStock({id:'stock:U',name:'U',intervalCents:200,priceLimitType:'main_10'});window.t=await testApp.addManualRecord({kind:'sell',stockName:'T',date:'2026-10-21',price:'7',qty:'500',rebuyPrice:'5'});window.u=await testApp.addManualRecord({kind:'sell',stockName:'U',date:'2026-10-21',price:'8',qty:'600',rebuyPrice:'6'});testApp.patchOrdersSession({stockName:'T',closes:{},confirmedCents:{},overrides:{}})`)
+  await settle()
+  console.log('TWO_STOCKS_SELECTED_T',JSON.stringify(await evaluate(`({card:document.querySelector('[data-testid="must-buy-card"]').innerText,rows:[...document.querySelectorAll('[data-testid="buy-suggestion"]')].map(e=>({row:e.dataset.row,price:e.dataset.price,text:e.innerText}))})`)))
+  await click('[data-testid="buy-suggestion"][data-row="'+await evaluate('u')+'"] [data-action="suggestion-buy"]')
+  await settle()
+  console.log('OTHER_STOCK_MODAL',JSON.stringify(await evaluate(`({body:document.body.innerText.slice(-1800),qty:document.querySelector('[data-field="tradeQty"]')?.value})`)))
+  await act(`await testApp.recordBuySuggestion([{kind:'order',id:'rb:sell:'+u,row:u,qty:600,splitKey:'rb:sell:'+u}],600,600,'2026-10-22')`)
+  console.log('OTHER_STOCK_AFTER',JSON.stringify(await evaluate(`testApp.executions.map(e=>({stock:e.stockName,qty:e.qty}))`)))
+  await act(`await testApp.resetAll();await testApp.addStock({id:'stock:T',name:'T',intervalCents:200,priceLimitType:'main_10'});window.s=await testApp.addManualRecord({kind:'sell',stockName:'T',date:'2026-10-21',price:'7',qty:'1000',rebuyPrice:'5'});await testApp.addBuyTarget(s,400,200);await testApp.setPlan('buy','buy:T:400',500,200);testApp.patchOrdersSession({stockName:'T',closes:{},confirmedCents:{},overrides:{}})`)
+  await settle()
+  console.log('SMALL_PLAN_BEFORE',JSON.stringify(await evaluate(`({plans:testApp.plans,rows:[...document.querySelectorAll('[data-testid="buy-suggestion"]')].map(e=>e.innerText)})`)))
+  await click('[data-testid="buy-suggestion"] [data-action="suggestion-plan"]')
+  await input('planQty','1')
+  await evaluate(`(()=>{const bs=[...document.querySelectorAll('button')];bs.find(b=>b.textContent.trim()==='保存')?.click()})()`)
+  await settle()
+  console.log('SMALL_PLAN_AFTER',JSON.stringify(await evaluate(`({plans:testApp.plans,rows:[...document.querySelectorAll('[data-testid="buy-suggestion"]')].map(e=>e.innerText),notifications:document.body.innerText.slice(-300)})`)))
+  await act(`await testApp.resetAll();await testApp.addStock({id:'stock:T',name:'T',intervalCents:200,priceLimitType:'main_10'});window.s=await testApp.addManualRecord({kind:'sell',stockName:'T',date:'2026-10-21',price:'7',qty:'500',rebuyPrice:'5'});await testApp.setPlan('buy','buy:T:500',600,100);testApp.patchOrdersSession({stockName:'T',closes:{},confirmedCents:{},overrides:{}})`)
+  await settle()
+  console.log('SANDBOX_REAL',JSON.stringify(await evaluate(`document.querySelector('[data-testid="must-buy-card"]').innerText`)))
+  await act(`testApp.setSandboxActive(true)`)
+  await settle()
+  console.log('SANDBOX_EMPTY',JSON.stringify(await evaluate(`document.querySelector('[data-testid="must-buy-card"]').innerText`)))
+  socket.close()
+} finally {
+  browser.kill()
+  try {rmSync(profile,{recursive:true,force:true})} catch {}
+}

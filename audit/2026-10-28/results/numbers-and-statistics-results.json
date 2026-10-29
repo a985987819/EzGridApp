@@ -1,0 +1,98 @@
+{
+  "calendar": {
+    "ledger": {
+      "day": "2025-12-19",
+      "sellCount": 1,
+      "sellQty": 500,
+      "profitCents": -150000,
+      "dateMissing": false
+    },
+    "ui": {
+      "count": 2,
+      "qty": 1000,
+      "profitCents": -150000
+    }
+  },
+  "grid": {
+    "realizedCents": -150000,
+    "doneRounds": 1,
+    "activeRounds": 0,
+    "avgProfitCents": -150000,
+    "sells": [
+      {
+        "id": "sell:2",
+        "qty": 500,
+        "profit": null,
+        "synthetic": false,
+        "closed": false
+      },
+      {
+        "id": "sell:hedged:2:1",
+        "qty": 500,
+        "profit": -150000,
+        "synthetic": true,
+        "closed": false
+      }
+    ]
+  },
+  "trend": {
+    "bucketCount": 12,
+    "datedCount": 11,
+    "labels": [
+      "03",
+      "04",
+      "05",
+      "06",
+      "07",
+      "08",
+      "09",
+      "10",
+      "11",
+      "12",
+      "01",
+      ""
+    ]
+  },
+  "precision": {
+    "hugeStringProducesFinite": false,
+    "quantity1e20Accepted": true,
+    "unsafeCents": "9007199254740992",
+    "manualErrors": [],
+    "manualBuyPrice": "Infinity"
+  },
+  "customLimit": {
+    "upCents": 3000,
+    "downCents": -1000,
+    "pct": 200
+  },
+  "conservation": [
+    {
+      "name": "Σ买入（含回补批次） − Σ卖出 = 净持仓",
+      "ok": true
+    },
+    {
+      "name": "Σ待卖量 − 待补敞口 − 空头回补基础股 = 净持仓",
+      "ok": true
+    },
+    {
+      "name": "各订单基础成交 ≤ 基础回补量",
+      "ok": true
+    },
+    {
+      "name": "Σ待卖量 = Σ批次剩余",
+      "ok": true
+    },
+    {
+      "name": "奖励量 % 100 = 0",
+      "ok": true
+    },
+    {
+      "name": "Σ授予手数 ≤ Σ组容量",
+      "ok": true
+    },
+    {
+      "name": "Σ已买回奖励金额 ≤ 组累计盈利",
+      "ok": true
+    }
+  ]
+}

@@ -1,0 +1,113 @@
+{
+  "statistics": {
+    "actualDaily": [
+      {
+        "day": "2026-10-28",
+        "sellCount": 1,
+        "sellQty": 500,
+        "profitCents": -150000,
+        "dateMissing": false
+      }
+    ],
+    "dayDetails": "卖出T · 7.00 × 500\n第 2 笔 · 买入成本 5.00\n—\n卖出T · 7.00 × 500\n第 1 笔 · 买入成本 10.00\n¥-1,500.00",
+    "progress": "网格进行度\n完成一轮 = 买入后已卖光\n完成轮次\n1\n进行中批次\n0\n每轮均盈\n¥-1,500.00\n平均持仓\n27 天\n待卖股数\n0\n待回补股数\n500\n空头敞口\n0\n最热价位\nT 10.00 · 1 轮\n\n「每轮均盈」与下面的高成交点位用批次自身盈利口径（不含裸卖与挂钩暂记），和总账的实现盈利不是同一个数。",
+    "calendarLabels": [
+      {
+        "text": "-15002笔",
+        "title": "当日盈利 ¥-1,500.00 · 1000 股"
+      }
+    ],
+    "tree": [
+      {
+        "cents": 500,
+        "buy": 500,
+        "sell": 0,
+        "sold": 0,
+        "profit": 0
+      },
+      {
+        "cents": 700,
+        "buy": 0,
+        "sell": 0,
+        "sold": 1000,
+        "profit": -150000
+      }
+    ],
+    "treeBins": {
+      "sell": [],
+      "buy": [
+        {
+          "count": 1,
+          "over": 0,
+          "times": 0,
+          "cents": 500
+        }
+      ],
+      "sold": [
+        {
+          "count": 1,
+          "over": 0,
+          "times": 2,
+          "cents": 700
+        }
+      ]
+    },
+    "total": {
+      "rows": 2,
+      "buyQty": 500,
+      "buyAmountCents": 500000,
+      "sellCount": 1,
+      "sellQty": 500,
+      "sellAmountCents": 350000,
+      "profitCents": -150000,
+      "targetCount": 0,
+      "targetQty": 0,
+      "targetAmountCents": 0,
+      "expectProfitCents": 0,
+      "rebuyCount": 1,
+      "rebuyBaseQty": 500,
+      "rebuyRewardQty": 0,
+      "rebuyQty": 500,
+      "rebuyAmountCents": 250000,
+      "rewardQty": 0,
+      "rebuyExecQty": 0,
+      "exposureExecBaseQty": 0,
+      "rebuyRemainingQty": 500,
+      "netQty": 0,
+      "exposureQty": 0
+    }
+  },
+  "trend": {
+    "monthly": [
+      "2024-01",
+      "2024-02",
+      "2024-03",
+      "2024-04",
+      "2024-05",
+      "2024-06",
+      "2024-07",
+      "2024-08",
+      "2024-09",
+      "2024-10",
+      "2024-11",
+      "2024-12",
+      "2025-01",
+      "未填日期"
+    ],
+    "labels": [
+      "03",
+      "04",
+      "05",
+      "06",
+      "07",
+      "08",
+      "09",
+      "10",
+      "11",
+      "12",
+      "01",
+      ""
+    ],
+    "columns": 12
+  }
+}
