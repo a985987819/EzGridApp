@@ -22,6 +22,16 @@ async function edit(editWorkbook: (wb: import('xlsx').WorkBook, X: Awaited<Retur
 }
 
 describe('完整台账 Excel 往返', () => {
+  it('同行已回补的做T来源保持实际记录，恢复高位目标而不重复创建成交', async () => {
+    const s=base();s.schemaVersion=13;s.bookingReceipts=[]
+    s.extraTargets=[{id:'grid-mode:40',lotId:'lot:29',qty:0,priceCents:2078,at:0,strategy:{mode:'baseT',groupId:'grid-mode:40',sellRow:40,rebuyPriceCents:1951,nextSellPriceCents:2198}}]
+    const p=await parse(s)
+    expect(p.snapshot).toEqual(s)
+    expect(p.differences).toEqual([])
+    expect(p.snapshot.rebuyExecutions).toEqual([])
+    expect(p.views['核对_待卖'].find(t=>t.lotId==='lot:40')).toMatchObject({priceCents:2198,qty:300,strategyMode:'baseT'})
+    expect(p.views['核对_回本链'].some(c=>c.anchorRow===40)).toBe(false)
+  })
   it('结构13保留独立拆档策略、模式和原始记录，支持已重新拆完的零余额历史档', async () => {
     const s=base();s.schemaVersion=13;s.bookingReceipts=[]
     s.extraTargets=[{id:'grid:g:0',lotId:'lot:7',qty:0,priceCents:700,at:1,strategy:{mode:'baseT',groupId:'g',rebuyPriceCents:500,nextSellPriceCents:1200,inputSignature:'test'}}]

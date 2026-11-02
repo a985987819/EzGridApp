@@ -1,6 +1,21 @@
 import type { ExtraTarget, Ledger, Lot, RawRecord, RebuyExecution } from './types'
+import { isSellFirst } from './sellFirst'
+import { deriveBuyQty } from './qty'
+import { remainingSellTargets } from './sellTargets'
 
 export type GridMode = 'repair' | 'baseT'
+
+/** 同行回补多买的份额不是做T还仓，继续使用原行普通目标。 */
+export function baseTSurplusTargets(records: readonly RawRecord[], targets: readonly ExtraTarget[], baseAmountYuan = 6000): ExtraTarget[] {
+  const modes = strategySales(records, targets)
+  return records.flatMap(r => {
+    const marker = modes.get(r.sourceRow)
+    if (r.deletedAt || !isSellFirst(r) || marker?.strategy?.mode !== 'baseT' || r.buyDateSerial === null || r.sellDateSerial === null || r.sellDateSerial > r.buyDateSerial) return []
+    const qty = r.buyQtyRaw ?? (r.qtyNeedsDerive && r.buyPriceCents ? deriveBuyQty(r.buyPriceCents, baseAmountYuan) : 0)
+    const surplus = qty - (r.soldQty ?? 0)
+    return surplus > 0 && r.targetPriceCents ? [{id:`baseT-surplus:${r.sourceRow}`,lotId:`lot:${r.sourceRow}`,priceCents:r.targetPriceCents,qty:surplus,at:marker.at}] : []
+  })
+}
 export interface LadderInput {
   lotIds: string[]
   startCents: number
@@ -64,16 +79,20 @@ export interface GridStatus {
   sellPriceCents: number; rebuyPriceCents: number; nextSellPriceCents: number
 }
 export function gridStatuses(targets: readonly ExtraTarget[], records: readonly RawRecord[], executions: readonly RebuyExecution[], lots: readonly Lot[]): GridStatus[] {
+  const surplus = remainingSellTargets(baseTSurplusTargets(records, targets), records)
   return targets.filter(t => t.strategy).map(t => {
     const sales = records.filter(r => !r.deletedAt && (r.soldTargetId === `target:${t.id}` || r.sourceRow === t.strategy?.sellRow))
     const soldQty = sales.reduce((a, r) => a + (r.soldQty ?? 0), 0)
     const execs = executions.filter(e => sales.some(r => e.sellExecId === `sell:${r.sourceRow}`))
-    const repaidQty = execs.reduce((a, e) => a + e.qty - e.rewardQty, 0)
-    const spreadCents = sales.reduce((sum, r) => sum + execs.filter(e => e.sellExecId === `sell:${r.sourceRow}`)
+    const ownQty = (r: RawRecord) => r.buyDateSerial !== null && r.sellDateSerial !== null && r.sellDateSerial <= r.buyDateSerial && r.buyPriceCents !== null && !r.soldLotId
+      ? Math.min(r.soldQty ?? 0, r.buyQtyRaw ?? (r.qtyNeedsDerive ? deriveBuyQty(r.buyPriceCents) : 0)) : 0
+    const repaidQty = sales.reduce((a,r)=>a+ownQty(r),0) + execs.reduce((a, e) => a + e.qty - e.rewardQty, 0)
+    const spreadCents = sales.reduce((sum, r) => sum + ((r.targetPriceCents ?? 0) - (r.buyPriceCents ?? 0)) * ownQty(r) + execs.filter(e => e.sellExecId === `sell:${r.sourceRow}`)
       .reduce((a, e) => a + ((r.targetPriceCents ?? 0) - e.priceCents) * (e.qty - e.rewardQty), 0), 0)
     return { id: t.id, lotId: t.lotId, stockName: lots.find(l => l.id === t.lotId)?.stockName ?? '', mode: t.strategy!.mode,
       qty: t.strategy?.sellRow !== undefined ? soldQty : t.qty, unfilledQty: t.strategy?.sellRow !== undefined ? 0 : Math.max(0, t.qty - soldQty), soldQty, repaidQty, pendingQty: Math.max(0, soldQty - repaidQty), spreadCents,
-      holdingQty: execs.reduce((a, e) => a + (lots.find(l => l.id === `lot:exec:${e.id}`)?.remainingQty ?? 0), 0),
+      holdingQty: sales.reduce((a,r)=>a+Math.max(0,Math.min(ownQty(r),(lots.find(l=>l.id===`lot:${r.sourceRow}`)?.remainingQty??0)-(surplus.find(s=>s.lotId===`lot:${r.sourceRow}`)?.qty??0))),0)
+        + execs.reduce((a, e) => a + (lots.find(l => l.id === `lot:exec:${e.id}`)?.remainingQty ?? 0), 0),
       sellPriceCents: t.priceCents, rebuyPriceCents: t.strategy!.rebuyPriceCents, nextSellPriceCents: t.strategy!.nextSellPriceCents }
   })
 }

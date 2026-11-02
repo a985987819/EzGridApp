@@ -77,14 +77,11 @@ function sourceTables(s: LedgerSnapshot): Record<string, Row[]> {
   }
 }
 
-export async function exportLedgerWorkbook(snapshot: LedgerSnapshot): Promise<Uint8Array> {
-  const X = await loadXlsx()
-  const wb = X.utils.book_new()
+/** 共享交换表内容，展示层可附加公式视图，恢复源表仍全部为真实值。 */
+export function ledgerWorkbookRows(snapshot: LedgerSnapshot): Record<string, SnapshotCell[][]> {
+  const sheets: Record<string, SnapshotCell[][]> = {}
   const append = (name: string, rows: SnapshotCell[][]) => {
-    const ws = X.utils.aoa_to_sheet(rows)
-    ws['!cols'] = (rows[0] ?? []).map((h) => ({ wch: Math.min(40, Math.max(16, String(h).length * 1.5)) }))
-    if (rows.length > 1) ws['!autofilter'] = { ref: X.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: rows.length - 1, c: rows[0].length - 1 } }) }
-    X.utils.book_append_sheet(wb, ws, name)
+    sheets[name] = rows
   }
   append(LEDGER_META_SHEET, [
     ['项目', '值'], ['格式', FORMAT], ['格式版本', VERSION], ['计算口径版本', 2], ['备份结构版本', snapshot.schemaVersion],
@@ -106,6 +103,18 @@ export async function exportLedgerWorkbook(snapshot: LedgerSnapshot): Promise<Ui
     const headers = [...new Set(rows.flatMap((r) => Object.keys(r)))].sort()
     // 空表也有明确列头，保证删表/漏表不被当作空数据。
     append(name, [headers.length ? headers.map(viewHeader) : ['（无数据）'], ...rows.map((r) => headers.map((h) => r[h] ?? null))])
+  }
+  return sheets
+}
+
+export async function exportLedgerWorkbook(snapshot: LedgerSnapshot): Promise<Uint8Array> {
+  const X = await loadXlsx()
+  const wb = X.utils.book_new()
+  for (const [name,rows] of Object.entries(ledgerWorkbookRows(snapshot))) {
+    const ws = X.utils.aoa_to_sheet(rows)
+    ws['!cols'] = (rows[0] ?? []).map((h) => ({ wch: Math.min(40, Math.max(16, String(h).length * 1.5)) }))
+    if (rows.length > 1) ws['!autofilter'] = { ref: X.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: rows.length - 1, c: rows[0].length - 1 } }) }
+    X.utils.book_append_sheet(wb, ws, name)
   }
   return new Uint8Array(X.write(wb, { type: 'array', bookType: 'xlsx', compression: true }))
 }

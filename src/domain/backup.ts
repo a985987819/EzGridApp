@@ -9,6 +9,9 @@
  * 账户功能已删除：老备份里的 accounts 段直接忽略，不再校验。
  */
 
+import { isSellFirst } from './sellFirst'
+import type { RawRecord } from './types'
+
 export interface BackupShape {
   schemaVersion?: number
   stocks?: unknown
@@ -274,7 +277,7 @@ function checkReferences(data: BackupShape): string | null {
       if (modeRows.has(sellRow)) return `extraTargets[${i}] 同一先卖单存在重复模式关联`
       modeRows.add(sellRow)
       const sell = recordList.find(r=>r.sourceRow===sellRow), source = recordList.find(r=>r.sourceRow===row)
-      if (!sell || !source || sell.stockName!==source.stockName || sell.soldLotId || sell.buyPriceCents!==null || !isNum(sell.soldQty) || sell.soldQty<=0) return `extraTargets[${i}] 已有先卖单模式与来源不匹配`
+      if (!sell || !source || sell.stockName!==source.stockName || sell.soldLotId || !isSellFirst(sell as unknown as RawRecord) || !isNum(sell.soldQty) || sell.soldQty<=0) return `extraTargets[${i}] 已有先卖单模式与来源不匹配`
     }
     if (strategy && String(extraTargets[i].lotId).startsWith('lot:exec:') && !execIds.has(String(extraTargets[i].lotId).slice(9))) return `extraTargets[${i}] 批次不存在 ${String(extraTargets[i].lotId)}`
   }
