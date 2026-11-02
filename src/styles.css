@@ -898,6 +898,64 @@ button { font-family: inherit; }
   color: #a09080;
 }
 
+/* ---------- 概览 · 估值温度带（2026-11-03）：股价/PE/PB 近 5 年百分位 ----------
+   渐变是数据色谱（冷→热），不是装饰色；只有针和文字走主题 token。扁平无阴影。 */
+.val-band {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.val-band + .val-band { margin-top: 7px; }
+.val-band-label {
+  flex: none;
+  width: 50px;
+  font-size: 12px;
+  color: var(--animal-text-color-secondary, #9f927d);
+}
+.val-band-track {
+  position: relative;
+  flex: 1;
+  height: 14px;
+  margin: 4px 0;
+  border-radius: 7px;
+  background: linear-gradient(90deg, #3b82f6 0%, #22d3ee 20%, #34d399 40%, #facc15 55%, #fb923c 75%, #ef4444 100%);
+}
+.val-band-track .sep {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: rgba(255, 255, 255, 0.75);
+  opacity: 0.7;
+}
+.val-band-track .needle {
+  position: absolute;
+  top: -3px;
+  width: 3px;
+  height: 20px;
+  border-radius: 2px;
+  background: var(--animal-text-color, #3d3428);
+  transform: translateX(-50%);
+}
+.val-band-track .needle::after {
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: inherit;
+}
+.val-band-val {
+  flex: none;
+  min-width: 92px;
+  font-size: 12px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 /* 明细摘要也提供回顶入口，完整筛选与摘要共享同一份计数。 */
 .trades-compact {
   display: flex;

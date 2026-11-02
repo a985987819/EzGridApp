@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Button, Card, Tag } from 'animal-island-ui'
 import { activeStockNames } from '../domain/stocks'
 import { recordNoLabel } from '../domain/recordNo'
@@ -7,6 +7,8 @@ import { useApp } from '../store/useApp'
 import { saleFacts } from '../domain/booking'
 import { TreeTrunk } from '../components/TreeTrunk'
 import { RepairChainCard } from '../components/RepairChainCard'
+import { ValuationSection } from '../components/ValuationBand'
+import { loadValuationData, type ValuationFile } from '../domain/valuation'
 import { money, price, qty, signedMoney, tone } from '../ui/format'
 import type { TradesQuery } from '../ui/nav'
 import { transitionView } from '../ui/transitions'
@@ -35,6 +37,19 @@ export function Overview({
   const missingDateCount = viewLedger.anomalies.filter((a) => a.kind === 'dateMissing').length
 
   const enabledNames = useMemo(() => activeStockNames(stocks), [stocks])
+  // 估值温度带：静态快照懒加载（构建期内联，无运行时网络请求），加载完成前不渲染该卡
+  const [valuation, setValuation] = useState<ValuationFile | null>(null)
+  useEffect(() => {
+    let on = true
+    loadValuationData()
+      .then((d) => {
+        if (on) setValuation(d)
+      })
+      .catch(() => {})
+    return () => {
+      on = false
+    }
+  }, [])
   const withRows = useMemo<StockSummary[]>(() => {
     const byName = new Map(viewLedger.byStock.map((s) => [s.stockName, s]))
     const out: StockSummary[] = []
@@ -223,6 +238,8 @@ export function Overview({
               )}
             </div>
           )}
+          {/* 估值温度带（2026-11-03）：股价/PE/PB 近 5 年百分位，纯展示不进台账 */}
+          {valuation && <ValuationSection stockName={current.stockName} closeCents={closeCents} data={valuation} />}
         </div>
       )}
 
