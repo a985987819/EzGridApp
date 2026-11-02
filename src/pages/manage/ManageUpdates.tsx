@@ -32,7 +32,7 @@ export function ManageUpdates({ compact = false }: { compact?: boolean }) {
       {compact && <p className="release-note">刷新前先保存编辑内容。已保存台账保留，未保存表单和沙盒会清空。</p>}
       <div className="release-actions">
         <Button disabled={busy || development} onClick={() => void checkLatestVersion()} data-action="check-version">{update.phase === 'checking' ? '检查中…' : '检查最新版本'}</Button>
-        <Button type="primary" disabled={busy || development} onClick={() => void updateToLatest()} data-action="apply-update">{update.phase === 'updating' ? '正在准备更新…' : available ? '更新并刷新' : '刷新并校验'}</Button>
+        <Button type="primary" data-emphasis="true" disabled={busy || development} onClick={() => void updateToLatest()} data-action="apply-update">{update.phase === 'updating' ? '正在准备更新…' : available ? '更新并刷新' : '刷新并校验'}</Button>
       </div>
       {compact ? <button className="release-details" onClick={() => navigateManage({ section: 'updates' })}>查看版本详情与强制更新 →</button> : <>
         <p className="release-note">请先保存正在编辑的内容。更新会刷新本页，已保存台账保留；尚未保存的表单与沙盒会清空。其他打开的页面由你自行刷新。</p>

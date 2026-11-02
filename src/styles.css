@@ -1535,34 +1535,32 @@ button:not(:disabled):active {
 .sandbox-delta .arrow { opacity: 0.45; }
 .sandbox-delta b { font-variant-numeric: tabular-nums; }
 
-/* 全站按钮共用实心下沿阴影，包括库按钮、导航/筛选和body中的弹层按钮。
-   库的text/link/ghost与disabled变体各自清阴影，故仅阴影属性在此统一覆盖。 */
+/* 默认扁平；只有明确标记的关键执行操作使用阴影。
+   覆盖组件库自带的悬浮/按下阴影与位移，避免Tab选中后自动变成立体按钮。 */
 body button {
+  box-shadow: none !important;
+  transform: none !important;
+}
+body button[data-emphasis='true']:not(:disabled):not([aria-disabled='true']):not([aria-busy='true']):not([class*='animal-btn-loading-']) {
   box-shadow: 0 var(--button-shadow-depth) 0 var(--button-shadow-color) !important;
 }
 @media (hover: hover) {
-  body button:not(:disabled):not([aria-disabled='true']):hover { --button-shadow-depth: 5px; }
+  body button[data-emphasis='true']:not(:disabled):not([aria-disabled='true']):hover { --button-shadow-depth: 5px; }
 }
-body button:not(:disabled):not([aria-disabled='true']):active {
+body button[data-emphasis='true']:not(:disabled):not([aria-disabled='true']):active {
   --button-shadow-depth: 1px;
-  transform: translateY(2px);
+  transform: translateY(2px) !important;
 }
 body button:disabled,
 body button[aria-disabled='true'] {
-  --button-shadow-depth: 2px;
   cursor: not-allowed;
 }
 body button[class*='animal-btn-danger-'] { --button-shadow-color: #c77d70; }
-body button:is([class*='animal-btn-text-'], [class*='animal-btn-link-'], [class*='animal-btn-ghost-']) {
-  background: #f8f8f0;
-  border-color: var(--animal-border-color, #e0d8c8);
-}
 body button[class*='animal-btn-danger-']:is([class*='animal-btn-text-'], [class*='animal-btn-link-']) {
   color: var(--animal-error-color, #e05a5a);
 }
 body button:focus-visible { outline: 2px solid #63866c; outline-offset: 3px; }
 
-.nav-btn,
 .guide-modes button,
 .guide-result,
 .guide-back,
@@ -1590,6 +1588,12 @@ body button:focus-visible { outline: 2px solid #63866c; outline-offset: 3px; }
 .metrics > .metric-cell { background-color: #fffdf7; border-right: none; }
 .app-select-panel { padding-bottom: 7px; }
 .app-select-option + .app-select-option { margin-top: 5px; }
+.buy-reference-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-weight: 600; }
+.buy-reference-heading strong { font-size: 24px; color: var(--animal-primary-color-active, #137e75); }
+.buy-reference-values { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding-block: 8px; border-block: 1px solid var(--line-soft); }
+.buy-reference-values > div { display: flex; flex-direction: column; gap: 5px; }
+.buy-reference-values .k { font-size: 11px; color: var(--animal-text-color-secondary, #9f927d); }
+.buy-reference-values b { font-size: 15px; overflow-wrap: anywhere; }
 @media (max-width: 420px) {
   .stats-calendar-widget > [class*='animal-header-'] { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
   .stats-calendar-widget [class*='animal-monthLabel-'] { grid-column: 1 / -1; grid-row: 1; justify-self: center; white-space: nowrap; }
@@ -1598,5 +1602,5 @@ body button:focus-visible { outline: 2px solid #63866c; outline-offset: 3px; }
   .stats-calendar-widget [class*='animal-todayBtn-'] { white-space: nowrap; }
 }
 @media (prefers-reduced-motion: reduce) {
-  body button:not(:disabled):not([aria-disabled='true']):active { transform: none; }
+  body button[data-emphasis='true']:not(:disabled):not([aria-disabled='true']):active { transform: none !important; }
 }

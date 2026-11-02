@@ -102,7 +102,7 @@ export function LotMergeBinder({ row }: { row: number }) {
         <span className="tiny muted grow">
           已选 {picked.length} 笔 · 合计 {qty(totalQty)} 股 · 最早 {earliest ?? '—'}
         </span>
-        <Button size="small" type="primary" data-action="merge-save" disabled={picked.length < 2} onClick={() => void save()}>
+        <Button size="small" type="primary" data-emphasis="true" data-action="merge-save" disabled={picked.length < 2} onClick={() => void save()}>
           保存合并
         </Button>
         {group && <Button size="small" data-action="merge-clear" onClick={() => void clear()}>解除</Button>}

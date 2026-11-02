@@ -177,7 +177,7 @@ export function ChainBinder({
           <span className="tiny muted grow">
             已选 {picked.length} 笔 · 已实现合计 {signedMoney(picked.reduce((a, c) => a + realizedProfitOf(ledger.sells, c.sourceRow), 0))}
           </span>
-          <Button size="small" type="primary" data-action="chain-save" onClick={() => void save()}>
+          <Button size="small" type="primary" data-emphasis="true" data-action="chain-save" onClick={() => void save()}>
             保存归属
           </Button>
         </div>

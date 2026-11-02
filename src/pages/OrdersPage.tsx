@@ -16,6 +16,7 @@ import { sandboxRowOf, type SandboxItem, type SandboxKind } from '../domain/sand
 import { mergeTargetRows, type TargetRow } from '../domain/merge'
 import { buildBuySuggestions, compareBuyPrice, consumedNextRounds, splitBuySuggestions, type BuySuggestion } from '../domain/suggestions'
 import { buildNextRoundBuyRows, type NextRoundBuyRow } from '../domain/buyBoard'
+import { buildBuyWindow, selectBuyWindow } from '../domain/buyWindow'
 import { buildNanoIdIndex } from '../ui/nanoid'
 import { downloadText, toCsv } from '../ui/csv'
 import { useFlashOnAppear } from '../ui/motion'
@@ -202,10 +203,10 @@ export function OrdersPage({
    */
   const exposedOrderIds = useMemo(() => new Set(orders.filter((o) => o.exposure).map((o) => o.id)), [orders])
   const { mustBuy, bonus } = splitBuySuggestions(buySuggestions, exposedOrderIds)
-  const mustToday = range ? mustBuy.filter((r) => within(r.priceCents)) : mustBuy
-  const mustOut = range ? mustBuy.filter((r) => !within(r.priceCents)) : []
-  const bonusToday = range ? bonus.filter((r) => within(r.priceCents)) : bonus
-  const bonusOut = range ? bonus.filter((r) => !within(r.priceCents)) : []
+  const buyWindow = buildBuyWindow({ lots: view.lots, stockName: effectiveStock, intervalCents: cfg?.intervalCents, range })
+  const { today: mustToday, outside: mustOut, excluded: mustExcluded } = selectBuyWindow(mustBuy, buyWindow)
+  const { today: bonusToday, outside: bonusOut, excluded: bonusExcluded } = selectBuyWindow(bonus, buyWindow)
+  const excludedBuyPlans = [...mustExcluded, ...bonusExcluded].filter(r => r.edited)
   const mustAmount = mustToday.reduce((a, r) => a + r.amountCents, 0)
   const bonusAmount = bonusToday.reduce((a, r) => a + r.amountCents, 0)
   /**
@@ -213,14 +214,12 @@ export function OrdersPage({
    * 先卖后买单 → 应该买入；其余买单 + 下一轮档 → 锦上添花。
    */
   const sbBuyAll = buySplits.filter((b) => b.qty > 0).sort(compareBuyPrice)
-  const sbBuyIn = range ? sbBuyAll.filter((b) => within(b.priceCents)) : sbBuyAll
-  const sbBuyOut = range ? sbBuyAll.filter((b) => !within(b.priceCents)) : []
+  const { today: sbBuyIn, outside: sbBuyOut, excluded: sbExcluded } = selectBuyWindow(sbBuyAll, buyWindow)
   const sbMustIn = sbBuyIn.filter((b) => b.sellFirst === true)
   const sbBonusIn = sbBuyIn.filter((b) => b.sellFirst !== true)
   const sbMustOut = sbBuyOut.filter((b) => b.sellFirst === true)
   const sbBonusOut = sbBuyOut.filter((b) => b.sellFirst !== true)
-  const levelIn = range ? nextRound.filter((r) => within(r.priceCents)) : nextRound
-  const levelOut = range ? nextRound.filter((r) => !within(r.priceCents)) : []
+  const { today: levelIn, outside: levelOut, excluded: levelExcluded } = selectBuyWindow(nextRound, buyWindow)
   const sbBonusRows = [...sbBonusIn, ...levelIn].sort(compareBuyPrice)
   const sbBonusOutRows = [...sbBonusOut, ...levelOut].sort(compareBuyPrice)
   const sbMustAmount = sbMustIn.reduce((a, b) => a + b.priceCents * b.qty, 0)
@@ -267,6 +266,12 @@ export function OrdersPage({
    * 价格不用管，`buySplits` 的 priceCents 已经是 `计划价 > 回补价`（ledger 里定好）。
    */
   const execQtyOf=(b:BuySplit,o?:RebuyOrder|null)=>o?.planQty!=null?Math.min(o.planQty,b.qty):b.qty
+  function editBuyPlan(r: BuySuggestion) {
+    const plan = plans.find(p => p.kind === 'buy' && p.refId === r.key)
+    // 撞价合并后使用整行现价现量，成员价量仍按原身份分配保存。
+    const merged = (r.members?.length ?? 0) > 1
+    openPlan('buy', r.key, `买 ${r.stockName}`, r.priceCents, r.qty, merged ? null : plan?.priceCents, merged ? null : plan?.qty, r.members, r.planRefs)
+  }
   const buySuggestionLine=(r:BuySuggestion)=>(
     <div key={r.key} className="line wrap-row pending-buy clickable" data-testid="buy-suggestion" data-row={r.sources[0]?.row} data-price={r.priceCents} data-edited={r.edited ? '1' : undefined} data-sell-first={r.sellFirst ? '1' : undefined}
       // V9.58：锦上添花里全部来源都是「下一轮」的档保留深链身份（点行跳已完成那笔，不被 hideDone 挡）
@@ -307,20 +312,11 @@ export function OrdersPage({
         <Button
           size="small"
           data-action="suggestion-plan"
-          onClick={stopWith(() => {
-            const plan = plans.find((p) => p.kind === 'buy' && p.refId === r.key)
-            /**
-             * V9.55 修：合并行不能拿「某个成员」的计划量当默认值——计划是按成员身份存的，
-             * 拿到的是那一份的股数（两条各 400 合并成 800 时预填 400），
-             * 用户「打开→不动→保存」就会把合计量砍掉一半。合并行一律用整行现价现量。
-             */
-            const merged = (r.members?.length ?? 0) > 1
-            openPlan('buy', r.key, `买 ${r.stockName}`, r.priceCents, r.qty, merged ? null : plan?.priceCents, merged ? null : plan?.qty, r.members, r.planRefs)
-          })}
+          onClick={stopWith(() => editBuyPlan(r))}
         >
           改单
         </Button>
-        <Button size="small" data-action="suggestion-buy" onClick={()=>{
+        <Button data-emphasis="true" size="small" data-action="suggestion-buy" onClick={()=>{
           const source=r.sources[0]
           const order=source?.kind==='order'?orders.find((o)=>o.id===source.id):null
           if(r.sources.length!==1||!order)return openTrade('buy',r)
@@ -348,6 +344,7 @@ export function OrdersPage({
         key={r.key}
         className="line wrap-row pending-buy clickable"
         data-buy-level={r.anchorRow}
+        data-price={r.priceCents}
         data-merge-group={r.merged ? r.key : undefined}
         data-testid={inToday ? undefined : 'next-round-row'}
         onClick={() => goTrades({ id: idFor(r.anchorRow), stock: r.stockName })}
@@ -414,6 +411,7 @@ export function OrdersPage({
         // V9.29.1：左侧状态边框（蓝=买 / 红=卖），与明细页 trade-item 同一套语义
         className={`line wrap-row pending-buy ${sim ? 'sandbox-row' : 'clickable'}`}
         data-row={b.sourceRow}
+        data-price={b.priceCents}
         data-split-key={b.split ? b.key : undefined}
         data-sandbox-row={sim ? b.sourceRow : undefined}
         onClick={sim ? undefined : () => goTrades({ id: idFor(b.sourceRow), stock: b.stockName })}
@@ -459,7 +457,7 @@ export function OrdersPage({
             <>
               <Button
                 size="small"
-                type="primary"
+                type="primary" data-emphasis="true"
                 data-action="sandbox-commit"
                 disabled={committing === sim.id}
                 onClick={stopWith(() => void commitSandbox(sim))}
@@ -479,7 +477,7 @@ export function OrdersPage({
                   改单
                 </Button>
               )}
-              <Button
+              <Button data-emphasis="true"
                 size="small"
                 disabled={!o}
                 onClick={stopWith(() => o && openExec(o, { qty: execQtyOf(b, o), priceCents: b.priceCents, splitKey: b.key }))}
@@ -540,7 +538,7 @@ export function OrdersPage({
             <>
               <Button
                 size="small"
-                type="primary"
+                type="primary" data-emphasis="true"
                 data-action="sandbox-commit"
                 disabled={committing === sim.id}
                 onClick={stopWith(() => void commitSandbox(sim))}
@@ -550,7 +548,7 @@ export function OrdersPage({
               <Button size="small" onClick={stopWith(() => removeSandbox(sim))}>删除</Button>
             </>
           ) : (
-            <><Button size="small" data-action="sell-execution" onClick={stopWith(()=>openTrade('sell',r))}>记卖出</Button><Button
+            <><Button data-emphasis="true" size="small" data-action="sell-execution" onClick={stopWith(()=>openTrade('sell',r))}>记卖出</Button><Button
               size="small"
               data-action="sell-plan"
               onClick={stopWith(() =>
@@ -857,8 +855,9 @@ export function OrdersPage({
       )
     }
     /** V9.58：复制清单按三组顺序（应该买入 → 锦上添花 → 应该卖出），区间外只报数量 */
-    const musts = range ? mustToday : mustBuy
-    const bonuses = range ? bonusToday : bonus
+    if (buyWindow.referenceCents !== null) lines.push(`上次最低未完成买单 ${price(buyWindow.referenceCents)} · 买入仅推荐低于此价的档位`)
+    const musts = mustToday
+    const bonuses = bonusToday
     if (musts.length) {
       lines.push('【应该买入】')
       for (const r of musts) lines.push(`  ${price(r.priceCents)} × ${r.qty} 股（${r.sources.length} 笔来源${r.sellFirst ? ' · 先卖后买' : ''}）`)
@@ -880,7 +879,7 @@ export function OrdersPage({
         lines.push(`【区间外 · 今日无法成交】买 ${outBuys.length} 档 · 卖 ${sellOutRows.length} 档`)
       }
     } else {
-      lines.push('（未确认昨收价，以上是全部待买/待卖）')
+      lines.push('（未确认涨跌停区间，暂不推荐买入；以上仅展示待卖）')
     }
     void navigator.clipboard?.writeText(lines.filter(Boolean).join('\n'))
     notificationOpen({ message: '清单已复制', type: 'success' })
@@ -889,7 +888,7 @@ export function OrdersPage({
   function exportCsv() {
     const mustKeys = new Set(mustBuy.map((r) => r.key))
     const rows: (string | number)[][] = [['类型', '序号', '价格', '股数', '金额', '区间']]
-    for (const r of [...mustBuy, ...bonus]) rows.push([mustKeys.has(r.key) ? '应该买入' : '锦上添花',r.sources.map((v)=>recordNoLabel(v.row,recordNo)).join(' + '),price(r.priceCents),r.qty,(r.amountCents/100).toFixed(2),zone(r.priceCents)])
+    for (const r of [...mustToday, ...bonusToday]) rows.push([mustKeys.has(r.key) ? '应该买入' : '锦上添花',r.sources.map((v)=>recordNoLabel(v.row,recordNo)).join(' + '),price(r.priceCents),r.qty,(r.amountCents/100).toFixed(2),zone(r.priceCents)])
     for (const r of targetRows) {
       const p = r.planPriceCents ?? r.priceCents
       const q = r.planQty ?? r.qty
@@ -1066,7 +1065,7 @@ export function OrdersPage({
               }}
               aria-label="昨收价"
             />
-            <Button type="primary" data-action="confirm-close" onClick={confirmClose}>确认</Button>
+            <Button type="primary" data-emphasis="true" data-action="confirm-close" onClick={confirmClose}>确认</Button>
           </div>
 
           {/* V9.13：涨跌幅档位是配置细节、确认引导是自明的——都不再占界面；有区间才显示这一行 */}
@@ -1131,7 +1130,7 @@ export function OrdersPage({
               <div className="row nowrap" style={{ gap: 6 }}>
                 <Button
                   size="small"
-                  type="primary"
+                  type="primary" data-emphasis="true"
                   style={{ flex: 1 }}
                   onClick={() => {
                     const up = toCents(upText)
@@ -1164,7 +1163,34 @@ export function OrdersPage({
       </div>
       </div>
 
-      {/* 2. 应该买入：先卖后买/带敞口的欠股——卖出拿回来的钱就是留给它们的（V9.58） */}
+      <Card className="buy-reference" data-testid="buy-reference">
+        <div className="buy-reference-heading">
+          <span>上次最低未完成买单</span>
+          <strong className="num" data-testid="buy-reference-price">{buyWindow.referenceCents !== null ? price(buyWindow.referenceCents) : '暂无'}</strong>
+        </div>
+        <p className="tiny muted">取{sandbox.active ? '预览' : '当前'}仍有持仓的最低买入成本，含回补批次；卖光的批次不作参考。</p>
+        <div className="buy-reference-values">
+          <div><span className="k">下一档参考{cfg?.intervalCents ? `（间隔 ${price(cfg.intervalCents)}）` : ''}</span><b className="num" data-testid="next-buy-reference">{buyWindow.nextGridCents !== null ? price(buyWindow.nextGridCents) : '—'}</b></div>
+          <div><span className="k">今日推荐买入范围</span><b className="num" data-testid="buy-window-range">{buyWindow.todayRange ? `${price(buyWindow.todayRange.downCents)} ~ ${price(buyWindow.todayRange.upCents)}` : range ? '无符合范围' : '先确认昨收与涨跌幅'}</b></div>
+        </div>
+        <p className="tiny muted" style={{ marginBottom: 0 }}>
+          {buyWindow.referenceCents !== null ? `只推荐严格低于 ${price(buyWindow.referenceCents)} 且在今日涨跌幅区间内的现有档位；下一档仅供参考，不自动生成订单。` : '暂无未完成持仓，不猜测上一档价格；仅按已确认的今日涨跌幅区间筛选。'}
+          {(sandbox.active ? sbExcluded.length + levelExcluded.length : mustExcluded.length + bonusExcluded.length) > 0 && ' 较高或同价档位未纳入推荐，原欠股与回补记录仍在下方台账中保留。'}
+        </p>
+        {!sandbox.active && excludedBuyPlans.length > 0 && (
+          <details className="divider-top" data-testid="excluded-buy-plans">
+            <summary className="tiny muted">{excludedBuyPlans.length} 条改单未纳入推荐 · 调整计划</summary>
+            <p className="tiny muted">可调低或清除原改单；这里只管理计划，不提供成交入口。</p>
+            <div className="row">
+              {excludedBuyPlans.map(r => <Button key={r.key} type="text" size="small" data-action="excluded-buy-plan" onClick={() => editBuyPlan(r)}>
+                调整 {[...new Set(r.sources.map(s => recordNoLabel(s.row, recordNo)))].join(' + ')} 的改单
+              </Button>)}
+            </div>
+          </details>
+        )}
+      </Card>
+
+      {/* 2. 应该买入：保留原欠股账务，推荐只展示最低持仓成本以下的日内档位。 */}
       <Card data-testid="must-buy-card">
         <div className="sec-head">
           <strong>应该买入</strong>
@@ -1179,12 +1205,12 @@ export function OrdersPage({
         </div>
         {sandbox.active ? (
           sbMustIn.length === 0 ? (
-            <div className="empty-box">区间里没有先卖后买的欠单</div>
+            <div className="empty-box">{range ? '没有符合当前买入范围的欠股档位' : '先确认昨收与涨跌幅，再筛选推荐买入'}</div>
           ) : (
             <div className="data-block">{sbMustIn.map(sbBuyLine)}</div>
           )
         ) : mustToday.length === 0 ? (
-          <div className="empty-box">区间里没有该先买回的欠股</div>
+          <div className="empty-box">{range ? '没有符合当前买入范围的欠股档位' : '先确认昨收与涨跌幅，再筛选推荐买入'}</div>
         ) : (
           <div className="data-block">{mustToday.map(buySuggestionLine)}</div>
         )}
@@ -1228,14 +1254,14 @@ export function OrdersPage({
         </div>
         {sandbox.active ? (
           sbBonusIn.length + levelIn.length === 0 ? (
-            <div className="empty-box">区间里没有可再买一轮的档</div>
+            <div className="empty-box">{range ? '没有符合当前买入范围的再买档位' : '先确认昨收与涨跌幅，再筛选锦上添花'}</div>
           ) : (
             <>
               <div className="data-block">{sbBonusRows.map((r) => 'orderId' in r ? sbBuyLine(r) : levelLine(r, true))}</div>
             </>
           )
         ) : bonusToday.length === 0 ? (
-          <div className="empty-box">区间里没有可再买一轮的档</div>
+          <div className="empty-box">{range ? '没有符合当前买入范围的再买档位' : '先确认昨收与涨跌幅，再筛选锦上添花'}</div>
         ) : (
           <div className="data-block">{bonusToday.map(buySuggestionLine)}</div>
         )}
@@ -1356,7 +1382,7 @@ export function OrdersPage({
                         >
                           {z}
                         </Tag>
-                        {!sim && o.remainingQty > 0 && <Button size="small" data-action="rebuy-execution" onClick={stopWith(()=>openExec(o))}>记成交</Button>}
+                        {!sim && o.remainingQty > 0 && <Button data-emphasis="true" size="small" data-action="rebuy-execution" onClick={stopWith(()=>openExec(o))}>记成交</Button>}
                         {!sim && o.execQty > 0 && (
                           <Button size="small" type="text" onClick={stopWith(() => void undoExec(o.id))}>撤销最后一笔</Button>
                         )}
@@ -1375,7 +1401,7 @@ export function OrdersPage({
                             </Tag>
                             <Button
                               size="small"
-                              type="primary"
+                              type="primary" data-emphasis="true"
                               data-action="sandbox-commit"
                               disabled={committing === sim.id}
                               onClick={stopWith(() => void commitSandbox(sim))}
@@ -1415,7 +1441,7 @@ export function OrdersPage({
       </Card>
 
       <Modal className="booking-modal" open={trade!==null} title={trade?.side==='sell'?'记卖出成交':'记买入成交'} typewriter={false} onClose={()=>!savingTrade&&setTrade(null)}
-        footer={<div className="row"><Button type="primary" disabled={savingTrade} onClick={()=>void saveTrade()}>保存成交</Button><Button disabled={savingTrade} onClick={()=>setTrade(null)}>取消</Button></div>}>
+        footer={<div className="row"><Button type="primary" data-emphasis="true" disabled={savingTrade} onClick={()=>void saveTrade()}>保存成交</Button><Button disabled={savingTrade} onClick={()=>setTrade(null)}>取消</Button></div>}>
         <div onKeyDown={enterSubmit(() => void saveTrade())}>
         <p className="tiny muted" style={{ marginTop: 0 }}>股票：{trade?.buy?.stockName ?? effectiveStock}</p>
         <div className="form-grid">
@@ -1447,7 +1473,7 @@ export function OrdersPage({
         onClose={() => setPlanRef(null)}
         footer={
           <div className="row nowrap" style={{ gap: 8 }}>
-            <Button type="primary" style={{ flex: 1 }} onClick={() => void savePlan()}>保存</Button>
+            <Button type="primary" data-emphasis="true" style={{ flex: 1 }} onClick={() => void savePlan()}>保存</Button>
             <Button onClick={() => setPlanRef(null)}>取消</Button>
           </div>
         }
@@ -1510,7 +1536,7 @@ export function OrdersPage({
         onClose={() => setExecOrder(null)}
         footer={
           <div className="row nowrap" style={{ gap: 8 }}>
-            <Button type="primary" style={{ flex: 1 }} disabled={savingExec} onClick={() => void saveExec()}>保存</Button>
+            <Button type="primary" data-emphasis="true" style={{ flex: 1 }} disabled={savingExec} onClick={() => void saveExec()}>保存</Button>
             <Button disabled={savingExec} onClick={() => setExecOrder(null)}>取消</Button>
           </div>
         }
@@ -1553,7 +1579,7 @@ export function OrdersPage({
         onClose={() => setSbKind(null)}
         footer={
           <div className="row nowrap" style={{ gap: 8 }}>
-            <Button type="primary" style={{ flex: 1 }} data-action="sandbox-save" onClick={saveSandboxForm}>
+            <Button type="primary" data-emphasis="true" style={{ flex: 1 }} data-action="sandbox-save" onClick={saveSandboxForm}>
               加到沙盒
             </Button>
             <Button onClick={() => setSbKind(null)}>取消</Button>

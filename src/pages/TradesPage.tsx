@@ -847,7 +847,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
         </div>
         <Button
           block
-          type="primary"
+          type="primary" data-emphasis="true"
           style={{ marginTop: 8 }}
           onClick={() => {
             setForm(blankForm(stockFilter === 'all' ? stockNames[0] ?? '' : stockFilter))
@@ -972,7 +972,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
             <div className="row nowrap" style={{ gap: 8 }}>
               {editing ? (
                 <>
-                  <Button type="primary" style={{ flex: 1 }} onClick={() => void save()}>保存</Button>
+                  <Button type="primary" data-emphasis="true" style={{ flex: 1 }} onClick={() => void save()}>保存</Button>
                   <Button onClick={() => setEditing(false)}>取消</Button>
                 </>
               ) : (
@@ -1403,7 +1403,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
         onClose={() => !savingAdd && setAdding(false)}
         footer={
           <div className="row nowrap" style={{ gap: 8 }}>
-            <Button type="primary" style={{ flex: 1 }} disabled={savingAdd} onClick={() => void onAdd()}>保存</Button>
+            <Button type="primary" data-emphasis="true" style={{ flex: 1 }} disabled={savingAdd} onClick={() => void onAdd()}>保存</Button>
             <Button disabled={savingAdd} onClick={() => setAdding(false)}>取消</Button>
           </div>
         }

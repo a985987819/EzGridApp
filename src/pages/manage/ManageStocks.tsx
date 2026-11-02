@@ -204,7 +204,7 @@ export function ManageStocks() {
         footer={
           <div className="row nowrap" style={{ gap: 8 }}>
             <Button
-              type="primary"
+              type="primary" data-emphasis="true"
               style={{ flex: 1 }}
               onClick={() => {
                 const cents = toCents(inputOrDefault(newInterval, '0.57'))

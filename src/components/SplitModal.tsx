@@ -88,7 +88,7 @@ export function SplitModal(props: { kind: 'buy' | 'sell'; sellRow?: number; lotI
       onClose={onClose}
       footer={
         <div className="row nowrap" style={{ gap: 8 }}>
-          <Button type="primary" style={{ flex: 1 }} data-action="split-confirm" onClick={confirmSplit}>拆分</Button>
+          <Button type="primary" data-emphasis="true" style={{ flex: 1 }} data-action="split-confirm" onClick={confirmSplit}>拆分</Button>
           <Button onClick={onClose}>取消</Button>
         </div>
       }

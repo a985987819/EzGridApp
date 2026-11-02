@@ -41,7 +41,7 @@ export function LedgerRestorePreview({ preview, onClose }: { preview: LedgerWork
         <Button disabled={busy} onClick={() => {
           void exportLedgerWorkbook(s).then((bytes) => downloadBytes('完整台账-重算核对.xlsx', bytes, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')).catch((err: unknown) => notificationOpen({ message: '导出重算结果失败', description: String(err), type: 'error' }))
         }}>下载重算核对表</Button>
-        <Button type="primary" danger disabled={busy} data-action="restore-ledger-confirm" onClick={() => void restore()}>{busy ? '正在恢复…' : '确认整库替换并恢复'}</Button>
+        <Button type="primary" data-emphasis="true" danger disabled={busy} data-action="restore-ledger-confirm" onClick={() => void restore()}>{busy ? '正在恢复…' : '确认整库替换并恢复'}</Button>
         <Button disabled={busy} onClick={onClose}>取消</Button>
       </div>
     </div>

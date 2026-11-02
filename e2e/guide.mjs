@@ -181,6 +181,8 @@ try {
   await click('[aria-label="选择股票"]')
   await run(`[...document.querySelectorAll('[role="option"]')].find(e=>e.textContent.includes('柳工')).click()`)
   await pause(400)
+  await input('[aria-label="昨收价"]', '5')
+  await click('[data-action="confirm-close"]')
   const multi = await run(`({rows:[...document.querySelectorAll('[data-testid="buy-suggestion"]')].map(e=>({row:e.dataset.row,price:e.dataset.price,text:e.innerText})),card:document.querySelector('[data-testid="must-buy-card"]').innerText})`)
   check('O01 当前柳工建议只含500股@5，不混三一重工600股@6', multi.rows.length === 1 && multi.rows[0].price === '500' && multi.card.includes('2,500.00'), multi)
   await run(`Object.defineProperty(navigator,'clipboard',{value:{writeText:async value=>{window.guideCopied=value}},configurable:true})`)
@@ -204,6 +206,9 @@ try {
   await click('[aria-label="选择股票"]')
   await run(`[...document.querySelectorAll('[role="option"]')].find(e=>e.textContent.includes('三一重工')).click()`)
   await pause(400)
+  check('O01 切股未确认区间前不沿用上一只股票的买入推荐', await run(`document.querySelectorAll('[data-testid="buy-suggestion"]').length===0`))
+  await input('[aria-label="昨收价"]', '6')
+  await click('[data-action="confirm-close"]')
   check('O01 切股后显示三一重工600股@6，旧股票区间不串用', await run(`document.querySelectorAll('[data-testid="buy-suggestion"]').length===1 && document.querySelector('[data-testid="buy-suggestion"]').dataset.price==='600' && document.querySelector('[data-testid="must-buy-card"]').innerText.includes('3,600.00')`))
 
   if (process.argv.includes('--offline')) {

@@ -1163,6 +1163,8 @@ try {
   check('热点位跳转带股票和价格档', hotHash.startsWith('#/trades') && /price=\d+/.test(hotHash) && decodeURIComponent(hotHash).includes('stock='), hotHash)
 
   // V9.7：年 / 月累计盈利 + 日历按天聚合
+  // fixture 的成交样本在2026年10月，不能依赖执行当天仍是同月。
+  await evaluate(`localStorage.setItem('ezgrid.statsCal', '2026-10')`)
   await nav('stats')
   text = await bodyText()
   // 基准数据：全部盈利 ¥7,970，其中缺日期盈利 ¥1,429 不进累计 → 年累计 ¥6,541；10 月只有 R56 → ¥196
@@ -1270,7 +1272,7 @@ try {
   text = await bodyText()
   // V9.13：涨跌幅档位与确认引导整行删除（自明信息不占界面），只看涨跌停价
   check('没有涨跌幅选择器', !text.includes('创业板 20%'))
-  check('涨跌幅档位不再显示', !text.includes('涨跌幅'))
+  check('不恢复独立涨跌幅档位行，展示买入参考范围', !text.includes('涨跌幅档位') && text.includes('上次最低未完成买单'))
 
   // 选柳工（待卖价多落在区间内）
   await evaluate(`document.querySelector('.app-main [role="combobox"]')?.click()`)

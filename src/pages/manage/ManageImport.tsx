@@ -305,7 +305,7 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
               </label>)}
             </div>}
             <div className="row" style={{ marginTop: 12 }}>
-              <Button type="primary" block loading={busy} disabled={(importPlan?.conflicts.length ?? 0) > 0} onClick={() => void onCommit()}>
+              <Button type="primary" data-emphasis="true" block loading={busy} disabled={(importPlan?.conflicts.length ?? 0) > 0} onClick={() => void onCommit()}>
                 写入本地
               </Button>
               <Button onClick={() => setPreview(null)}>放弃</Button>

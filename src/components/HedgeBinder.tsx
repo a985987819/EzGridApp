@@ -264,7 +264,7 @@ export function HedgeBinder({
           </span>
         )}
         <div className="spacer" />
-        <Button size="small" type="primary" data-action="save-hedge" onClick={() => void save()}>
+        <Button size="small" type="primary" data-emphasis="true" data-action="save-hedge" onClick={() => void save()}>
           保存挂钩
         </Button>
         {link && (
