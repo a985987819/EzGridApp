@@ -118,6 +118,7 @@ export default function ManageGuide({ query }: { query: ManageQuery }) {
       content = <p>链接可能已过期。返回指南搜索关键词，或从完整文档重新查找。</p>
     } else {
       content = <>
+        {doc?.kind === 'plan' && <aside className="guide-note">这是待实施的规则方案，当前应用尚未提供其中的新功能；原始交易与现行账务计算未改变。</aside>}
         {doc && (doc.kind === 'audit' || doc.kind === 'history') && <aside className="guide-note">这是带日期的审计或历史记录。当前处理办法与修复状态请看 <a href={guideLink({ doc: 'boundaries' })}>操作边界与核对</a>。</aside>}
         {headings.length > 0 && <details className="guide-toc"><summary>本篇目录 · {headings.length} 节</summary>
           <nav aria-label="文档目录">{headings.map((heading, i) => <a key={`${heading.id}:${i}`} href={guideLink({ ...listQuery, doc: doc!.id, anchor: heading.id })}>{heading.title}</a>)}</nav>

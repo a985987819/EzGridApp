@@ -100,6 +100,16 @@ function checkExtraTargets(list: unknown[]): string | null {
     if (typeof t.lotId !== 'string' || t.lotId === '') return `extraTargets[${i}] 缺 lotId`
     if (!isNum(t.priceCents)) return `extraTargets[${i}] 缺 priceCents`
     if (!isNum(t.qty)) return `extraTargets[${i}] 缺 qty`
+    if (t.strategy !== undefined) {
+      const s = t.strategy
+      if (!isObj(s) || !['repair','baseT'].includes(String(s.mode)) || typeof s.groupId !== 'string' || !s.groupId
+        || !Number.isSafeInteger(s.rebuyPriceCents) || (s.rebuyPriceCents as number) <= 0
+        || !Number.isSafeInteger(s.nextSellPriceCents) || (s.nextSellPriceCents as number) <= 0
+        || !Number.isSafeInteger(t.qty) || (t.qty as number) < 0 || !Number.isSafeInteger(t.priceCents) || (t.priceCents as number) <= 0) return `extraTargets[${i}] 策略模式或价量不合法`
+      if (s.sellRow !== undefined && !isRow(s.sellRow)) return `extraTargets[${i}] 策略卖出来源不合法`
+      if (!isNum(t.at) || (s.inputSignature !== undefined && typeof s.inputSignature !== 'string')) return `extraTargets[${i}] 策略身份或时间不合法`
+      if (s.sellRow !== undefined && (s.mode !== 'baseT' || t.qty !== 0 || !/^lot:\d+$/.test(String(t.lotId)))) return `extraTargets[${i}] 已有先卖模式关联不合法`
+    }
   }
   return null
 }
@@ -253,9 +263,25 @@ function checkReferences(data: BackupShape): string | null {
   }
 
   const extraTargets = list(data.extraTargets)
+  const modeRows = new Set<number>()
   for (let i = 0; i < extraTargets.length; i += 1) {
     const row = lotRow(extraTargets[i].lotId)
     if (row !== null && !rows.has(row)) return `extraTargets[${i}] 指向不存在的批次 ${String(extraTargets[i].lotId)}`
+    const strategy = extraTargets[i].strategy as Obj | undefined
+    if (strategy?.sellRow !== undefined && !rows.has(strategy.sellRow as number)) return `extraTargets[${i}] 策略卖出来源不存在`
+    if (strategy?.sellRow !== undefined) {
+      const sellRow = strategy.sellRow as number
+      if (modeRows.has(sellRow)) return `extraTargets[${i}] 同一先卖单存在重复模式关联`
+      modeRows.add(sellRow)
+      const sell = recordList.find(r=>r.sourceRow===sellRow), source = recordList.find(r=>r.sourceRow===row)
+      if (!sell || !source || sell.stockName!==source.stockName || sell.soldLotId || sell.buyPriceCents!==null || !isNum(sell.soldQty) || sell.soldQty<=0) return `extraTargets[${i}] 已有先卖单模式与来源不匹配`
+    }
+    if (strategy && String(extraTargets[i].lotId).startsWith('lot:exec:') && !execIds.has(String(extraTargets[i].lotId).slice(9))) return `extraTargets[${i}] 批次不存在 ${String(extraTargets[i].lotId)}`
+  }
+
+  for (const record of recordList) if (String(record.soldTargetId ?? '').startsWith('target:grid:')) {
+    const target = extraTargets.find(t=>`target:${String(t.id)}`===record.soldTargetId)
+    if (!target?.strategy || target.lotId!==record.soldLotId) return `records 策略档来源缺失或批次不匹配：${String(record.soldTargetId)}`
   }
 
   const merges = list(data.merges)

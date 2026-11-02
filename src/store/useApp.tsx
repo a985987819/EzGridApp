@@ -16,6 +16,7 @@ import { consumedNextRounds, type BuySource } from '../domain/suggestions'
 import { isoToSerial } from '../domain/edit'
 import { serialToIso } from '../domain/defaults'
 import { buildLedger } from '../domain/ledger'
+import { buildLadder, strategySales, type GridMode, type LadderInput } from '../domain/gridStrategy'
 import { buildRecordNoIndex, recordNoLabel, type RecordNoIndex } from '../domain/recordNo'
 import { cleanupRowLinks } from '../domain/unlink'
 import { compareBaseline } from '../domain/baseline'
@@ -182,6 +183,8 @@ interface AppContextValue {
   closeRepairChain: (anchorRow: number) => Promise<void>
   reopenRepairChain: (anchorRow: number) => Promise<void>
   addExtraTarget: (lotId: string, priceCents: number, qty: number) => Promise<void>
+  saveGridLadder: (input: LadderInput, commandId: string) => Promise<void>
+  setSellGridMode: (row: number, mode: GridMode) => Promise<void>
   removeExtraTarget: (id: string) => Promise<void>
   /** V9.50 卖单拆买：给一笔先卖后买拆出一档买入（超欠量由 ledger 截断） */
   addBuyTarget: (sellRow: number, priceCents: number, qty: number) => Promise<void>
@@ -628,6 +631,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     async (sourceRow: number, draft: Partial<Record<EditableKey, string>>, options?: BookingOptions) => {
       const current = await db.records.get(sourceRow)
       if (!current) throw new Error(`找不到第 ${sourceRow} 行`)
+      const strategyTargets = await db.extraTargets.toArray()
+      if (strategySales(await db.records.toArray(), strategyTargets, await db.rebuyExecutions.toArray()).has(sourceRow)
+        || strategyTargets.some(t=>t.strategy&&t.lotId===`lot:${sourceRow}`)) throw new Error('该记录参与拆档策略，原始字段保持只读；请先处理策略及后续成交')
       const { record, changes, errors } = applyEdits(current, draft)
       if (current.soldLotId && changes.some((c)=>['buyPrice','buyQty','buyDate'].includes(c.field))) throw new Error('关联卖出的买入成本来自原批次，请在原批次更正')
       if (current.buyPriceCents===null && record.buyPriceCents!==null &&
@@ -669,6 +675,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     async (sourceRow: number) => {
       const current = await db.records.get(sourceRow)
       if (!current) return
+      if ((await db.extraTargets.toArray()).some(t=>t.strategy&&(t.lotId===`lot:${sourceRow}`||t.strategy.sellRow===sourceRow))) throw new Error('该记录参与拆档/做T策略，请先处理策略及后续依赖')
       const allRows = await db.records.toArray()
       if ((await db.bookingReceipts.toArray()).some(r => !r.voidedAt && r.recordRows.includes(sourceRow) && r.recordRows.length + r.executionIds.length > 1)) throw new Error('这行属于一次合并成交，请在管理 → 成交流水撤销整笔，不能只删除一份分配')
       if (allRows.some(r => r.nextRoundOfRow === sourceRow && !r.deletedAt)) throw new Error('这笔已有下一轮买入，请先核对并撤销后续成交')
@@ -811,7 +818,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if(!Number.isInteger(source.qty)||source.qty<=0||!lot || lot.remainingQty-(usedByLot.get(lot.id)??0)<source.qty || (source.targetId&&(!target||target.qty<source.qty)))throw new Error('批次剩余已变化，请关闭弹窗后重试')
         const q=Math.min(left,source.qty)
         usedByLot.set(lot.id,(usedByLot.get(lot.id)??0)+q)
-        const result=buildManualRecord({kind:'sell',stockName:lot.stockName,date,price:String(priceCents/100),qty:String(q),rebuyPrice:String(lot.buyPriceCents/100)},row++,{intervalCents:0})
+        const grid = source.targetId ? await db.extraTargets.get(source.targetId.replace(/^target:/, '')) : undefined
+        const result=buildManualRecord({kind:'sell',stockName:lot.stockName,date,price:String(priceCents/100),qty:String(q),rebuyPrice:String((grid?.strategy?.rebuyPriceCents ?? lot.buyPriceCents)/100)},row++,{intervalCents:0})
         if(result.errors.length)throw new Error(result.errors.join('；'))
         await db.records.add({...result.record,soldLotId:lot.id,...(source.targetId?{soldTargetId:source.targetId}:{}),buyPriceCents:lot.buyPriceCents,buyDateSerial:lot.buyDate?isoToSerial(lot.buyDate):null})
         await db.auditLogs.add(audit(`record:${result.record.sourceRow}`,'卖出成交','',`${lot.id} · ${q} 股 @ ${priceCents/100}`,'sell'))
@@ -983,6 +991,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (all.some(r => r.soldLotId === `lot:exec:${execId}`)) throw new Error('回补批次已有后续卖出或软删除历史引用，不能撤销来源')
       }
       const state = await currentLedger()
+      if ((await db.extraTargets.toArray()).some(t=>t.strategy&&receipt.recordRows.some(row=>t.lotId===`lot:${row}`))) throw new Error('此买入来源仍有拆档策略，请先移除未成交策略并处理后续依赖')
       if (state.ledger.effectiveHedges.some(h => h.items.some(i => receipt.recordRows.includes(i.row)) && !receipt.recordRows.includes(h.sellRow))) throw new Error('本次库存仍被高位分配占用，请先核对关联卖出')
       for (const r of affected) await db.records.put({ ...r, deletedAt: Date.now() })
       for (const execId of receipt.executionIds) {
@@ -992,6 +1001,53 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       await db.bookingReceipts.put({ ...receipt, voidedAt: Date.now(), reviewedAt: undefined })
       await db.auditLogs.add(audit(id, '撤销整笔成交', `${receipt.qty} 股；${receipt.recordRows.length + receipt.executionIds.length} 份分配`, '已撤销', 'booking', 'order'))
+    })
+    await reloadRecords()
+  }
+
+  const setSellGridMode = async (row: number, mode: GridMode) => {
+    await db.transaction('rw', LEDGER_TX_TABLES(), async () => {
+      const records = await db.records.toArray(), targets = await db.extraTargets.toArray()
+      const rec = records.find(r=>r.sourceRow===row&&!r.deletedAt)
+      if (!rec || rec.soldLotId || rec.buyPriceCents !== null) throw new Error('只支持无同行买入的先卖后买；已有明确策略档请在拆档时选择模式')
+      if ((await db.rebuyExecutions.where('sellExecId').equals(`sell:${row}`).count())>0) throw new Error('已有回补成交，不能改写模式；请先核对并撤销后续依赖')
+      const id=`grid-mode:${row}`
+      if (mode==='repair') { await db.extraTargets.delete(id) }
+      else {
+        const {ledger:l}=await currentLedger()
+        const hedge=l.effectiveHedges.find(h=>h.sellRow===row)
+        if ((l.sells.find(s=>s.sourceRow===row&&s.hedgedFromSellRow===undefined)?.actualRebuyQty??0)>0) throw new Error('已有真实买入覆盖该先卖单，不能改写已发生的策略归属')
+        if (!hedge || hedge.items.length!==1 || hedge.items[0].qty!==rec.soldQty) throw new Error('做T需完整关联到一个高位批次，请先完成高位关联')
+        const lot=l.lots.find(l=>l.id===`lot:${hedge.items[0].row}`),order=l.orders.find(o=>o.sourceRow===row)
+        if (!lot?.targetPriceCents || !rec.targetPriceCents || !order) throw new Error('缺少原高位卖价或回补价')
+        await db.extraTargets.put({id,lotId:lot.id,qty:0,priceCents:rec.targetPriceCents,at:Date.now(),strategy:{mode,groupId:id,sellRow:row,rebuyPriceCents:order.rebuyPriceCents,nextSellPriceCents:lot.targetPriceCents}})
+      }
+      await db.auditLogs.add(audit(`grid-mode:${row}`,'先卖后买模式',targets.find(t=>t.id===id)?.strategy?.mode??'repair',mode,'grid','order'))
+    })
+    await reloadRecords()
+  }
+
+  const saveGridLadder = async (input: LadderInput, commandId: string) => {
+    await db.transaction('rw', LEDGER_TX_TABLES(), async () => {
+      const prior = (await db.extraTargets.toArray()).filter(t => t.strategy?.groupId === commandId)
+      if (prior.length) {
+        if (prior[0].strategy?.inputSignature !== bookingPayload(input)) throw new Error('此保存编号已用于不同拆档，请重新打开')
+        return
+      }
+      const { ledger: current } = await currentLedger()
+      const targets = buildLadder(current, input, commandId, Date.now())
+      if (input.targetIds) {
+        if (new Set(input.targetIds).size !== input.targetIds.length) throw new Error('重复的待拆来源')
+        for (const id of input.targetIds) {
+          const currentTarget = current.targets.find(t => t.id === id)
+          const original = await db.extraTargets.get(id.replace(/^target:/, ''))
+          if (!currentTarget || !original?.strategy || !input.lotIds.includes(original.lotId)) throw new Error('原策略档已变化，请重新打开')
+          await db.extraTargets.put({ ...original, qty: original.qty - currentTarget.qty })
+        }
+      }
+      for (const t of targets) t.strategy!.inputSignature = bookingPayload(input)
+      await db.extraTargets.bulkAdd(targets)
+      await db.auditLogs.add(audit(`grid:${commandId}`, '连续拆档', '', `${targets.length}档 · ${input.mode} · ${targets.reduce((a,t)=>a+t.qty,0)}股`, 'grid', 'order'))
     })
     await reloadRecords()
   }
@@ -1013,9 +1069,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   )
 
   const removeExtraTarget = useCallback(async (id: string) => {
-    await db.extraTargets.delete(id)
-    setExtraTargets(await db.extraTargets.toArray())
-  }, [])
+    await db.transaction('rw', LEDGER_TX_TABLES(), async () => {
+      const target = await db.extraTargets.get(id)
+      if (target?.strategy && (await db.records.toArray()).some(r => r.soldTargetId === `target:${id}`)) throw new Error('此策略档已有成交或撤销历史，保留来源不可删除；请只调整未占用份额')
+      await db.extraTargets.delete(id)
+      await db.auditLogs.add(audit(`target:${id}`, '删除拆档', id, '', 'grid', 'order'))
+    })
+    await reloadRecords()
+  }, [reloadRecords])
 
   /** V9.50 卖单拆买：给一笔先卖后买拆出一档买入（总量超出欠量时由 ledger 截断并标异常） */
   const addBuyTarget = useCallback(async (sellRow: number, priceCents: number, qty: number) => {
@@ -1044,6 +1105,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
       }
       const link: HedgeLink = { id: `hedge:${sellRow}`, sellRow, items, at: Date.now() }
+      if ((await db.extraTargets.toArray()).some(t=>t.strategy?.sellRow===sellRow)) throw new Error('此先卖单已启用做T模式，请先切回亏损回本再改高位关联')
       await db.transaction('rw', db.hedges, db.auditLogs, async () => {
         // V9.33：旧值写上一次的分配（改挂也能回溯），新值写这次的分配
         const prev = await db.hedges.get(`hedge:${sellRow}`)
@@ -1061,6 +1123,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const clearHedgeLink = useCallback(
     async (sellRow: number) => {
+      if ((await db.extraTargets.toArray()).some(t=>t.strategy?.sellRow===sellRow)) throw new Error('此先卖单已启用做T模式，请先切回亏损回本再解除高位关联')
       const prev = (await currentLedger()).ledger.effectiveHedges.find((h) => h.sellRow === sellRow)
       await db.transaction('rw', db.hedges, db.auditLogs, async () => {
         // 空关联是明确的人工解除，避免重算时又自动挂回最高价批次。
@@ -1434,8 +1497,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setLastBackupAt(Number(stamp))
     return JSON.stringify(
       {
-        // 版本 11：V9.50 加卖单拆买（buyTargets）；旧版本恢复时会丢掉这些分段。
-        schemaVersion: 12,
+        // 结构13新增独立拆档策略；旧程序必须拒绝，避免忽略做T/回本模式。
+        schemaVersion: 13,
         exportedAt: new Date().toISOString(),
         settings: { deriveSellPrice },
         stocks: s,
@@ -1476,7 +1539,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       if (data.settings !== undefined && (typeof data.settings !== 'object' || data.settings === null || typeof data.settings.deriveSellPrice !== 'boolean')) throw new Error('备份计算设置不合法')
       const version = data.schemaVersion ?? 1
-      if (version > 12) throw new Error('备份版本高于当前程序，拒绝导入（P11）')
+      if (version > 13) throw new Error('备份版本高于当前程序，拒绝导入（P11）')
       if (!Array.isArray(data.records)) throw new Error('这不是完整备份：缺少交易记录表，拒绝混合恢复')
       // P11 之外的第二道闸：结构坏掉的备份整包拒绝，不让半截 JSON 污染本地库
       const problem = validateBackup(data)
@@ -1579,6 +1642,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     closeRepairChain,
     reopenRepairChain,
     addExtraTarget,
+    saveGridLadder,
+    setSellGridMode,
     removeExtraTarget,
     addBuyTarget,
     removeBuyTarget,

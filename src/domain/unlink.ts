@@ -92,6 +92,7 @@ export function cleanupRowLinks(rows: ReadonlySet<number>, tables: RowLinkTables
   })
 
   const extraTargets = tables.extraTargets.filter((t) => {
+    if (t.strategy?.sellRow !== undefined && rows.has(t.strategy.sellRow)) { changed.extraTargets += 1; return false }
     const row = rowOfLotId(t.lotId)
     if (row === null || !rows.has(row)) return true
     changed.extraTargets += 1

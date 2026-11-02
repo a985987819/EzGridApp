@@ -87,12 +87,12 @@ export function mergeTargetRows(opts: {
     const autoRef=`sell:${t.stockName}:${t.priceCents}`
     const singlePlan=plans.find((p)=>p.kind==='sell' && p.refId===t.id)
     const groupPlans: TradePlan[]=[]
-    const groupPlan=plans.find((p)=>p.kind==='sell' && p.refId===autoRef) ??
+    const groupPlan=t.strategyMode ? undefined : plans.find((p)=>p.kind==='sell' && p.refId===autoRef) ??
       (ref!==t.id ? plans.find((p)=>p.kind==='sell' && p.refId===ref) : undefined)
     if(groupPlan)groupPlans.push(groupPlan)
     let p=groupPlan?.priceCents ?? singlePlan?.priceCents ?? t.planPriceCents ?? t.priceCents
     // 计划改价后可能与另一档合并；随后对这档设置的更新计划也必须覆盖所有来源。
-    for(let i=0;i<plans.length;i++) {
+    for(let i=0;!t.strategyMode && i<plans.length;i++) {
       const next=plans.find((v)=>v.kind==='sell' && v.refId===`sell:${t.stockName}:${p}` &&
         !groupPlans.includes(v) && v.at>=(groupPlans.at(-1)?.at??0))
       if(!next)break
@@ -105,7 +105,7 @@ export function mergeTargetRows(opts: {
     if(q<=0)continue
     for(const plan of groupPlans)groupBudget.set(plan.refId,(groupBudget.get(plan.refId)??plan.qty)-q)
     const hasPlan=groupPlans.length>0 || Boolean(singlePlan) || t.planPriceCents!=null
-    const key=sandbox ? t.id : `sell:${t.stockName}:${p}`
+    const key=sandbox || t.strategyMode ? t.id : `sell:${t.stockName}:${p}`
     /** V9.55：这条行用到的计划身份（单个来源的计划 + 沿价格追下去的整串） */
     const rowPlanRefs=[...(singlePlan?[t.id]:[]),...groupPlans.map((x)=>x.refId)]
     const hit=rows.find((r)=>r.key===key)

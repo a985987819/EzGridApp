@@ -22,6 +22,24 @@ async function edit(editWorkbook: (wb: import('xlsx').WorkBook, X: Awaited<Retur
 }
 
 describe('完整台账 Excel 往返', () => {
+  it('结构13保留独立拆档策略、模式和原始记录，支持已重新拆完的零余额历史档', async () => {
+    const s=base();s.schemaVersion=13;s.bookingReceipts=[]
+    s.extraTargets=[{id:'grid:g:0',lotId:'lot:7',qty:0,priceCents:700,at:1,strategy:{mode:'baseT',groupId:'g',rebuyPriceCents:500,nextSellPriceCents:1200,inputSignature:'test'}}]
+    const p=await parse(s)
+    expect(p.snapshot).toEqual(s)
+    expect(p.differences).toEqual([])
+  })
+  it('旧Excel缺少策略列仍可读取，新结构缺列则拒绝静默丢失模式', async () => {
+    const removeColumn = (wb: import('xlsx').WorkBook, X: Awaited<ReturnType<typeof loadXlsx>>) => {
+      const rows=X.utils.sheet_to_json<unknown[]>(wb.Sheets['买单拆卖'],{header:1,raw:true})
+      const index=rows[0].indexOf('拆档策略（JSON）')
+      wb.Sheets['买单拆卖']=X.utils.aoa_to_sheet(rows.map(row=>row.filter((_,i)=>i!==index)))
+    }
+    const s=base()
+    expect((await parseLedgerWorkbook(await edit(removeColumn,s)))!.snapshot).toEqual(s)
+    s.schemaVersion=13;s.bookingReceipts=[]
+    await expect(parseLedgerWorkbook(await edit(removeColumn,s))).rejects.toThrow('拆档策略')
+  })
   it('结构12保留成交回执、来源凭据、核对与撤销状态', async () => {
     const s = base()
     s.schemaVersion = 12

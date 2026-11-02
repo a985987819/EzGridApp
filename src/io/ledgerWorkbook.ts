@@ -38,7 +38,7 @@ const TABLES = [
   { key: 'merges', name: '批次合并', columns: cols('id|合并ID|s;stockName|股票|s;priceCents|成本价（分）|i;at|设置时间戳|i') },
   { key: 'mergeMembers', name: '合并成员', columns: cols('parentId|合并ID|s;row|成员记录ID|i') },
   { key: 'plans', name: '挂单计划', columns: cols('id|计划ID|s;kind|买卖方向|s|buy,sell;refId|挂单身份|s;priceCents|计划价（分）|i;qty|计划股数|i;at|设置时间戳|i') },
-  { key: 'extraTargets', name: '买单拆卖', columns: cols('id|分档ID|s;lotId|批次ID|s;priceCents|售价（分）|i;qty|股数|i;at|设置时间戳|i') },
+  { key: 'extraTargets', name: '买单拆卖', columns: cols('id|分档ID|s;lotId|批次ID|s;priceCents|售价（分）|i;qty|股数|i;at|设置时间戳|i;strategyJson|拆档策略（JSON）|t?') },
   { key: 'buyTargets', name: '卖单拆买', columns: cols('id|分档ID|s;sellRow|卖出记录ID|i;priceCents|买价（分）|i;qty|股数|i;at|设置时间戳|i') },
   { key: 'batches', name: '导入批次', columns: cols('id|批次ID|s;fileName|原文件名|s;sheetName|原工作表|s;importedAt|导入时间戳|i;recordCount|记录数|i;addedCount|新增数|i;updatedCount|更新数|i?') },
   { key: 'auditLogs', name: '操作历史', columns: cols('id|审计ID|i?;entity|实体类型|s|record,stock,order,merge,chain;entityId|实体ID|s;field|字段|t;oldValue|旧值|t;newValue|新值|t;at|时间戳|i;source|来源|t') },
@@ -66,6 +66,7 @@ export function isLedgerWorkbook(wb: WorkBook): boolean {
 function sourceTables(s: LedgerSnapshot): Record<string, Row[]> {
   const raw = Object.fromEntries(TABLES.filter((t) => t.key in s).map((t) => [t.key, s[t.key as keyof LedgerSnapshot]]))
   return { ...raw,
+    extraTargets: s.extraTargets.map(t => ({ ...t, strategyJson: t.strategy ? JSON.stringify(t.strategy) : undefined })),
     bookingReceipts: (s.bookingReceipts ?? []).map(r => ({ ...r, recordRowsJson: JSON.stringify(r.recordRows), executionIdsJson: JSON.stringify(r.executionIds) })),
     hedges: s.hedges.map((h) => ({ id: h.id, sellRow: h.sellRow, at: h.at })),
     hedgeItems: s.hedges.flatMap((h) => h.items.map((it) => ({ parentId: h.id, ...it }))),
@@ -167,6 +168,7 @@ export async function parseLedgerWorkbook(buffer: ArrayBuffer | Uint8Array): Pro
     const columns = [{ key: '__order', label: ORDER, type: 'i' }, ...t.columns]
     const indices = columns.map((c) => {
       const index = headers.indexOf(c.label)
+      if (index < 0 && c.key === 'strategyJson' && Number(meta.get('备份结构版本') ?? 11) < 13) return -1
       if (index < 0 && meta.get('计算口径版本') === 1 && ['soldTargetId', 'buyTargetId'].includes(c.key)) return -1
       if (index < 0 || headers.lastIndexOf(c.label) !== index) throw new Error(`工作表「${t.name}」：列「${c.label}」缺失或重复`)
       return index
@@ -214,7 +216,13 @@ export async function parseLedgerWorkbook(buffer: ArrayBuffer | Uint8Array): Pro
     catch { throw new Error(`成交回执 ${String(r.id)}：分配JSON不合法`) }
   })
   const schemaVersion = meta.get('备份结构版本') ?? 11
-  if (schemaVersion !== 11 && schemaVersion !== 12) throw new Error('台账说明：不支持的备份结构版本')
+  if (![11, 12, 13].includes(Number(schemaVersion))) throw new Error('台账说明：不支持的备份结构版本')
+  tables.extraTargets = tables.extraTargets.map(r => {
+    const { strategyJson, ...rest } = r
+    if (strategyJson === undefined) return rest
+    try { return { ...rest, strategy: JSON.parse(String(strategyJson)) } }
+    catch { throw new Error(`买单拆卖 ${String(r.id)}：策略JSON不合法`) }
+  })
   const snapshot = { ...tables, schemaVersion, exportedAt: meta.get('导出时间'), settings: { deriveSellPrice: meta.get('推定已成交售价') } } as unknown as LedgerSnapshot
   if (schemaVersion === 11 && snapshot.bookingReceipts?.length === 0) delete snapshot.bookingReceipts
   const problem = validateBackup(snapshot)
@@ -330,6 +338,6 @@ function validateRelations(s: LedgerSnapshot): void {
     if (e.rewardQty % 100 !== 0) throw new Error(`回补成交 ${e.id}：奖励股数必须为整手`)
   }
   for (const [label, list] of [['挂单计划', s.plans], ['买单拆卖', s.extraTargets], ['卖单拆买', s.buyTargets]] as const) {
-    for (const t of list) { positive(t.qty, `${label} ${t.id} 股数`); positive(t.priceCents, `${label} ${t.id} 价格`) }
+    for (const t of list) { positive(t.qty, `${label} ${t.id} 股数`, 'strategy' in t && Boolean(t.strategy)); positive(t.priceCents, `${label} ${t.id} 价格`) }
   }
 }

@@ -215,6 +215,8 @@ try {
   check('循环来源备份整包拒绝',Boolean(await rejects(`const bad=JSON.parse(bookingBackup);bad.records[0].soldLotId='lot:'+bad.records[0].sourceRow;await testApp.restoreBackup(JSON.stringify(bad))`)))
 
   console.log('\n[5] 移动端真实页面：核对、查找、防重及滚动')
+  // 买入推荐须低于当前最低持仓成本并处于日内区间；用显式改单准备一个合并来源。
+  await act(`const {buildBuySuggestions}=await import('/src/domain/suggestions.ts');const r=buildBuySuggestions(testApp.ledger.buySplits,[],testApp.plans).find(r=>r.sources.length>1);if(!r)throw new Error('缺合并买入来源');await testApp.setPlan('buy',r.key,390,r.qty);testApp.patchOrdersSession({stockName:'T',closes:{T:'4'},confirmedCents:{T:400},overrides:{}})`)
   await send('Page.reload');await settle()
   await send('Page.navigate',{url:BASE+'/#/manage?section=activity'});await settle()
   check('管理成交流水可直接刷新打开',await evaluate(`Boolean(document.querySelector('[data-testid="trade-activity"]'))`))

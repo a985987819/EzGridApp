@@ -30,6 +30,7 @@ import type { TradesQuery } from '../ui/nav'
 import type { BuySplit, RebuyOrder } from '../domain/types'
 import { HedgeSheet } from '../components/HedgeBinder'
 import { SplitModal } from '../components/SplitModal'
+import { GridPlanner } from '../components/GridPlanner'
 
 /** 行内按钮不让冒泡到整行的「跳明细」点击上 */
 function stopWith(fn: () => void) {
@@ -284,6 +285,7 @@ export function OrdersPage({
       <div className="left"><div className="t1 num">买 {price(r.priceCents)} × {qty(r.qty)}</div>
         {/* V9.58：三组之后行上仍要能看出这笔的身份——先卖后买 / 下一轮 / P 列再买（每组必有其一） */}
         <div className="tag-row" style={{ marginTop: 4 }}>
+            {r.strategyMode && <Tag size="small" variant="soft">{r.strategyMode==='baseT'?'底仓做T':'亏损回本'}</Tag>}
             {r.sellFirst && <Tag size="small" variant="soft" color="app-teal" data-testid="suggestion-sell-first">先卖后买</Tag>}
             {!r.sellFirst && r.sources.every((v) => v.kind === 'next') && (
               <Tag size="small" variant="soft" color="app-blue" data-testid="suggestion-next-round">下一轮</Tag>
@@ -522,6 +524,7 @@ export function OrdersPage({
               ? `${sellRowLabel(r)} · 预期 ${signedMoney(r.expectProfitCents)}`
               : `${sim ? '沙盒模拟批次' : lotLabel(r.targets[0].lotId, recordNo)} · 预期 ${signedMoney(r.expectProfitCents)}`}
           </div>
+          {r.targets[0]?.strategyMode && <Tag size="small" variant="soft">{r.targets[0].strategyMode==='baseT'?'底仓做T':'亏损回本'}</Tag>}
           {r.planPriceCents != null && (
             <div className="tag-row" style={{ marginTop: 4 }}>
               <Tag size="small" variant="soft" color="purple">
@@ -1283,6 +1286,8 @@ export function OrdersPage({
           已完成批次回到买入价那一档再买一轮；先买后卖行里 P 列填了价的待回补也归这里。下一轮档不参与组池奖励。
         </p>
       </Card>
+
+      {!sandbox.active && <GridPlanner stockName={effectiveStock} />}
 
       {/* 4. 应该卖出：未完成买单的所有可卖份额（V9.58） */}
       <Card data-testid="should-sell-card">

@@ -8,7 +8,7 @@ import type { AuditLog, ExtraBuyTarget, ExtraTarget, HedgeLink, LotMergeLink, Ra
 
 /** 全量交换格式：只保存派生输入，稳定身份沿用内部主键，与工作表行位置无关。 */
 export interface LedgerSnapshot {
-  schemaVersion: 11 | 12
+  schemaVersion: 11 | 12 | 13
   exportedAt: string
   settings: { deriveSellPrice: boolean }
   stocks: StockConfig[]

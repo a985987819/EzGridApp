@@ -1594,6 +1594,14 @@ body button:focus-visible { outline: 2px solid #63866c; outline-offset: 3px; }
 .buy-reference-values > div { display: flex; flex-direction: column; gap: 5px; }
 .buy-reference-values .k { font-size: 11px; color: var(--animal-text-color-secondary, #9f927d); }
 .buy-reference-values b { font-size: 15px; overflow-wrap: anywhere; }
+.grid-source-list { border: 1px solid var(--line-soft); border-radius: 12px; max-height: 28vh; overflow: auto; min-width: 0; padding: 8px 10px; }
+.grid-source-list label { display: flex; align-items: center; gap: 8px; padding-block: 7px; font-size: 12px; }
+.grid-preview-row { padding-block: 7px; border-top: 1px solid var(--line-soft); overflow-wrap: anywhere; }
+.grid-planner-body { min-width: 0; flex-shrink: 0; }
+.grid-planner-modal [class*='animal-modalClipped'] { padding: 24px; max-height: calc(100dvh - 64px); }
+.grid-planner-modal [class*='animal-header'], .grid-planner-modal [class*='animal-footer'] { flex-shrink: 0; }
+.grid-planner-modal [class*='animal-body'] { min-height: 0; }
+.grid-planner-body select, [data-grid-existing] { min-width: 0; max-width: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 9px; font: inherit; background: #fffdf7; color: inherit; }
 @media (max-width: 420px) {
   .stats-calendar-widget > [class*='animal-header-'] { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
   .stats-calendar-widget [class*='animal-monthLabel-'] { grid-column: 1 / -1; grid-row: 1; justify-self: center; white-space: nowrap; }
