@@ -37,7 +37,7 @@ export default defineConfig(({ mode }) => {
     // 保持手动启用；注册、SKIP_WAITING与刷新后核对统一由ui/appUpdate管理。
     registerType: 'prompt',
     injectRegister: false,
-    includeAssets: ['pwa-192.png', 'pwa-512.png'],
+    includeAssets: ['pwa-192.png', 'pwa-512.png', 'pwa-maskable-512.png', 'apple-touch-icon.png', 'favicon.png'],
     manifest: {
       name: '网格交易管理',
       short_name: '网格交易',
@@ -51,7 +51,7 @@ export default defineConfig(({ mode }) => {
       icons: [
         { src: 'pwa-192.png', sizes: '192x192', type: 'image/png' },
         { src: 'pwa-512.png', sizes: '512x512', type: 'image/png' },
-        { src: 'pwa-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+        { src: 'pwa-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
       ],
     },
     workbox: {
