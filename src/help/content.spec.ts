@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { documents, extractScenarios, extractTopics, headingId, issues, resolveDocumentLink, scenarioRows, topics } from './content'
+import { documentHeadings, documents, extractScenarios, extractTopics, headingId, issues, resolveDocumentLink, scenarioRows, topics } from './content'
 
 describe('管理页操作指南索引', () => {
   it('完整收录43个操作问题、108个场景和26个当前边界，身份不重复', () => {
@@ -27,5 +27,16 @@ describe('管理页操作指南索引', () => {
     expect(resolveDocumentLink('https://example.com')).toBe('https://example.com')
     expect(headingId('C01 自动归属库存')).toBe('c01')
     expect(documents.find(d => d.id === 'scenarios')?.body).toContain('五个完整算例')
+  })
+
+  it('持续优化路线图可分享、目录身份唯一且明确区分规划与实现', () => {
+    const roadmap = documents.find(d => d.id === 'optimization-roadmap')!
+    expect(roadmap.kind).toBe('plan')
+    expect(resolveDocumentLink('./云端同步与持续优化路线图.md')).toBe('#/manage?section=guide&doc=optimization-roadmap')
+    const headings = documentHeadings(roadmap.body)
+    expect(new Set(headings.map(h => h.id)).size).toBe(headings.length)
+    expect(headings.some(h => h.title.includes('下一轮入口'))).toBe(true)
+    expect(roadmap.body).toContain('云同步、设备绑定与本文新增优化尚未实现')
+    expect(roadmap.body).toContain('手动上传、手动下载，核对后恢复')
   })
 })

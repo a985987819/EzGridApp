@@ -6,6 +6,8 @@
 
 ## 当前优化口径（2026-10-28，优先于历史描述）
 
+- 持续优化规划（2026-11-03）：`docs/云端同步与持续优化路线图.md` 是云同步、性能与易用性多轮任务的维护入口，管理 → 操作指南 → 完整文档可离线阅读，深链 `#/manage?section=guide&doc=optimization-roadmap`。用户已选择临时9位PIN绑定设备、首版手动上传/下载核对恢复；Supabase为待验证推荐，云功能尚未实现。执行时先读任务状态与下一轮入口，按证据更新，禁止把计划或历史测试通过当作新功能完成。
+
 - 概览估值温度带（2026-11-03）：概览「回本链」下方 `[data-testid="overview-valuation"]` 展示当前股票 股价/PE-TTM/PB-MRQ 近 5 年百分位温度带（`components/ValuationBand.tsx` + `domain/valuation.ts`，纯展示不进台账，无 Dexie/备份变更）。现价用挂单页已确认昨收，未确认回退快照收盘并在副标题注明；PE/PB 现值 = 快照末值 ×（现价/快照末收盘），百分位**严格小于**口径、只在正值基准上算，快照末 PE/PB 非正 → 显示「亏损 · 失效」。数据为静态快照 `src/domain/valuationData.json`（147KB，?raw 动态 import 独立 chunk、随 PWA 预缓存），`npm run refresh-valuation`（scripts/fetchValuation.mjs 抓东方财富日 K 前复权 + RPT_VALUEANALYSIS_DET；**除权除息后必须重跑**，脚本 STOCKS 清单维护 应用内股票名↔交易所代码 映射——应用内叫「安道麦」不是「安道麦A」）。Tag 不透传 data-*：分区徽标 testid 加在包裹层。口径与判读见 `docs/估值温度带.md`；单测 `valuation.spec.ts`；专项 `node e2e/valuation.mjs http://127.0.0.1:5173`。
 
 - 连续拆档双模式（2026-11-02）：挂单页 `GridPlanner` 预览并原子保存 `extraTargets.strategy`（mode/回补价/后续卖价/组身份），原始records不改。`domain/gridStrategy.ts`只拆自动未占用份额或指定策略档剩余；再拆缩减原档未成交余额，保留成交来源。策略卖档独立显示，买建议按模式隔离。repair回补低位循环进原链；baseT回补以实际成本批次恢复原高位目标，不进回本链，不重复加策略价差/授予奖励。旧裸卖无回补及真实覆盖、且完整关联一个高位批次时可明确切baseT；旧数据不自动迁移，已回补不切模式。做T恢复库存仅继续做T，不自动迁回本。JSON结构13/Excel保存策略，兼容旧结构，无新增Dexie表。操作见 `docs/拆档与先卖后买双模式规划.md`；专项 `node e2e/gridStrategies.mjs http://127.0.0.1:5173`。
