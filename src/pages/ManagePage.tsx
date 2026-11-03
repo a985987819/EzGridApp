@@ -6,12 +6,14 @@ import { ManageBackup } from './manage/ManageBackup'
 import { ManageChecks } from './manage/ManageChecks'
 import { ManageActivity } from './manage/ManageActivity'
 import { ManageUpdates } from './manage/ManageUpdates'
+import { ManageMoney } from './manage/ManageMoney'
 import { IconBook, IconChart, IconChevron, IconDownload, IconGrid, IconUpload, IconRefresh } from '../ui/icons'
 import { navigateManage, type ManageQuery, type ManageSection, type TradesQuery } from '../ui/nav'
 
 const ManageGuide = lazy(() => import('./manage/ManageGuide'))
 
 const SECTIONS: { key: ManageSection; label: string; desc: string; Icon: typeof IconGrid }[] = [
+  { key: 'money', label: '规划用钱', desc: '可用资金 · 温度带 · 可买股数 · 值博率', Icon: IconChart },
   { key: 'guide', label: '操作指南', desc: '按情况找步骤 · 场景核对 · 完整文档', Icon: IconBook },
   { key: 'activity', label: '成交流水', desc: '实际买卖 · 来源分配 · 凭据核对', Icon: IconChart },
   { key: 'updates', label: '版本与更新', desc: '当前与线上版本 · 检查 · 强制更新', Icon: IconRefresh },
@@ -70,7 +72,9 @@ export function ManagePage({ goTrades, query }: { goTrades: (q: TradesQuery) => 
         </button>
         <strong>{current.label}</strong>
       </div>
-      {current.key === 'guide' ? (
+      {current.key === 'money' ? (
+        <ManageMoney />
+      ) : current.key === 'guide' ? (
         <Suspense fallback={<div className="empty-box" role="status">正在打开操作指南…</div>}>
           <ManageGuide query={query ?? { section: 'guide' }} />
         </Suspense>

@@ -13,6 +13,7 @@ import booking from '../../docs/成交记录与核对.md?raw'
 import bookingPlan from '../../docs/记账流程与防重改进建议.md?raw'
 import updates from '../../docs/版本检查与更新.md?raw'
 import valuation from '../../docs/估值温度带.md?raw'
+import moneyPlan from '../../docs/规划用钱.md?raw'
 import perfPlan from '../../docs/优化建议-动效性能加载更新-2026-11.md?raw'
 import splitPlan from '../../docs/拆档与先卖后买双模式规划.md?raw'
 import roadmap from '../../docs/云端同步与持续优化路线图.md?raw'
@@ -33,6 +34,7 @@ export const documents: readonly GuideDocument[] = [
   { id: 'booking', title: '成交记录与核对', file: '成交记录与核对.md', summary: '一次记账、防重提示、来源分配和凭据核对', kind: 'guide', body: booking },
   { id: 'updates', title: '版本检查与更新', file: '版本检查与更新.md', summary: '固定版本比较、手动刷新与强制更新结果', kind: 'guide', body: updates },
   { id: 'valuation', title: '估值温度带', file: '估值温度带.md', summary: '股价/PE/PB 近 5 年百分位、数据刷新与判读', kind: 'guide', body: valuation },
+  { id: 'money-plan', title: '规划用钱', file: '规划用钱.md', summary: '可用资金、整手可买、值博率口径与排序', kind: 'guide', body: moneyPlan },
   { id: 'optimization-roadmap', title: '云端同步与持续优化路线图', file: '云端同步与持续优化路线图.md', summary: '临时PIN绑定、手动同步、性能与易用性任务、逐轮AI执行与验收', kind: 'plan', body: roadmap },
   { id: 'perf-plan', title: '性能优化建议与执行记录', file: '优化建议-动效性能加载更新-2026-11.md', summary: '字体子集、页面拆包、价格树与更新机制的优化方案与实测', kind: 'plan', body: perfPlan },
   { id: 'split-plan', title: '拆档与先卖后买双模式', file: '拆档与先卖后买双模式规划.md', summary: '原单不改、连续排档、亏损回本与底仓做T的操作与边界', kind: 'rules', body: splitPlan },

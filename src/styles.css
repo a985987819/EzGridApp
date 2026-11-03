@@ -1058,6 +1058,18 @@ button { font-family: inherit; }
 .release-compare small { display: block; margin-top: 7px; font-size: 10px; color: #9b8b73; line-height: 1.5; }
 .release-notes { margin: 0 0 12px; padding-left: 18px; font-size: 12px; line-height: 1.9; color: var(--animal-text-color-secondary, #9f927d); }
 .release-notes li { overflow-wrap: anywhere; }
+
+/* ---------- 管理 · 规划用钱（2026-11-03）：资金 × 温度带 × 可买股数 × 值博率 ---------- */
+.money-bands { margin-top: 10px; }
+.money-plan-line {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line-soft);
+  font-size: 13px;
+  line-height: 1.7;
+}
+.money-plan-line strong { font-size: 15px; font-variant-numeric: tabular-nums; }
+
 .release-message { margin: 12px 0 6px; font-size: 12px; line-height: 1.8; }
 .release-checked { color: #9b8b73; font-size: 10px; margin: 0 0 16px; }
 .release-actions { display: flex; gap: 8px; flex-wrap: wrap; }
