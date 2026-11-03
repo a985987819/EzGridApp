@@ -24,12 +24,19 @@ export function buildVersion(base: string, mode: string) {
   }
   let commit = 'local'
   try { commit = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() } catch { /* Source archives can build without Git. */ }
+  // 最近 5 条提交标题随版本一起发布：管理 → 版本与更新 直接展示「新版改了什么」。
+  // 无 Git（源码包构建）或失败时留空，UI 对空数组隐藏。
+  let releaseNotes: string[] = []
+  try {
+    releaseNotes = execFileSync('git', ['log', '-5', '--pretty=%s'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+      .split('\n').map((line) => line.trim()).filter(Boolean)
+  } catch { /* 同上 */ }
   // Release fixture builds exercise real A/B updates without editing application sources.
   const override = process.env.EZGRID_BUILD_ID
   if (override && !/^[a-zA-Z0-9-]{8,64}$/.test(override)) throw new Error('EZGRID_BUILD_ID 不合法')
   const buildId = override ?? hash.digest('hex').slice(0, 16)
   const version = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')).version as string
-  const info = { schema: 1 as const, app: 'ezgrid' as const, buildId, version, commit, builtAt: new Date().toISOString(), base }
+  const info = { schema: 1 as const, app: 'ezgrid' as const, buildId, version, commit, builtAt: new Date().toISOString(), base, releaseNotes }
   const workerInfoFile = `release-${buildId}.js`
   const plugin: Plugin = {
     name: 'ezgrid-build-version',

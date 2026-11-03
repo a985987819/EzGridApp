@@ -156,6 +156,16 @@ export function TreeTrunk({
   useEffect(() => {
     bumpCanvas.current()
   }, [closeCents, idealPriceCents])
+  // 2026-11-03：levels 同样走 ref——台账任何写入都会派生新 levels 数组，若留在主 effect
+  // deps 里会整树重挂（监听/ResizeObserver 全部重建）并把 pan/zoom 视角重置回默认。
+  // 现在数据刷新只标脏一帧，视角保持；换股/换风格/换年份仍走重建（本来就是显式动作）。
+  const levelsRef = useRef(levels)
+  levelsRef.current = levels
+  const effYearRef = useRef(effYear)
+  effYearRef.current = effYear
+  useEffect(() => {
+    bumpCanvas.current()
+  }, [levels])
 
   useEffect(() => {
     const host = hostRef.current
@@ -173,9 +183,30 @@ export function TreeTrunk({
     let H = 0
     let dpr = 1
     let k = 1 // px / 元
-    const prices = levels.map((l) => l.priceCents / 100)
-    const dataLo = prices.length ? Math.min(...prices) : 8
-    const dataHi = prices.length ? Math.max(...prices) : 12
+    // 数据快照：levels 走 levelsRef（主 effect deps 不含它），派生列表与价格区间按
+    // 数组 identity 缓存——同一份 levels 的每一帧直接复用
+    let dataCache: {
+      levels: TreeLevel[] | null
+      buy: TreeLevel[]
+      sell: TreeLevel[]
+      sold: TreeLevel[]
+      lo: number
+      hi: number
+    } = { levels: null, buy: [], sell: [], sold: [], lo: 8, hi: 12 }
+    const syncData = () => {
+      const ls = levelsRef.current
+      if (dataCache.levels === ls) return
+      const prices = ls.map((l) => l.priceCents / 100)
+      dataCache = {
+        levels: ls,
+        buy: ls.filter((l) => l.buyQty > 0),
+        sell: ls.filter((l) => l.sellQty > 0),
+        sold: ls.filter((l) => l.soldCount > 0),
+        lo: prices.length ? Math.min(...prices) : 8,
+        hi: prices.length ? Math.max(...prices) : 12,
+      }
+    }
+    syncData()
     /** 视野钳位：span 限档；下沿（camY − span/2）不许低于 0——股价永远为正 */
     const clampView = () => {
       view.span = Math.min(SPAN_MAX, Math.max(SPAN_MIN, view.span))
@@ -183,8 +214,8 @@ export function TreeTrunk({
       view.panX = Math.min(PAN_X_MAX * W, Math.max(-PAN_X_MAX * W, view.panX))
     }
     const resetView = () => {
-      view.camY = (dataLo + dataHi) / 2
-      view.span = Math.max(4, Math.min(SPAN_MAX, (dataHi - dataLo) * 1.6 + 2))
+      view.camY = (dataCache.lo + dataCache.hi) / 2
+      view.span = Math.max(4, Math.min(SPAN_MAX, (dataCache.hi - dataCache.lo) * 1.6 + 2))
       view.panX = 0
       clampView()
     }
@@ -198,10 +229,17 @@ export function TreeTrunk({
     let boilFrame = 0
 
     // ---------- 数据分档（逻辑层核心）：合并粒度按风格的数据牌行高随缩放推算 ----------
-    const buyList = levels.filter((l) => l.buyQty > 0)
-    const sellList = levels.filter((l) => l.sellQty > 0)
-    const soldList = levels.filter((l) => l.soldCount > 0)
+    // 派生列表已并入上面的 dataCache（按 levels identity 缓存）；work 是给风格层与
+    // e2e 桥读的当前分档结果
     const work: WorkBins = { buy: [], sell: [], sold: [] }
+    // 合并分档缓存：pan（不动 span）时 gap 与数据都不变，直接复用上一帧结果
+    let groupCache: {
+      levels: TreeLevel[] | null
+      gap: number
+      buy: BranchBin[]
+      sell: BranchBin[]
+      sold: BranchBin[]
+    } = { levels: null, gap: -1, buy: [], sell: [], sold: [] }
 
     /** 按档间距把同侧档位串成合并组（链式：相邻间距 < gap 就并） */
     const groupLevels = (
@@ -260,9 +298,19 @@ export function TreeTrunk({
       // （下限 0.01 元 = A 股最小报价单位），每个不重叠
       const gapRaw = (style.cardRowPx * view.span) / Math.max(1, H)
       const gap = Math.max(0.01, Math.pow(2, Math.ceil(Math.log2(Math.max(1e-4, gapRaw)) * 2) / 2))
-      work.sold = groupLevels(soldList, (l) => l.soldQty, gap, 'sold')
-      work.sell = groupLevels(sellList, (l) => l.sellQty, gap, 'sell')
-      work.buy = groupLevels(buyList, (l) => l.buyQty, gap, 'buy')
+      syncData()
+      if (groupCache.gap !== gap || groupCache.levels !== dataCache.levels) {
+        groupCache = {
+          levels: dataCache.levels,
+          gap,
+          sold: groupLevels(dataCache.sold, (l) => l.soldQty, gap, 'sold'),
+          sell: groupLevels(dataCache.sell, (l) => l.sellQty, gap, 'sell'),
+          buy: groupLevels(dataCache.buy, (l) => l.buyQty, gap, 'buy'),
+        }
+      }
+      work.sold = groupCache.sold
+      work.sell = groupCache.sell
+      work.buy = groupCache.buy
       style.drawFrame(
         {
           ctx, W, H, k, span: view.span, camY: view.camY, panX: view.panX, sx, sy, y0, y1, boilSeed,
@@ -283,9 +331,10 @@ export function TreeTrunk({
       dirty = true
     }
     bumpCanvas.current = markDirty
-    /** 交互后的重画请求：手绘风顺带开 ~140ms 沸腾窗口，笔触肉眼可见地重排 */
+    /** 交互后的重画请求：手绘风顺带开 ~140ms 沸腾窗口，笔触肉眼可见地重排。
+     *  沸腾是纯装饰——prefers-reduced-motion 用户不开沸腾窗口，静帧呈现。 */
     const bump = () => {
-      if (style.boils) boilUntil = performance.now() + 140
+      if (style.boils && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) boilUntil = performance.now() + 140
       markDirty()
     }
 
@@ -425,14 +474,14 @@ export function TreeTrunk({
 
     ;(canvas as HTMLCanvasElement & { __tree?: unknown }).__tree = {
       levels: () =>
-        levels.map((l) => ({ cents: l.priceCents, buy: l.buyQty, sell: l.sellQty, sold: l.soldQty, profit: l.soldProfitCents })),
+        levelsRef.current.map((l) => ({ cents: l.priceCents, buy: l.buyQty, sell: l.sellQty, sold: l.soldQty, profit: l.soldProfitCents })),
       span: () => view.span,
       center: () => view.camY,
       panX: () => view.panX,
       /** 当前绘制风格 id（'atlas' | 'sketch'），e2e 切换断言用 */
       style: () => style.id,
       /** 当前已成交年份筛选（'all' 或 'YYYY'），e2e 断言用（V9.31） */
-      year: () => effYear,
+      year: () => effYearRef.current,
       /** 当前分档结果（V9.31 数轴格子）：count = 档数、over = 塞不下画成「+N」的档数、times = 卖出笔数 */
       bins: () => ({
         sell: work.sell.map((b) => ({ count: b.count, over: b.over ?? 0, times: b.times, cents: b.repCents })),
@@ -504,7 +553,9 @@ export function TreeTrunk({
       delete (canvas as HTMLCanvasElement & { __tree?: unknown }).__tree
       canvas.remove()
     }
-  }, [levels, stockName, style, effYear])
+    // deps 不含 levels：台账刷新只 bump 重画（levelsRef），换股/换风格/换年份才重挂。
+    // 首次挂载的 resetView 用当帧数据；数据更新不重置视角（2026-11-03）
+  }, [stockName, style, effYear])
 
   return (
     <div className="tree-wrap" data-style={styleId}>

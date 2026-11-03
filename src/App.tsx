@@ -1,16 +1,26 @@
-import { useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
 import 'animal-island-ui/style'
 import { AppProvider, useApp } from './store/useApp'
-import { Overview } from './pages/Overview'
-import { TradesPage } from './pages/TradesPage'
-import { OrdersPage } from './pages/OrdersPage'
-import { StatsPage } from './pages/StatsPage'
-import { ManagePage } from './pages/ManagePage'
 import { IconChart, IconGear, IconGrid, IconList, IconTag } from './ui/icons'
 import { navigate, parseHash, type Tab, type TradesQuery } from './ui/nav'
 import { transitionView } from './ui/transitions'
 import { usePageMotion } from './ui/pageMotion'
 import './styles.css'
+
+/**
+ * 2026-11-03 加载优化：五个页面全部按页拆 chunk（仅 App shell / store / domain /
+ * 共享组件留在 index），首访解析执行减半，发版只重下被改页面的 chunk。
+ * PWA 预缓存仍收全部 chunk——离线切页无等待；Suspense 兜底只在未缓存首次进入时闪现。
+ */
+const Overview = lazy(() => import('./pages/Overview').then((m) => ({ default: m.Overview })))
+const TradesPage = lazy(() => import('./pages/TradesPage').then((m) => ({ default: m.TradesPage })))
+const OrdersPage = lazy(() => import('./pages/OrdersPage').then((m) => ({ default: m.OrdersPage })))
+const StatsPage = lazy(() => import('./pages/StatsPage').then((m) => ({ default: m.StatsPage })))
+const ManagePage = lazy(() => import('./pages/ManagePage').then((m) => ({ default: m.ManagePage })))
+
+function PageSuspense({ children }: { children: ReactNode }) {
+  return <Suspense fallback={<div className="empty-box">正在打开…</div>}>{children}</Suspense>
+}
 
 const TABS: { key: 'overview' | 'trades' | 'orders' | 'stats' | 'manage'; label: string; Icon: typeof IconGrid }[] = [
   { key: 'overview', label: '概览', Icon: IconGrid },
@@ -79,15 +89,15 @@ function Shell() {
         {!ready ? (
           <div className="empty-box">初始化本地库…</div>
         ) : route.tab === 'overview' ? (
-          <Overview goTrades={goTrades} goManage={() => navigate('manage')} goOrders={() => navigate('orders')} />
+          <PageSuspense><Overview goTrades={goTrades} goManage={() => navigate('manage')} goOrders={() => navigate('orders')} /></PageSuspense>
         ) : route.tab === 'trades' ? (
-          <TradesPage urlQuery={route.query} />
+          <PageSuspense><TradesPage urlQuery={route.query} /></PageSuspense>
         ) : route.tab === 'orders' ? (
-          <OrdersPage goTrades={goTrades} goOverview={() => navigate('overview')} />
+          <PageSuspense><OrdersPage goTrades={goTrades} goOverview={() => navigate('overview')} /></PageSuspense>
         ) : route.tab === 'stats' ? (
-          <StatsPage goTrades={goTrades} />
+          <PageSuspense><StatsPage goTrades={goTrades} /></PageSuspense>
         ) : (
-          <ManagePage goTrades={goTrades} query={route.manage} />
+          <PageSuspense><ManagePage goTrades={goTrades} query={route.manage} /></PageSuspense>
         )}
       </main>
 

@@ -6,6 +6,8 @@ export interface AppRelease {
   commit: string
   builtAt: string
   base: string
+  /** 构建时写入的最近提交标题（可选：旧 version.json / 无 Git 构建没有该字段） */
+  releaseNotes?: string[]
 }
 
 /** Only a valid network release for this exact app and deployment scope can be compared. */

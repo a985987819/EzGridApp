@@ -27,6 +27,12 @@ export function ManageUpdates({ compact = false }: { compact?: boolean }) {
         <div><span className="release-label">当前运行版本</span><strong data-testid="current-version" title={releaseLabel(CURRENT_RELEASE)}><span>{CURRENT_RELEASE.version}</span><code>{CURRENT_RELEASE.buildId.slice(0, 8)}</code></strong>{!compact && <small>构建于 {when(CURRENT_RELEASE.builtAt)}</small>}</div>
         <div><span className="release-label">{update.verified ? '线上最新版本' : '上次查到的版本'}</span><strong data-testid="latest-version">{update.latest ? <><span>{update.latest.version}</span><code>{update.latest.buildId.slice(0, 8)}</code></> : '等待联网检查'}</strong>{!compact && update.latest && <small>构建于 {when(update.latest.builtAt)}</small>}</div>
       </div>
+      {/* 有新版且线上版本带更新说明时列出（构建时取最近 5 条提交标题） */}
+      {available && update.latest?.releaseNotes?.length ? (
+        <ul className="release-notes" data-testid="release-notes">
+          {update.latest.releaseNotes.slice(0, 5).map((note) => <li key={note}>{note}</li>)}
+        </ul>
+      ) : null}
       <p className="release-message" aria-live="polite">{development ? '开发环境即时更新；正式发布后可检查线上版本。' : update.message || '联网检查后才能确认是否最新。'}{update.pending && !current && !busy ? ' 新版资源已就绪，等待手动启用。' : ''}</p>
       <p className="release-checked">{update.checkedAt ? `${update.verified ? '本次检查' : '上次成功检查'}：${when(update.checkedAt)}` : '尚无成功检查记录'}</p>
       {compact && <p className="release-note">刷新前先保存编辑内容。已保存台账保留，未保存表单和沙盒会清空。</p>}

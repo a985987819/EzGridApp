@@ -1,4 +1,24 @@
 /* 移动端优先；配色与圆角全部走 animal-island-ui 的设计 token */
+
+/* ---------- 子集字体（2026-11-03） ----------
+   scripts/subsetFonts.mjs 按 src+docs 语料生成的 Noto Sans SC 中文 400/700 子集
+   （~180KB/档，整字体 1.1MB/档已被 vite 插件 stripChineseFontFaces 剥掉）。
+   语料外的新字由字体栈后面的 PingFang/雅黑兜底；「使用系统字体」开关整体切走。 */
+@font-face {
+  font-family: 'Noto Sans SC';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('./assets/fonts/noto-sans-sc-400-subset.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Noto Sans SC';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('./assets/fonts/noto-sans-sc-700-subset.woff2') format('woff2');
+}
+
 :root {
   --app-max: 560px;
   /* V9.41 全局 header 已删：吸顶块只让出状态栏安全区 */
@@ -1036,6 +1056,8 @@ button { font-family: inherit; }
 .release-compare strong > span { display: block; margin-bottom: 2px; }
 .release-compare code { font-size: 12px; font-weight: 500; color: #8b7b63; }
 .release-compare small { display: block; margin-top: 7px; font-size: 10px; color: #9b8b73; line-height: 1.5; }
+.release-notes { margin: 0 0 12px; padding-left: 18px; font-size: 12px; line-height: 1.9; color: var(--animal-text-color-secondary, #9f927d); }
+.release-notes li { overflow-wrap: anywhere; }
 .release-message { margin: 12px 0 6px; font-size: 12px; line-height: 1.8; }
 .release-checked { color: #9b8b73; font-size: 10px; margin: 0 0 16px; }
 .release-actions { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -1543,7 +1565,8 @@ button:not(:disabled):active {
   [data-anim='done'],
   .nav-btn.active svg,
   .tag-row > *,
-  .metric-strip > * {
+  .metric-strip > *,
+  .app-select-panel {
     animation: none;
   }
   button:not(:disabled),

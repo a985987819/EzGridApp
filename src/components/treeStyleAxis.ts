@@ -72,6 +72,11 @@ interface NoteSpec {
   segs: { text: string; color: string; bold?: boolean }[]
 }
 
+// 渐变对象按 (ctx, 高度) 缓存：pan/zoom 逐帧重绘时不再每帧 createLinearGradient
+// （换画布/改尺寸时 ctx 或 H 变化即重建；多实例交替绘制只会重建、不会画错）
+let bgGrad: { ctx: CanvasRenderingContext2D; h: number; g: CanvasGradient } | null = null
+let axisGrad: { ctx: CanvasRenderingContext2D; h: number; g: CanvasGradient } | null = null
+
 export const axisStyle: TreeStyle = {
   id: 'axis',
   cardRowPx: 27,
@@ -83,10 +88,13 @@ export const axisStyle: TreeStyle = {
 
     // 底：冷白微渐变（上浅下深一丁点，深度感）
     const drawBg = () => {
-      const g = ctx.createLinearGradient(0, 0, 0, H)
-      g.addColorStop(0, C.paper)
-      g.addColorStop(1, C.paperLo)
-      ctx.fillStyle = g
+      if (!bgGrad || bgGrad.ctx !== ctx || bgGrad.h !== H) {
+        const g = ctx.createLinearGradient(0, 0, 0, H)
+        g.addColorStop(0, C.paper)
+        g.addColorStop(1, C.paperLo)
+        bgGrad = { ctx, h: H, g }
+      }
+      ctx.fillStyle = bgGrad.g
       ctx.fillRect(0, 0, W, H)
     }
 
@@ -109,12 +117,15 @@ export const axisStyle: TreeStyle = {
 
     // 轴线：两端渐隐的发丝线（刻度数字稍后骑在轴上画，自带纸色挖穿）
     const drawAxis = () => {
-      const g = ctx.createLinearGradient(0, 0, 0, H)
-      g.addColorStop(0, 'rgba(209, 209, 214, 0)')
-      g.addColorStop(0.06, C.axis)
-      g.addColorStop(0.94, C.axis)
-      g.addColorStop(1, 'rgba(209, 209, 214, 0)')
-      ctx.strokeStyle = g
+      if (!axisGrad || axisGrad.ctx !== ctx || axisGrad.h !== H) {
+        const g = ctx.createLinearGradient(0, 0, 0, H)
+        g.addColorStop(0, 'rgba(209, 209, 214, 0)')
+        g.addColorStop(0.06, C.axis)
+        g.addColorStop(0.94, C.axis)
+        g.addColorStop(1, 'rgba(209, 209, 214, 0)')
+        axisGrad = { ctx, h: H, g }
+      }
+      ctx.strokeStyle = axisGrad.g
       ctx.lineWidth = 1.25
       ctx.lineCap = 'round'
       ctx.beginPath()

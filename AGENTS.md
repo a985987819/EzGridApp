@@ -7,6 +7,7 @@
 ## 当前优化口径（2026-10-28，优先于历史描述）
 
 - 持续优化规划（2026-11-03）：`docs/云端同步与持续优化路线图.md` 是云同步、性能与易用性多轮任务的维护入口，管理 → 操作指南 → 完整文档可离线阅读，深链 `#/manage?section=guide&doc=optimization-roadmap`。用户已选择临时9位PIN绑定设备、首版手动上传/下载核对恢复；Supabase为待验证推荐，云功能尚未实现。执行时先读任务状态与下一轮入口，按证据更新，禁止把计划或历史测试通过当作新功能完成。
+- 加载与运行时性能优化（2026-11-03，实测与口径见 `docs/优化建议-动效性能加载更新-2026-11.md`）：① **字体语料子集化**——`npm run subset-fonts`（scripts/subsetFonts.mjs 扫 src+docs 全部用字，subset-font 纯 Node）生成 `src/assets/fonts/noto-sans-sc-{400,700}-subset.woff2` 入库（~180KB/档）；vite 插件 `stripChineseFontFaces`（原 stripChineseFont500 扩展）把库 CSS 里 Noto Sans SC 的中文+latin 全部 @font-face 剥掉，styles.css 顶部自声明子集唯一声明——**别恢复库字体**；语料外新字由字体栈系统字体兜底（管理页「使用系统字体」开关整体切走），新增含新汉字的文案后要重跑 subset-fonts。② **五页面 React.lazy 拆包**（App.tsx + PageSuspense，index 410→145KB，预缓存 4669→2734KiB）；新增页面照抄 lazy 模式。③ **TreeTrunk 数据更新不重挂**：levels/effYear 走 ref（`levelsRef/effYearRef`），主 effect deps=`[stockName, style, effYear]`，数据更新只 bump 重画、**pan/zoom 视角保持**；groupLevels 按 (levels,gap) 进 `groupCache`，数轴风渐变按 (ctx,H) 模块级缓存，手绘沸腾加 reduced-motion 闸——**改树逻辑别把 levels 加回 deps**。④ reduced-motion 块补 `.app-select-panel`。⑤ `version.json` 带 `releaseNotes`（git log -5 --pretty=%s），管理 → 版本与更新 有新版时展示「本次更新」（`[data-testid="release-notes"]`）。e2e guide.mjs 文档数钉 **18** 篇（新增文档要同步改这个断言）。
 
 - 概览估值温度带（2026-11-03）：概览「回本链」下方 `[data-testid="overview-valuation"]` 展示当前股票 股价/PE-TTM/PB-MRQ 近 5 年百分位温度带（`components/ValuationBand.tsx` + `domain/valuation.ts`，纯展示不进台账，无 Dexie/备份变更）。现价用挂单页已确认昨收，未确认回退快照收盘并在副标题注明；PE/PB 现值 = 快照末值 ×（现价/快照末收盘），百分位**严格小于**口径、只在正值基准上算，快照末 PE/PB 非正 → 显示「亏损 · 失效」。数据为静态快照 `src/domain/valuationData.json`（147KB，?raw 动态 import 独立 chunk、随 PWA 预缓存），`npm run refresh-valuation`（scripts/fetchValuation.mjs 抓东方财富日 K 前复权 + RPT_VALUEANALYSIS_DET；**除权除息后必须重跑**，脚本 STOCKS 清单维护 应用内股票名↔交易所代码 映射——应用内叫「安道麦」不是「安道麦A」）。Tag 不透传 data-*：分区徽标 testid 加在包裹层。口径与判读见 `docs/估值温度带.md`；单测 `valuation.spec.ts`；专项 `node e2e/valuation.mjs http://127.0.0.1:5173`。
 
@@ -41,6 +42,7 @@ npm test           # vitest（domain 纯函数 + 真实 xlsx fixture 回归；�
 npm run lint       # eslint
 npm run build      # tsc --noEmit && vite build；GITHUB_PAGES=true 时启用 /EzGridApp/ 子路径 base
 npm run refresh-valuation  # 重新抓取东方财富近5年日线+PE/PB，重写 src/domain/valuationData.json（除权除息后必须）
+npm run subset-fonts       # 重新生成 Noto Sans SC 中文 400/700 子集字体（新增含新汉字文案后跑）
 node e2e/smoke.mjs http://127.0.0.1:5173   # 无头 Chrome CDP，477 项断言，需先起 dev
                    # 数据种子 = tests/fixtures 经 CDP DOM.setFileInputFiles 塞进上传框（站点不带示例数据）
 node e2e/accounting.mjs http://127.0.0.1:5173 # 独立浏览器：真实 IndexedDB、多轮回补/卖出/分链/防重复
