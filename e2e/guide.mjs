@@ -165,7 +165,7 @@ try {
   check('性能优化记录展示实测效果并明确不做清单', (await text()).includes('预缓存') && (await text()).includes('评估后不做'))
   await click('[data-testid="guide-back"]')
   await click('[data-guide-doc="split-plan"]')
-  check('拆档文档提供操作步骤、不改原始交易及两模式核对算例', (await text()).includes('已实现批量连续排档') && (await text()).includes('亏损回本') && (await text()).includes('底仓做T') && (await text()).includes('累计盈利2000元'))
+  check('拆档文档统一低位回本/底仓做T名称并提供两模式核对算例', (await text()).includes('已实现批量连续排档') && (await text()).includes('低位回本') && !(await text()).includes('亏损回本') && (await text()).includes('底仓做T') && (await text()).includes('累计盈利2000元'))
   await click('[data-testid="guide-back"]')
   await click('[data-guide-doc="workbook"]')
   check('完整文档有目录和可读表格', await run(`!!document.querySelector('.guide-toc') && !!document.querySelector('.guide-table table')`) && (await text()).includes('整数分'))

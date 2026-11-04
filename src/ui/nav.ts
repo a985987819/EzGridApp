@@ -25,7 +25,7 @@ export interface TradesQuery {
   /** 日期区间（卖出日期优先，其次买入日期） */
   from?: string
   to?: string
-  /** 目标行的 nanoId（行级唯一短 id，见 ui/nanoid.ts；筛选与跳转都以它为准） */
+  /** 目标行的 nanoId；统计多来源跳转可用逗号分隔多个 id。 */
   id?: string
   sort?: string
   /** 显示已删除行 */

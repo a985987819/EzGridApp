@@ -17,6 +17,7 @@ import { mergeTargetRows, type TargetRow } from '../domain/merge'
 import { buildBuySuggestions, compareBuyPrice, consumedNextRounds, splitBuySuggestions, type BuySuggestion } from '../domain/suggestions'
 import { buildNextRoundBuyRows, type NextRoundBuyRow } from '../domain/buyBoard'
 import { buildBuyWindow, selectBuyWindow } from '../domain/buyWindow'
+import { GRID_MODE_LABEL } from '../domain/gridStrategy'
 import { buildNanoIdIndex } from '../ui/nanoid'
 import { downloadText, toCsv } from '../ui/csv'
 import { useFlashOnAppear } from '../ui/motion'
@@ -285,7 +286,7 @@ export function OrdersPage({
       <div className="left"><div className="t1 num">买 {price(r.priceCents)} × {qty(r.qty)}</div>
         {/* V9.58：三组之后行上仍要能看出这笔的身份——先卖后买 / 下一轮 / P 列再买（每组必有其一） */}
         <div className="tag-row" style={{ marginTop: 4 }}>
-            {r.strategyMode && <Tag size="small" variant="soft">{r.strategyMode==='baseT'?'底仓做T':'亏损回本'}</Tag>}
+            {r.strategyMode && <Tag size="small" variant="soft">{GRID_MODE_LABEL[r.strategyMode]}</Tag>}
             {r.sellFirst && <Tag size="small" variant="soft" color="app-teal" data-testid="suggestion-sell-first">先卖后买</Tag>}
             {!r.sellFirst && r.sources.every((v) => v.kind === 'next') && (
               <Tag size="small" variant="soft" color="app-blue" data-testid="suggestion-next-round">下一轮</Tag>
@@ -524,7 +525,7 @@ export function OrdersPage({
               ? `${sellRowLabel(r)} · 预期 ${signedMoney(r.expectProfitCents)}`
               : `${sim ? '沙盒模拟批次' : lotLabel(r.targets[0].lotId, recordNo)} · 预期 ${signedMoney(r.expectProfitCents)}`}
           </div>
-          {r.targets[0]?.strategyMode && <Tag size="small" variant="soft">{r.targets[0].strategyMode==='baseT'?'底仓做T':'亏损回本'}</Tag>}
+          {r.targets[0]?.strategyMode && <Tag size="small" variant="soft">{GRID_MODE_LABEL[r.targets[0].strategyMode]}</Tag>}
           {r.planPriceCents != null && (
             <div className="tag-row" style={{ marginTop: 4 }}>
               <Tag size="small" variant="soft" color="purple">

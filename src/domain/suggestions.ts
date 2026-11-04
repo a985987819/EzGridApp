@@ -12,10 +12,12 @@ export type BuySource =
       /** V9.54：这笔来源是先卖后买（卖出日 ≤ 买入日 / 裸卖） */
       sellFirst?: boolean
       strategyMode?: 'repair' | 'baseT'
+      strategyIsDefault?: true
     }
   | { kind: 'next'; id: string; qty: number; row: number }
 export interface BuySuggestion {
   strategyMode?: 'repair' | 'baseT'
+  strategyIsDefault?: true
   key: string
   stockName: string
   priceCents: number
@@ -61,7 +63,10 @@ export function buildBuySuggestions(splits: readonly BuySplit[], next: readonly 
     if(source.qty<=0)return
     const purpose = source.kind === 'order' && source.sellFirst ? 'cover' : 'optional'
     const strategyMode = source.kind === 'order' ? source.strategyMode : undefined
-    const key=`buy:${purpose}:${stockName}:${p}${strategyMode ? `:${strategyMode}` : ''}`
+    const strategyIsDefault = source.kind === 'order' ? source.strategyIsDefault : undefined
+    // 默认低位回本只补展示名，保留原推荐身份；显式策略继续独立。
+    const identityMode = strategyIsDefault ? undefined : strategyMode
+    const key=`buy:${purpose}:${stockName}:${p}${identityMode ? `:${identityMode}` : ''}`
     const hit=rows.get(key)
     if(hit){
       hit.qty+=source.qty
@@ -70,9 +75,9 @@ export function buildBuySuggestions(splits: readonly BuySplit[], next: readonly 
       // 同价合并后只要有一笔先卖后买，整条就按先卖后买分组/标示。
       if(source.kind==='order'&&source.sellFirst)hit.sellFirst=true
     }
-    else rows.set(key,{key,stockName,priceCents:p,qty:source.qty,amountCents:p*source.qty,sources:[source],purpose,strategyMode,sellFirst:purpose==='cover'})
+    else rows.set(key,{key,stockName,priceCents:p,qty:source.qty,amountCents:p*source.qty,sources:[source],purpose,strategyMode,strategyIsDefault,sellFirst:purpose==='cover'})
   }
-  for(const b of splits)if(b.qty>0)add(b.stockName,b.priceCents,{kind:'order',id:b.orderId,row:b.sourceRow,qty:b.qty,splitKey:b.key,sellFirst:b.sellFirst===true,strategyMode:b.strategyMode})
+  for(const b of splits)if(b.qty>0)add(b.stockName,b.priceCents,{kind:'order',id:b.orderId,row:b.sourceRow,qty:b.qty,splitKey:b.key,sellFirst:b.sellFirst===true,strategyMode:b.strategyMode,strategyIsDefault:b.strategyIsDefault})
   for(const n of next) {
     const plan=plans.find((p)=>p.kind==='buy'&&p.refId===n.key)
     let left=Math.min(n.qty,plan?.qty??n.qty)
@@ -91,8 +96,9 @@ export function buildBuySuggestions(splits: readonly BuySplit[], next: readonly 
     const legacy = plans.find(p => p.kind === 'buy' && p.refId === legacyRef)
     const ambiguous = out.some(other => other !== r && other.stockName === r.stockName && other.priceCents === r.priceCents && other.purpose !== r.purpose)
     const specific=plans.find((p)=>p.kind==='buy'&&p.refId===r.key)
-    const plan=specific ?? (!ambiguous && !r.strategyMode ? legacy : undefined)
-    r.planRefs = [r.key, ...(!ambiguous && !r.strategyMode && legacy ? [legacyRef] : [])]
+    const acceptsLegacy = !ambiguous && (!r.strategyMode || r.strategyIsDefault)
+    const plan=specific ?? (acceptsLegacy ? legacy : undefined)
+    r.planRefs = [r.key, ...(acceptsLegacy && legacy ? [legacyRef] : [])]
     r.legacyPlanConflict = ambiguous && Boolean(legacy) && !specific
     if(!plan)continue
     r.qty=Math.min(r.qty,plan.qty)
@@ -119,7 +125,7 @@ export function buildBuySuggestions(splits: readonly BuySplit[], next: readonly 
   const byPrice = new Map<string, BuySuggestion>()
   for (const r of out) {
     if (r.qty <= 0) continue
-    const bucket = `${r.purpose}|${r.strategyMode ?? ''}|${r.stockName}|${r.priceCents}`
+    const bucket = `${r.purpose}|${r.strategyIsDefault ? '' : r.strategyMode ?? ''}|${r.stockName}|${r.priceCents}`
     const hit = byPrice.get(bucket)
     if (!hit) {
       byPrice.set(bucket, r)

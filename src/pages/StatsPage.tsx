@@ -8,10 +8,20 @@ import { monthRange, type TradesQuery } from '../ui/nav'
 import { recordNoLabel } from '../domain/recordNo'
 import { buildNanoIdIndex } from '../ui/nanoid'
 import { saleFacts } from '../domain/booking'
+import { buildTradingStatistics, type StatisticsEvent, type TradingStatistics } from '../domain/statistics'
+
+/** 回补完成日可能不同于原卖出日，按实际来源跳转，不能再用卖出日期筛掉它。 */
+function eventQuery(events: readonly StatisticsEvent[], rowToId: ReadonlyMap<number, string>): TradesQuery {
+  const ids = [...new Set(events.flatMap(event => event.sourceRows).flatMap(row => rowToId.has(row) ? [rowToId.get(row)!] : []))]
+  const names = new Set(events.map(event => event.stockName))
+  return { id: ids.join(','), ...(names.size === 1 ? { stock: events[0].stockName } : {}), showDone: true }
+}
 
 export function StatsPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
-  const { ledger, stocks, bookingReceipts } = useApp()
+  const { ledger, records, stocks, bookingReceipts } = useApp()
   const actualSales = useMemo(() => saleFacts(ledger.sells, bookingReceipts), [ledger.sells, bookingReceipts])
+  const statistics = useMemo(() => buildTradingStatistics(ledger, records, bookingReceipts), [ledger, records, bookingReceipts])
+  const nano = useMemo(() => buildNanoIdIndex(records), [records])
   const t = ledger.totals
   const active = activeStocks(stocks)
   const enabledNames = new Set(active.map((s) => s.name))
@@ -39,29 +49,28 @@ export function StatsPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) 
     <div className="stack">
       <div className="page-title">
         <h2>统计</h2>
-        <p>按卖出日期归月，缺日期单列 · 点行可跳明细</p>
+        <p>盈利卖出与已完成回补 · 按确认日期归集，点行核对</p>
       </div>
 
-      <CalendarCard goTrades={goTrades} />
+      <CalendarCard goTrades={goTrades} statistics={statistics} rowToId={nano.rowToId} />
 
       <Card data-testid="stats-monthly">
         <div className="sec-head">
           <strong>月度成交</strong>
           <div className="spacer" />
-          <span className="sec-sub">收益率 = 盈利 / 卖出额</span>
+          <span className="sec-sub">网格收益 / 对应卖出额</span>
         </div>
         <div className="data-block">
-        {ledger.monthly.map((m) => (
+        {statistics.monthly.map((m) => (
           <div
             key={m.month}
+            data-stat-month={m.month}
             className="line clickable"
             onClick={() =>
               // 月度成交本身就是已成交数据的汇总：跳明细时放开「隐藏已完成」，行数才对得上标签
-              goTrades(
-                m.dateMissing
-                  ? { status: ['sellDateMissing'], showDone: true }
-                  : { from: monthRange(m.month).from, to: monthRange(m.month).to, showDone: true },
-              )
+              goTrades(m.dateMissing || statistics.events.some(event => event.kind === 'rebuy' && event.date?.startsWith(m.month))
+                ? eventQuery(statistics.events.filter(event => (event.date?.slice(0, 7) ?? '未填日期') === m.month), nano.rowToId)
+                : { from: monthRange(m.month).from, to: monthRange(m.month).to, showDone: true })
             }
           >
             <div className="left">
@@ -73,7 +82,7 @@ export function StatsPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) 
                   </Tag>
                 )}
               </div>
-              <div className="t2 num">{actualSales.filter(s => (s.soldAt?.slice(0, 7) ?? '未填日期') === m.month).length} 笔 · {qty(m.sellQty)} 股 · {money(m.sellAmountCents)}</div>
+              <div className="t2 num">{m.sellCount} 笔 · {qty(m.sellQty)} 股 · 卖出额 {money(m.sellAmountCents)}</div>
             </div>
             <div className="right">
               <div className={`num ${tone(m.profitCents)}`} style={{ fontWeight: 700 }}>
@@ -85,6 +94,7 @@ export function StatsPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) 
             </div>
           </div>
         ))}
+        {statistics.monthly.length === 0 && <div className="empty-box">尚无盈利卖出或已完成回补</div>}
         </div>
       </Card>
 
@@ -101,9 +111,9 @@ export function StatsPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) 
             <div className="s">{actualSales.length} 笔 / {qty(t.sellQty)} 股</div>
           </div>
           <div>
-            <div className="k">实现盈利</div>
+            <div className="k">总账实现盈亏</div>
             <div className={`v money ${tone(t.profitCents)}`}>{signedMoney(t.profitCents)}</div>
-            <div className="s">未扣费用</div>
+            <div className="s">含高位了结盈亏 · 未扣费用</div>
           </div>
         </div>
       </Card>
@@ -207,11 +217,11 @@ export function StatsPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) 
       </Card>
 
       {/* V9.61 近 12 个月盈利趋势：红盈绿亏，条高按绝对值 */}
-      <TrendCard monthly={ledger.monthly.map(m => ({ ...m, sellCount: actualSales.filter(s => (s.soldAt?.slice(0, 7) ?? '未填日期') === m.month).length }))} />
+      <TrendCard monthly={statistics.monthly.filter(m => !m.dateMissing)} />
 
       <Card>
         <div className="sec-head">
-          <strong>按股票</strong>
+          <strong>按股票 · 总账</strong>
         </div>
         <div className="data-block">
         {byStock.map((s) => (
@@ -306,7 +316,7 @@ function TrendCard({ monthly }: { monthly: { month: string; profitCents: number;
         <span className="sec-sub">条高按绝对值 · 红盈绿亏</span>
       </div>
       {recent.length === 0 ? (
-        <div className="empty-box">还没有按月归集的卖出</div>
+          <div className="empty-box">还没有按月确认的网格收益</div>
       ) : (
         <div className="trend-chart">
           {recent.map((m) => (
@@ -334,10 +344,9 @@ function price2(cents: number | null): string {
   return cents === null ? '—' : (cents / 100).toFixed(2)
 }
 
-/** 成交日历：按月看每天卖出了什么、赚了多少（红盈绿亏） */
-function CalendarCard({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
-  const { ledger, records, recordNo, bookingReceipts } = useApp()
-  const nano = useMemo(() => buildNanoIdIndex(records), [records])
+/** 网格收益日历：普通盈利按卖出日，先卖后买价差按全回补完成日。 */
+function CalendarCard({ goTrades, statistics, rowToId }: { goTrades: (q: TradesQuery) => void; statistics: TradingStatistics; rowToId: ReadonlyMap<number, string> }) {
+  const { recordNo } = useApp()
   const today = new Date()
   // 本地时区的今天：toISOString 是 UTC，东八区早上 8 点前会落到昨天
   const localIso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
@@ -357,46 +366,37 @@ function CalendarCard({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
   const [selected, setSelected] = useState(localIso)
 
   // 年 / 月累计盈利跟随日历面板（V9.10）：翻月 / 翻年就重算，不再钉死今天。
-  // 口径不变：从月度桶里取，未填日期的卖出不进累计。
+  // 与日历和月度列表共用同一收益视图，未知确认日期不进累计。
   const panelYear = panel.slice(0, 4)
   const yearProfit = useMemo(
-    () => ledger.monthly.filter((m) => m.month.startsWith(panelYear)).reduce((a, m) => a + m.profitCents, 0),
-    [ledger.monthly, panelYear],
+    () => statistics.monthly.filter((m) => m.month.startsWith(panelYear)).reduce((a, m) => a + m.profitCents, 0),
+    [statistics.monthly, panelYear],
   )
   const monthProfit = useMemo(
-    () => ledger.monthly.find((m) => m.month === panel)?.profitCents ?? 0,
-    [ledger.monthly, panel],
+    () => statistics.monthly.find((m) => m.month === panel)?.profitCents ?? 0,
+    [statistics.monthly, panel],
   )
 
   // 按天聚合：一个格子一条「左当日总盈利 / 右成交笔数」（V9.7 修正口径）
   const events = useMemo(() => {
-    const byDay = new Map<string, { count: number; qty: number; profit: number }>()
-    for (const s of saleFacts(ledger.sells, bookingReceipts)) {
-      if (s.soldAt === null) continue
-      const old = byDay.get(s.soldAt)
-      const next = old ?? { count: 0, qty: 0, profit: 0 }
-      next.count += 1
-      next.qty += s.qty
-      next.profit += s.profitCents ?? 0
-      byDay.set(s.soldAt, next)
-    }
-    return [...byDay.entries()].map(([day, b]) => ({
-      start: day,
-      color: b.profit >= 0 ? ('coral' as const) : ('green' as const),
+    return statistics.daily.filter(b => !b.dateMissing).map(b => ({
+      start: b.day,
+      color: b.profitCents >= 0 ? ('coral' as const) : ('green' as const),
       title: (
         <span
           className="cal-day-stat"
-          title={`当日盈利 ${signedMoney(b.profit)} · ${b.qty} 股`}
+          title={`当日网格收益 ${signedMoney(b.profitCents)} · ${b.sellQty} 股`}
         >
-          <span className="amt">{compactYuan(b.profit)}</span>
-          <span className="q">{b.count}笔</span>
+          <span className="amt">{compactYuan(b.profitCents)}</span>
+          <span className="q">{b.sellCount}笔</span>
         </span>
       ),
     }))
-  }, [ledger.sells, bookingReceipts])
+  }, [statistics.daily])
 
-  const daySells = saleFacts(ledger.sells, bookingReceipts).filter((s) => s.soldAt === selected)
-  const missing = saleFacts(ledger.sells, bookingReceipts).filter((s) => s.dateMissing).length
+  const daySells = statistics.events.filter(event => event.date === selected)
+  const missingEvents = statistics.events.filter(event => event.date === null)
+  const missing = missingEvents.length
 
   return (
     <Card data-testid="stats-calendar">
@@ -404,20 +404,25 @@ function CalendarCard({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
         <strong>成交日历</strong>
         <div className="spacer" />
         {missing > 0 && (
-          <Tag size="small" variant="soft" color="app-yellow" onClick={() => goTrades({ status: ['sellDateMissing'], showDone: true })}>
+          <Tag size="small" variant="soft" color="app-yellow" onClick={() => goTrades(eventQuery(missingEvents, rowToId))}>
             {missing} 笔缺日期
           </Tag>
         )}
       </div>
+      <p className="tiny muted" data-testid="stats-basis" style={{ margin: '0 0 8px' }}>
+        先买后卖仅计盈利；先卖后买全部回补后，在完成日计实际价差。此处网格收益不等于总账盈亏，高位亏损保留在总账和回本链。
+        {statistics.pendingRebuyCount > 0 && <> 另有 {statistics.pendingRebuyCount} 笔尚未全部回补，暂不统计。</>}
+        {statistics.unpricedCount > 0 && <> {statistics.unpricedCount} 笔待核对实际成交价，暂不统计。</>}
+      </p>
       {/* 年 / 月累计盈利随面板翻动（V9.10）：看的哪个月就算哪个月 */}
       <div className="grid-4 metric-strip two-col" style={{ marginBottom: 8 }}>
         <div>
           <div className="k">年累计盈利（{panelYear}）</div>
-          <div className={`v ${tone(yearProfit)}`}>{signedMoney(yearProfit)}</div>
+          <div data-stat-year={panelYear} className={`v ${tone(yearProfit)}`}>{signedMoney(yearProfit)}</div>
         </div>
         <div>
           <div className="k">月累计盈利（{panel}）</div>
-          <div className={`v ${tone(monthProfit)}`}>{signedMoney(monthProfit)}</div>
+          <div data-stat-month-total={panel} className={`v ${tone(monthProfit)}`}>{signedMoney(monthProfit)}</div>
         </div>
       </div>
       <Calendar
@@ -434,8 +439,9 @@ function CalendarCard({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
         <div className="row" style={{ marginBottom: 6 }}>
           <span className="tiny muted">{selected}</span>
           <div className="spacer" />
-          <span className="tiny muted">{daySells.length} 笔卖出</span>
-          <Button size="small" type="text" onClick={() => goTrades({ from: selected, to: selected, showDone: true })}>
+          <span className="tiny muted">{daySells.length} 笔确认</span>
+          <Button size="small" type="text" disabled={daySells.length === 0} onClick={() => goTrades(daySells.some(event => event.kind === 'rebuy')
+            ? eventQuery(daySells, rowToId) : { from: selected, to: selected, showDone: true })}>
             看这天明细
           </Button>
         </div>
@@ -446,16 +452,18 @@ function CalendarCard({ goTrades }: { goTrades: (q: TradesQuery) => void }) {
             {daySells.map((s) => (
               <div
                 key={s.id}
+                data-stat-kind={s.kind}
+                data-stat-rows={s.sourceRows.join(',')}
                 className="line clickable"
-                onClick={() => goTrades({ id: nano.rowToId.get(s.sourceRow), stock: s.stockName })}
+                onClick={() => goTrades(eventQuery([s], rowToId))}
               >
                 <div className="left">
                   <div className="t1" style={{ fontSize: 13 }}>
-                    {/* V9.41 日历只按卖出日归集；行首标明方向，免得只看到价格和盈利分不清买还是卖 */}
-                    <span className="side-chip sell">卖出</span>
-                    {s.stockName} · {price2(s.priceCents)} × {s.qty}
+                    <span className={`side-chip ${s.kind === 'rebuy' ? 'buy' : 'sell'}`}>{s.kind === 'rebuy' ? '回补完成' : '卖出'}</span>
+                    {s.stockName} · {price2(s.sellPriceCents)} × {s.qty}
                   </div>
-                  <div className="t2">{recordNoLabel(s.sourceRow, recordNo)} · 买入成本 {price2(s.costCents)}</div>
+                  <div className="t2">{s.sourceRows.map(row => recordNoLabel(row, recordNo)).join('、')} · {s.kind === 'rebuy' ? '实际买回均价' : '买入成本'} {price2(s.buyPriceCents)}</div>
+                  {s.kind === 'rebuy' && <div className="tiny muted">原卖出日 {s.originalSoldAt ?? '待补日期'} · 本日全部回补</div>}
                 </div>
                 <div className={`right num ${tone(s.profitCents)}`} style={{ fontWeight: 700 }}>
                   {signedMoney(s.profitCents)}

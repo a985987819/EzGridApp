@@ -309,6 +309,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   // 过滤 + 顺带统计「没有日期、被日期区间条件排除」的行数（空态时提示用）
   const { filtered, noDateHidden } = useMemo(() => {
     let hidden = 0
+    const selectedIds = new Set(idFilter?.split(',') ?? [])
     /**
      * V9.46 回本链的锚点（亏着清仓的那笔）与归属成员：它们都还「欠着账」，
      * 不是真的完成——默认 hideDone 也留着，否则用户找不到那笔 10 元买入去哪了。
@@ -323,10 +324,11 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     const list = rows.filter((r) => {
       // nanoId 深链要能命中已软删的行，showDeleted 的门对目标行放行
       const rId = nano.rowToId.get(r.rec.sourceRow)
-      if (!showDeleted && r.rec.deletedAt && rId !== idFilter) return false
+      const deepLink = rId !== undefined && selectedIds.has(rId)
+      if (!showDeleted && r.rec.deletedAt && !deepLink) return false
       if (stockFilter === 'all') {
         // 停用的股票不出现在明细里
-        if (!enabledSet.has(r.rec.stockName)) return false
+        if (!enabledSet.has(r.rec.stockName) && !deepLink) return false
       } else if (r.rec.stockName !== stockFilter) return false
       if (priceFilter !== null) {
         const prices = [r.rec.targetPriceCents, r.rec.buyPriceCents, r.sell?.priceCents ?? null, r.rec.earlyBuyPriceCents]
@@ -340,9 +342,8 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
         )
         if (!hit) return false
       }
-      if (idFilter !== null && rId !== idFilter) return false
+      if (idFilter !== null && !deepLink) return false
       /** 深链指到的那一行要一定看得见：软删（上面已放行）和「已完成」都不能把它藏掉 */
-      const deepLink = idFilter !== null && rId === idFilter
       // 状态多选取交集：勾了几个状态，行必须全都满足
       if (statuses.length > 0 && !statuses.every((k) => statusMatch(r, k))) return false
       // V9.5：默认隐藏已完成；勾「已卖完」或深链带该状态时自动放开，避免空列表陷阱
@@ -395,7 +396,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       const n = rec ? recordNo.of(rec.sourceRow) : null
       chips.push({
         key: 'id',
-        label: n !== null ? `第 ${n} 笔` : `#${idFilter}`,
+        label: idFilter.includes(',') ? `已选 ${idFilter.split(',').length} 笔` : n !== null ? `第 ${n} 笔` : `#${idFilter}`,
         clear: () => setIdFilter(null),
       })
     }

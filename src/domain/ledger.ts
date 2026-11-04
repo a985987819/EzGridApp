@@ -10,6 +10,7 @@ import { serialToIso, stockIdOf } from './defaults'
 import { buildRepairChains } from './chain'
 import { defaultHedges, isSellFirst } from './sellFirst'
 import { coverOfSell, type SellCover } from './cover'
+import { buildActualRebuyFills } from './rebuyFills'
 import { remainingSellTargets } from './sellTargets'
 import { baseTSurplusTargets, strategySales } from './gridStrategy'
 import { type Anomaly, type BuySplit, type ExtraBuyTarget, type ExtraTarget, type HedgeLink, type RebuyExecution, type TradePlan, type CheckResult, type GroupPool, type Ledger, type Lot, type DayBucket, type MonthlyBucket, type RawRecord, type RebuyOrder, type RepairChainLink, type SellExecution, type SellTarget, type StockConfig, type StockSummary } from './types'
@@ -574,6 +575,10 @@ export function buildLedger(
     })
     covers.set(sell.sourceRow, cover)
     sell.actualRebuyQty = Math.min(sell.qty, own + (execBaseBySell.get(sell.id) ?? 0) + (chainBuild.realCoverBySell.get(sell.sourceRow) ?? 0))
+    if (sell.actualRebuyQty > 0) sell.actualRebuyFills = buildActualRebuyFills({
+      sell, lotsById: allLotById, executions: execByOrder.get(`rb:${sell.id}`) ?? [],
+      realCoverSlices: chainBuild.realCoverSlicesBySell.get(sell.sourceRow),
+    })
     sell.rebuyStatus = cover.pending ? 'pending' : 'repaid'
   }
 
@@ -591,8 +596,12 @@ export function buildLedger(
     const myExecs = execByOrder.get(orderId) ?? []
     const execQty = myExecs.reduce((a, e) => a + e.qty, 0)
     const doneRewardQty = myExecs.reduce((a, e) => a + e.rewardQty, 0)
+    const strategyMode = gridSales.get(sell.sourceRow)?.strategy?.mode
+    const strategyIsDefault = !strategyMode && (sell.sellBeforeBuy || (sell.ownLotCoverQty ?? 0) > 0) ? true : undefined
     orders.push({
-      strategyMode: gridSales.get(sell.sourceRow)?.strategy?.mode,
+      // 未显式选择的先卖后买统一按低位回本展示；普通先买后卖的 P 列再买不改模式。
+      strategyMode: strategyMode ?? (strategyIsDefault ? 'repair' : undefined),
+      strategyIsDefault,
       id: orderId,
       sellExecId: sell.id,
       sourceRow: sell.sourceRow,
@@ -830,6 +839,7 @@ function buildBuySplits(
         targetId: null,
         sellFirst: o.sellFirst === true,
         strategyMode: o.strategyMode,
+        strategyIsDefault: o.strategyIsDefault,
       })
       continue
     }
@@ -900,6 +910,7 @@ function buildBuySplits(
         targetId: r.targetId,
         sellFirst: o.sellFirst === true,
         strategyMode: o.strategyMode,
+        strategyIsDefault: o.strategyIsDefault,
       })
     }
   }

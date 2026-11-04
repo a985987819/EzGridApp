@@ -1167,8 +1167,8 @@ try {
   await evaluate(`localStorage.setItem('ezgrid.statsCal', '2026-10')`)
   await nav('stats')
   text = await bodyText()
-  // 基准数据：全部盈利 ¥7,970，其中缺日期盈利 ¥1,429 不进累计 → 年累计 ¥6,541；10 月只有 R56 → ¥196
-  check('年累计盈利（¥6,541）', text.includes('6,541'), '')
+  // 总账仍为¥7,970；新收益视图排除普通高买低卖，缺日期不进累计，2026年为¥7,768；10月R56仍为¥196。
+  check('网格收益年累计（¥7,768），与总账口径分开', (await evaluate(`document.querySelector('[data-stat-year="2026"]')?.textContent`)).includes('7,768'), '')
   check('月累计盈利（¥196）', text.includes('196'), '')
   // 日历格 = 左当日总盈利（+196）· 右成交笔数（1笔）
   check('日历格聚合成「盈利+笔数」', text.includes('+196') && text.includes('1笔'), '')

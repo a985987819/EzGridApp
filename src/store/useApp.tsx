@@ -675,7 +675,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     async (sourceRow: number) => {
       const current = await db.records.get(sourceRow)
       if (!current) return
-      if ((await db.extraTargets.toArray()).some(t=>t.strategy&&(t.lotId===`lot:${sourceRow}`||t.strategy.sellRow===sourceRow))) throw new Error('该记录参与拆档/做T策略，请先处理策略及后续依赖')
+      if ((await db.extraTargets.toArray()).some(t=>t.strategy&&(t.lotId===`lot:${sourceRow}`||t.strategy.sellRow===sourceRow))) throw new Error('该记录参与拆档/底仓做T策略，请先处理策略及后续依赖')
       const allRows = await db.records.toArray()
       if ((await db.bookingReceipts.toArray()).some(r => !r.voidedAt && r.recordRows.includes(sourceRow) && r.recordRows.length + r.executionIds.length > 1)) throw new Error('这行属于一次合并成交，请在管理 → 成交流水撤销整笔，不能只删除一份分配')
       if (allRows.some(r => r.nextRoundOfRow === sourceRow && !r.deletedAt)) throw new Error('这笔已有下一轮买入，请先核对并撤销后续成交')
@@ -1017,7 +1017,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const {ledger:l}=await currentLedger()
         const hedge=l.effectiveHedges.find(h=>h.sellRow===row)
         if ((l.sells.find(s=>s.sourceRow===row&&s.hedgedFromSellRow===undefined)?.actualRebuyQty??0)>0) throw new Error('已有真实买入覆盖该先卖单，不能改写已发生的策略归属')
-        if (!hedge || hedge.items.length!==1 || hedge.items[0].qty!==rec.soldQty) throw new Error('做T需完整关联到一个高位批次，请先完成高位关联')
+        if (!hedge || hedge.items.length!==1 || hedge.items[0].qty!==rec.soldQty) throw new Error('底仓做T需完整关联到一个高位批次，请先完成高位关联')
         const lot=l.lots.find(l=>l.id===`lot:${hedge.items[0].row}`),order=l.orders.find(o=>o.sourceRow===row)
         if (!lot?.targetPriceCents || !rec.targetPriceCents || !order) throw new Error('缺少原高位卖价或回补价')
         await db.extraTargets.put({id,lotId:lot.id,qty:0,priceCents:rec.targetPriceCents,at:Date.now(),strategy:{mode,groupId:id,sellRow:row,rebuyPriceCents:order.rebuyPriceCents,nextSellPriceCents:lot.targetPriceCents}})
@@ -1105,7 +1105,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
       }
       const link: HedgeLink = { id: `hedge:${sellRow}`, sellRow, items, at: Date.now() }
-      if ((await db.extraTargets.toArray()).some(t=>t.strategy?.sellRow===sellRow)) throw new Error('此先卖单已启用做T模式，请先切回亏损回本再改高位关联')
+      if ((await db.extraTargets.toArray()).some(t=>t.strategy?.sellRow===sellRow)) throw new Error('此先卖单已启用底仓做T，请先切回低位回本再改高位关联')
       await db.transaction('rw', db.hedges, db.auditLogs, async () => {
         // V9.33：旧值写上一次的分配（改挂也能回溯），新值写这次的分配
         const prev = await db.hedges.get(`hedge:${sellRow}`)
@@ -1123,7 +1123,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const clearHedgeLink = useCallback(
     async (sellRow: number) => {
-      if ((await db.extraTargets.toArray()).some(t=>t.strategy?.sellRow===sellRow)) throw new Error('此先卖单已启用做T模式，请先切回亏损回本再解除高位关联')
+      if ((await db.extraTargets.toArray()).some(t=>t.strategy?.sellRow===sellRow)) throw new Error('此先卖单已启用底仓做T，请先切回低位回本再解除高位关联')
       const prev = (await currentLedger()).ledger.effectiveHedges.find((h) => h.sellRow === sellRow)
       await db.transaction('rw', db.hedges, db.auditLogs, async () => {
         // 空关联是明确的人工解除，避免重算时又自动挂回最高价批次。
@@ -1497,7 +1497,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setLastBackupAt(Number(stamp))
     return JSON.stringify(
       {
-        // 结构13新增独立拆档策略；旧程序必须拒绝，避免忽略做T/回本模式。
+        // 结构13新增独立拆档策略；旧程序必须拒绝，避免忽略底仓做T/低位回本模式。
         schemaVersion: 13,
         exportedAt: new Date().toISOString(),
         settings: { deriveSellPrice },

@@ -106,6 +106,20 @@ export type PriceSource = 'target' | 'earlyBuy' | 'missing'
 /** R3 的回补价来源 */
 export type RebuyPriceSource = 'custom' | 'lot' | 'p' | 'sellMinusInterval' | 'repaid'
 
+/** 独立真实买入用于回补某笔卖出的份额；与回补覆盖数量一同纯派生。 */
+export interface RealRebuyCoverSlice {
+  lotId: string
+  qty: number
+}
+
+/** 实际回补来源，不含奖励股或高位交割；仅供完成日期和实际成本等展示投影使用。 */
+export interface ActualRebuyFill {
+  sourceLotId: string
+  qty: number
+  priceCents: number | null
+  date: string | null
+}
+
 /** 卖出成交（派生对象） */
 export interface SellExecution {
   id: string
@@ -124,6 +138,8 @@ export interface SellExecution {
   rebuyRemainingQty?: number
   /** 已由同行买入、独立真实买入或回补成交买回的基础股；不含奖励、挂钩交割。 */
   actualRebuyQty?: number
+  /** 与实际回补数量对应的来源份额，供统计完成日与实际买回成本展示；不落库。 */
+  actualRebuyFills?: ActualRebuyFill[]
   rebuyPriceCents?: number | null
   rebuyStatus: RebuyStatus
   /**
@@ -199,6 +215,8 @@ export interface ExtraBuyTarget {
  */
 export interface BuySplit {
   strategyMode?: 'repair' | 'baseT'
+  /** 纯派生默认模式，保留原无模式的推荐分组与改单身份。 */
+  strategyIsDefault?: true
   /** 默认档 = rb:sell:C；拆分段 = rb:sell:C#<buyTarget ID>，删除其它档不改身份 */
   key: string
   orderId: string
@@ -389,6 +407,8 @@ export interface RebuyExecution {
 
 export interface RebuyOrder {
   strategyMode?: 'repair' | 'baseT'
+  /** 未显式选择策略的先卖后买默认低位回本；不作为备份输入落库。 */
+  strategyIsDefault?: true
   id: string
   sellExecId: string
   sourceRow: number

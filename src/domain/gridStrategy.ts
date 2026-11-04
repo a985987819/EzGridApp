@@ -5,6 +5,9 @@ import { remainingSellTargets } from './sellTargets'
 
 export type GridMode = 'repair' | 'baseT'
 
+/** 两种策略的固定展示名称；保留原存储标识以兼容历史记录和备份。 */
+export const GRID_MODE_LABEL = { repair: '低位回本', baseT: '底仓做T' } as const satisfies Record<GridMode, string>
+
 /** 同行回补多买的份额不是做T还仓，继续使用原行普通目标。 */
 export function baseTSurplusTargets(records: readonly RawRecord[], targets: readonly ExtraTarget[], baseAmountYuan = 6000): ExtraTarget[] {
   const modes = strategySales(records, targets)

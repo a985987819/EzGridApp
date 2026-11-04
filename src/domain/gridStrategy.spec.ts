@@ -3,6 +3,7 @@ import { buildLedger } from './ledger'
 import { buildLadder, gridStatuses, type GridMode } from './gridStrategy'
 import { mergeTargetRows } from './merge'
 import { validateBackup } from './backup'
+import { buildBuySuggestions } from './suggestions'
 import type { RawRecord, RebuyExecution } from './types'
 
 const stock = { id: 'stock:T', name: 'T', intervalCents: 57, priceLimitType: 'main_10' as const }
@@ -19,6 +20,42 @@ const exec = (qty = 500): RebuyExecution => ({ id:'e1', orderId:'rb:sell:3',sell
 const balanced = (l: ReturnType<typeof buildLedger>) => expect(l.checks.filter(c => !c.ok)).toEqual([])
 
 describe('连续拆档与双模式', () => {
+  it('普通先卖后买默认低位回本并自动关联最高剩余高位，原记录不改', () => {
+    const root = row(3,{buyPriceCents:null,buyQtyRaw:null,buyDateSerial:null,soldQty:500,sellDateSerial:46001,targetPriceCents:700,earlyBuyPriceCents:500})
+    const records = [...base,row(4,{buyPriceCents:1100,buyQtyRaw:500}),root], original = JSON.stringify(records)
+    const ledger = buildLedger(records,[stock]);balanced(ledger)
+    expect(ledger.orders.find(o=>o.sourceRow===3)).toMatchObject({strategyMode:'repair',strategyIsDefault:true,sellFirst:true})
+    expect(ledger.effectiveHedges.find(h=>h.sellRow===3)?.items).toEqual([{row:4,qty:500}])
+    expect(ledger.repairChains[0]).toMatchObject({lossCents:-200000,profitCents:0})
+    expect(ledger.buySplits.find(b=>b.sourceRow===3)).toMatchObject({strategyMode:'repair',strategyIsDefault:true})
+    expect(JSON.stringify(records)).toBe(original)
+    const detached = buildLedger(records,[stock],{hedges:[{id:'hedge:3',sellRow:3,items:[],at:1}]})
+    expect(detached.effectiveHedges.find(h=>h.sellRow===3)?.items).toEqual([])
+    expect(detached.orders.find(o=>o.sourceRow===3)?.strategyMode).toBe('repair')
+  })
+  it('默认模式不覆盖显式底仓做T，也不改变正常先买后卖的P列再买', () => {
+    const targets=make('baseT'), records=[...base,sale(3,`target:${targets[0].id}`),row(4,{buyPriceCents:500,buyQtyRaw:100,targetPriceCents:700,soldQty:100,sellDateSerial:46001,earlyBuyPriceCents:450})]
+    const ledger=buildLedger(records,[stock],{extraTargets:targets});balanced(ledger)
+    expect(ledger.orders.find(o=>o.sourceRow===3)?.strategyMode).toBe('baseT')
+    expect(ledger.orders.find(o=>o.sourceRow===3)?.strategyIsDefault).toBeUndefined()
+    expect(ledger.orders.find(o=>o.sourceRow===4)).toMatchObject({sellFirst:false})
+    expect(ledger.orders.find(o=>o.sourceRow===4)?.strategyMode).toBeUndefined()
+    expect(ledger.orders.find(o=>o.sourceRow===4)?.strategyIsDefault).toBeUndefined()
+  })
+  it('默认与显式低位回本同价仍分组，旧默认改单只缩自己的100股到50股', () => {
+    const targets=make('repair'), root=row(4,{buyPriceCents:null,buyQtyRaw:null,buyDateSerial:null,soldQty:100,sellDateSerial:46001,targetPriceCents:700,earlyBuyPriceCents:500})
+    const records=[...base,sale(3,`target:${targets[0].id}`,100),root]
+    const ledger=buildLedger(records,[stock],{extraTargets:targets});balanced(ledger)
+    const plan={id:'p',refId:'buy:cover:T:500',kind:'buy' as const,priceCents:500,qty:50,at:1}
+    const board=buildBuySuggestions(ledger.buySplits,[],[plan])
+    expect(board).toHaveLength(2)
+    expect(board.reduce((sum,r)=>sum+r.qty,0)).toBe(150)
+    expect(board.find(r=>r.key===plan.refId)).toMatchObject({strategyMode:'repair',strategyIsDefault:true,qty:50,edited:true,sources:[{row:4,qty:50}]})
+    expect(board.find(r=>r.key==='buy:cover:T:500:repair')).toMatchObject({strategyMode:'repair',qty:100,sources:[{row:3,qty:100}]})
+    const moved=buildBuySuggestions(ledger.buySplits,[],[{...plan,priceCents:450}])
+    expect(moved.find(r=>r.key===plan.refId)).toMatchObject({priceCents:450,qty:50,sources:[{row:4,qty:50}]})
+    expect(moved.find(r=>r.key==='buy:cover:T:500:repair')).toMatchObject({priceCents:500,qty:100,sources:[{row:3,qty:100}]})
+  })
   it('多笔相邻成本连续排四档，原始记录未改，尾量不增加库存', () => {
     const records = [row(2,{}),row(3,{buyPriceCents:1010})], snapshot = JSON.stringify(records)
     const ledger = buildLedger(records,[stock])
@@ -29,7 +66,7 @@ describe('连续拆档与双模式', () => {
     expect(result.totals.netQty).toBe(2000)
     expect(buildLadder(ledger,{lotIds:['lot:2'],startCents:1200,stepCents:30,direction:-1,perQty:600,rebuyGapCents:200,mode:'repair'},'g',1).map(t=>t.qty)).toEqual([600,400])
   })
-  it('回本：10买7卖亏1500，5回补不提前盈利，7再卖归原链1000', () => {
+  it('低位回本：10买7卖亏1500，5回补不提前盈利，7再卖归原链1000', () => {
     const targets=make('repair'), records=[...base,sale(3,`target:${targets[0].id}`)]
     const bought=buildLedger(records,[stock],{extraTargets:targets,executions:[exec()]});balanced(bought)
     expect(bought.repairChains[0]).toMatchObject({lossCents:-150000,profitCents:0,holdingQty:500})
@@ -38,7 +75,7 @@ describe('连续拆档与双模式', () => {
     expect(closed.repairChains[0]).toMatchObject({lossCents:-150000,profitCents:100000,gapCents:50000})
     expect(closed.totals.profitCents).toBe(-50000)
   })
-  it('做T：卖出暂停原份额，部分回补仅恢复对应高位目标，成本保持实际5元，无回本链', () => {
+  it('底仓做T：卖出暂停原份额，部分回补仅恢复对应高位目标，成本保持实际5元，无回本链', () => {
     const targets=make('baseT'), records=[...base,sale(3,`target:${targets[0].id}`)]
     let ledger=buildLedger(records,[stock],{extraTargets:targets});balanced(ledger)
     expect(ledger.totals.netQty).toBe(500);expect(ledger.repairChains).toHaveLength(0)
@@ -74,7 +111,7 @@ describe('连续拆档与双模式', () => {
     expect(ledger.totals.targetQty).toBe(700)
     expect(ledger.lots.find(l=>l.id==='lot:exec:e1')).toMatchObject({buyPriceCents:500,targetPriceCents:1200})
   })
-  it('回本模式第二轮按实际来源继承，亏损卖出也留在原链', () => {
+  it('低位回本模式第二轮按实际来源继承，亏损卖出也留在原链', () => {
     const targets=make('repair'), records=[...base,sale(3,`target:${targets[0].id}`),sale(4,'target:lot:exec:e1',500,400,'lot:exec:e1')]
     const ledger=buildLedger(records,[stock],{extraTargets:targets,executions:[exec(),{...exec(),id:'e2',sellExecId:'sell:4',orderId:'rb:sell:4',priceCents:300,at:Date.UTC(2025,11,14)}]});balanced(ledger)
     expect(ledger.repairChains).toHaveLength(1)

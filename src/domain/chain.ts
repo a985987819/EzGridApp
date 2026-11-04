@@ -17,6 +17,7 @@ import { mulCents } from './money'
 import type {
   Lot,
   RebuyExecution,
+  RealRebuyCoverSlice,
   RepairBranch,
   RepairChain,
   RepairChainLink,
@@ -198,12 +199,13 @@ function collectPriceSlots(opts: {
   anchorRows: Set<number>
   linkByAnchor: Map<number, RepairChainLink>
   rootOwner: Map<number, number>
-}): { slots: PriceSlot[]; autoLotIds: Set<string>; realCoverBySell: Map<number, number>; pending: Map<number, number> } {
+}): { slots: PriceSlot[]; autoLotIds: Set<string>; realCoverBySell: Map<number, number>; realCoverSlicesBySell: Map<number, RealRebuyCoverSlice[]>; pending: Map<number, number> } {
   const { seeds, lots, sells, executions, memberOwner, anchorRows, linkByAnchor, rootOwner } = opts
   const slots: PriceSlot[] = []
   const autoLotIds = new Set<string>()
   /** 每笔裸卖被「同价真实买入」覆盖的股数（不含回补成交虚拟批次） */
   const realCover = new Map<number, number>()
+  const realCoverSlicesBySell = new Map<number, RealRebuyCoverSlice[]>()
   /** 每条链「槽里还没买回来」的股数（已成交的不算欠） */
   const pending = new Map<number, number>()
 
@@ -353,6 +355,11 @@ function collectPriceSlots(opts: {
         const take = Math.min(need - q, available.get(lot.id) ?? 0)
         q += take
         available.set(lot.id, (available.get(lot.id) ?? 0) - take)
+        if (take > 0) {
+          const slices = realCoverSlicesBySell.get(root.sourceRow) ?? []
+          slices.push({ lotId: lot.id, qty: take })
+          realCoverSlicesBySell.set(root.sourceRow, slices)
+        }
       }
       if (q > 0) {
         realCover.set(root.sourceRow, (realCover.get(root.sourceRow) ?? 0) + q)
@@ -363,7 +370,7 @@ function collectPriceSlots(opts: {
     pending.set(slot.chainAnchor, (pending.get(slot.chainAnchor) ?? 0) + slotPending)
   }
 
-  return { slots, autoLotIds, realCoverBySell: realCover, pending }
+  return { slots, autoLotIds, realCoverBySell: realCover, realCoverSlicesBySell, pending }
 }
 
 /** 价位槽 → 分支：累计槽内批次所有已实现卖出盈亏（不限卖价） */
@@ -409,6 +416,8 @@ export interface ChainBuildResult {
    * ledger 用它算待买基数 / 敞口 / 守恒式；不含回补成交虚拟批次（那些走 execQty）。
    */
   realCoverBySell: Map<number, number>
+  /** 与 realCoverBySell 使用同一次分配得到的实际来源，不另按同价猜匹配。 */
+  realCoverSlicesBySell: Map<number, RealRebuyCoverSlice[]>
 }
 
 export function buildRepairChains(opts: {
@@ -546,6 +555,7 @@ export function buildRepairChains(opts: {
   // 与回补成交共用所有权区间，跨两条链也不能重复认领整批股数或盈利。
   const legacyRealLots = new Map<string, SellExecution>()
   const realBoughtByRoot = new Map<number, number>()
+  const legacyCoverSlicesByRoot = new Map<number, RealRebuyCoverSlice[]>()
   for (const lot of lots) {
     if (lot.id !== `lot:${lot.sourceRow}` || owners.has(lot.id) || auto.autoLotIds.has(lot.id) || lot.buyDate === null) continue
     const matches = (r: SellExecution) => {
@@ -572,12 +582,25 @@ export function buildRepairChains(opts: {
     owners.set(lot.id, assigned)
     legacyRealLots.set(lot.id, root)
     // 同行买回已由 ownLotCoverQty 扣过；只有独立买入可继续平欠量。
-    if (root.sourceRow !== lot.sourceRow) realBoughtByRoot.set(root.sourceRow, (realBoughtByRoot.get(root.sourceRow) ?? 0) + lot.qty)
+    if (root.sourceRow !== lot.sourceRow) {
+      realBoughtByRoot.set(root.sourceRow, (realBoughtByRoot.get(root.sourceRow) ?? 0) + lot.qty)
+      const slices = legacyCoverSlicesByRoot.get(root.sourceRow) ?? []
+      slices.push({ lotId: lot.id, qty: lot.qty })
+      legacyCoverSlicesByRoot.set(root.sourceRow, slices)
+    }
   }
   for (const root of roots) {
     const exec = sum(executions.filter((e) => e.sellExecId === root.id), (e) => e.qty - e.rewardQty)
     const q = Math.min(realBoughtByRoot.get(root.sourceRow) ?? 0, Math.max(0, root.qty - (root.ownLotCoverQty ?? 0) - exec))
-    if (q > 0) auto.realCoverBySell.set(root.sourceRow, q)
+    if (q > 0) {
+      auto.realCoverBySell.set(root.sourceRow, q)
+      let left = q
+      auto.realCoverSlicesBySell.set(root.sourceRow, (legacyCoverSlicesByRoot.get(root.sourceRow) ?? []).flatMap(slice => {
+        const take = Math.min(left, slice.qty)
+        left -= take
+        return take > 0 ? [{ lotId: slice.lotId, qty: take }] : []
+      }))
+    }
   }
   const sortedExecs = [...executions].sort((a, b) => a.at - b.at || a.id.localeCompare(b.id))
   // 已被价位槽自动收编的回补成交，不再走人工/锚点归属（每份盈亏只算一次）
@@ -776,5 +799,6 @@ export function buildRepairChains(opts: {
   return {
     chains: chains.sort((a, b) => a.anchorRow - b.anchorRow),
     realCoverBySell: auto.realCoverBySell,
+    realCoverSlicesBySell: auto.realCoverSlicesBySell,
   }
 }
