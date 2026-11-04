@@ -36,7 +36,7 @@ describe('管理页操作指南索引', () => {
     const headings = documentHeadings(roadmap.body)
     expect(new Set(headings.map(h => h.id)).size).toBe(headings.length)
     expect(headings.some(h => h.title.includes('下一轮入口'))).toBe(true)
-    expect(roadmap.body).toContain('云同步、设备绑定与本文新增优化尚未实现')
+    expect(roadmap.body).toContain('云同步、设备绑定尚未实现')
     expect(roadmap.body).toContain('手动上传、手动下载，核对后恢复')
   })
 })

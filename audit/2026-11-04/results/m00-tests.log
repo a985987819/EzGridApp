@@ -1,0 +1,47 @@
+
+> grid-trading@0.9.0 test
+> vitest run --no-file-parallelism
+
+
+ RUN  v2.1.9 E:/project/EzGridApp
+
+ ✓ src/domain/chain.spec.ts (31 tests) 43ms
+ ✓ src/domain/matrix.spec.ts (39 tests) 105ms
+ ✓ src/domain/regressions.spec.ts (41 tests) 38ms
+ ✓ src/domain/hedge.spec.ts (11 tests) 26ms
+ ✓ src/io/ledgerWorkbook.spec.ts (20 tests) 1313ms
+ ✓ src/domain/sellFirst.spec.ts (24 tests) 13ms
+ ✓ src/domain/gridStrategy.spec.ts (11 tests) 26ms
+ ✓ src/domain/backup.spec.ts (12 tests) 7ms
+ ✓ src/domain/buyBoard.spec.ts (15 tests) 223ms
+ ✓ src/domain/tradeAccounting.spec.ts (13 tests) 23ms
+ ✓ src/domain/merge.spec.ts (13 tests) 13ms
+ ✓ src/domain/edit.spec.ts (15 tests) 222ms
+ ✓ src/domain/manual.spec.ts (11 tests) 15ms
+ ✓ src/domain/booking.spec.ts (10 tests) 25ms
+ ✓ src/io/baseline.spec.ts (19 tests) 6ms
+ ✓ src/domain/buyWindow.spec.ts (8 tests) 12ms
+ ✓ src/domain/valuation.spec.ts (13 tests) 89ms
+ ✓ src/domain/v67.spec.ts (7 tests) 28ms
+ ✓ src/domain/sandbox.spec.ts (7 tests) 13ms
+ ✓ src/io/csv.spec.ts (13 tests) 116ms
+ ✓ src/domain/unlink.spec.ts (6 tests) 8ms
+ ✓ src/domain/importPlan.spec.ts (8 tests) 7ms
+ ✓ src/domain/formDefaults.spec.ts (9 tests) 15ms
+ ✓ src/io/excelTemplate.spec.ts (5 tests) 193ms
+ ✓ src/domain/gridStats.spec.ts (5 tests) 5ms
+ ✓ src/domain/reward.spec.ts (7 tests) 24ms
+ ✓ src/domain/recordNo.spec.ts (10 tests) 5ms
+ ✓ src/domain/moneyPlan.spec.ts (9 tests) 4ms
+ ✓ src/help/content.spec.ts (4 tests) 6ms
+ ✓ src/ui/nav.spec.ts (9 tests) 5ms
+ ✓ src/domain/money.spec.ts (15 tests) 6ms
+ ✓ src/domain/stocks.spec.ts (6 tests) 4ms
+ ✓ src/ui/nanoid.spec.ts (4 tests) 139ms
+ ✓ src/domain/dates.spec.ts (4 tests) 4ms
+ ✓ src/ui/release.spec.ts (2 tests) 3ms
+
+ Test Files  35 passed (35)
+      Tests  436 passed (436)
+   Start at  10:30:28
+   Duration  14.79s (transform 687ms, setup 0ms, collect 3.91s, tests 2.78s, environment 5ms, prepare 2.62s)

@@ -1,0 +1,145 @@
+{
+  "date": "2026-11-04",
+  "browser": {
+    "protocolVersion": "1.3",
+    "product": "Chrome/156.0.8078.80",
+    "revision": "@fb096c0011f9d50f0a264a9376420cdea9c421e3",
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
+    "jsVersion": "15.6.75.27"
+  },
+  "cases": [
+    {
+      "id": "D08-public-import",
+      "actual": [
+        {
+          "date": 46083,
+          "qty": 100
+        }
+      ]
+    },
+    {
+      "id": "D09-public-import",
+      "actual": {
+        "qty": 100.5,
+        "validation": "records[0] buyQtyRaw 必须是有限安全整数"
+      }
+    },
+    {
+      "id": "D06-public-restore-minimal",
+      "actual": {
+        "accepted": true,
+        "records": [
+          {
+            "sourceRow": 2,
+            "stockName": "T",
+            "importKey": "minimal"
+          }
+        ]
+      }
+    },
+    {
+      "id": "V05-public-manual",
+      "actual": {
+        "accepted": false,
+        "error": "成交价量必须是大于0的安全整数"
+      }
+    },
+    {
+      "id": "D07-public-empty-json",
+      "actual": {
+        "accepted": false,
+        "error": "这不是完整备份：缺少交易记录表，拒绝混合恢复"
+      }
+    },
+    {
+      "id": "export-side-effects",
+      "actual": {
+        "before": "1793759807735",
+        "after": "1793759807748"
+      }
+    },
+    {
+      "id": "post-probe-state",
+      "actual": {
+        "rows": 1000,
+        "checks": [],
+        "total": {
+          "rows": 950,
+          "buyQty": 410000,
+          "buyAmountCents": 380000000,
+          "sellCount": 300,
+          "sellQty": 90000,
+          "sellAmountCents": 80500000,
+          "profitCents": 500000,
+          "targetCount": 850,
+          "targetQty": 320000,
+          "targetAmountCents": 360500000,
+          "expectProfitCents": 60500000,
+          "rebuyCount": 200,
+          "rebuyBaseQty": 55000,
+          "rebuyRewardQty": 5000,
+          "rebuyQty": 60000,
+          "rebuyAmountCents": 30000000,
+          "rewardQty": 5000,
+          "rebuyExecQty": 35000,
+          "exposureExecBaseQty": 0,
+          "rebuyRemainingQty": 25000,
+          "netQty": 320000,
+          "exposureQty": 0
+        }
+      }
+    }
+  ],
+  "timings": {
+    "indexedDbRead": [
+      5,
+      4.599999904632568,
+      4.299999952316284,
+      5.6000001430511475,
+      4.5,
+      4.599999904632568,
+      6.6000001430511475,
+      5,
+      4.8999998569488525,
+      6,
+      4.799999952316284,
+      4.5,
+      5.300000190734863,
+      5.199999809265137,
+      4.700000047683716,
+      4.700000047683716,
+      6.700000047683716,
+      4.8999998569488525,
+      4.800000190734863,
+      6
+    ],
+    "exportBackup": [
+      5.799999952316284,
+      8.099999904632568,
+      21.200000047683716,
+      6.299999952316284,
+      5.6000001430511475,
+      7.099999904632568,
+      6.799999952316284,
+      7.900000095367432,
+      6.200000047683716,
+      5.699999809265137,
+      7.400000095367432,
+      6.200000047683716,
+      6.599999904632568,
+      6,
+      6.200000047683716,
+      7,
+      5.900000095367432,
+      8,
+      6.3999998569488525,
+      5.900000095367432
+    ]
+  },
+  "environment": {
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
+    "timezone": "Asia/Shanghai",
+    "rows": 1000,
+    "checks": []
+  }
+}

@@ -1,0 +1,272 @@
+{
+  "date": "2026-11-04",
+  "cases": [
+    {
+      "id": "C01",
+      "scope": "domain",
+      "expected": {
+        "profitCents": -30000,
+        "holdingQty": 200
+      },
+      "actual": {
+        "profitCents": 0,
+        "holdingQty": 0,
+        "chains": [
+          {
+            "row": 1,
+            "loss": -150000,
+            "profit": 0,
+            "holding": 0
+          },
+          {
+            "row": 2,
+            "loss": -30000,
+            "profit": 0,
+            "holding": 0
+          }
+        ],
+        "checks": []
+      },
+      "status": "reproduced"
+    },
+    {
+      "id": "C02",
+      "scope": "domain",
+      "expected": {
+        "holdingQty": 500,
+        "profitCents": 100000
+      },
+      "actual": {
+        "holdingQty": 0,
+        "profitCents": 100000,
+        "totals": {
+          "rows": 3,
+          "buyQty": 1500,
+          "buyAmountCents": 1000000,
+          "sellCount": 2,
+          "sellQty": 1000,
+          "sellAmountCents": 700000,
+          "profitCents": -50000,
+          "targetCount": 1,
+          "targetQty": 500,
+          "targetAmountCents": 350000,
+          "expectProfitCents": 100000,
+          "rebuyCount": 2,
+          "rebuyBaseQty": 1000,
+          "rebuyRewardQty": 0,
+          "rebuyQty": 1000,
+          "rebuyAmountCents": 500000,
+          "rewardQty": 0,
+          "rebuyExecQty": 1000,
+          "exposureExecBaseQty": 0,
+          "rebuyRemainingQty": 0,
+          "netQty": 500,
+          "exposureQty": 0
+        },
+        "checks": []
+      },
+      "status": "reproduced"
+    },
+    {
+      "id": "C03",
+      "scope": "domain",
+      "expected": {
+        "holdingQty": 0
+      },
+      "actual": {
+        "holdingQty": 500,
+        "closedAt": 1766376000000
+      },
+      "status": "reproduced"
+    },
+    {
+      "id": "C03-next-day-control",
+      "scope": "domain",
+      "expected": {
+        "holdingQty": 0
+      },
+      "actual": {
+        "holdingQty": 0,
+        "closedAt": 1766376000000
+      },
+      "status": "not-reproduced-in-this-case"
+    },
+    {
+      "id": "C04",
+      "scope": "domain",
+      "expected": {
+        "actualCost": 550,
+        "actualSavingCents": 75000
+      },
+      "actual": {
+        "actualCost": 550,
+        "branchCost": 500,
+        "savingCents": 100000
+      },
+      "status": "reproduced"
+    },
+    {
+      "id": "D08",
+      "scope": "parseCsvText",
+      "expected": "reject nonexistent calendar date",
+      "actual": {
+        "parsedDate": "2026-03-02"
+      },
+      "status": "reproduced"
+    },
+    {
+      "id": "D09",
+      "scope": "parseCsvText vs validateBackup",
+      "expected": "reject fractional shares",
+      "actual": {
+        "qty": 100.5,
+        "backupValidation": "records[0] buyQtyRaw 必须是有限安全整数"
+      },
+      "status": "reproduced"
+    },
+    {
+      "id": "D10",
+      "scope": "real XLSX date1904",
+      "expected": "2025-11-01",
+      "actual": {
+        "parsedDate": "2021-10-31",
+        "date1904": true,
+        "serial": 44500
+      },
+      "status": "reproduced"
+    },
+    {
+      "id": "V05",
+      "scope": "money/qty/manual",
+      "expected": "reject unsafe price/quantity/product",
+      "actual": {
+        "toCents": "Infinity",
+        "quantity1e20Accepted": true,
+        "productSafe": false,
+        "manualErrors": [],
+        "manualPrice": "Infinity"
+      },
+      "status": "reproduced"
+    },
+    {
+      "id": "D06-missingRequired",
+      "scope": "validateBackup",
+      "expected": "reject malformed current snapshot record",
+      "actual": {
+        "validation": null
+      },
+      "status": "reproduced"
+    },
+    {
+      "id": "D06-unsafeRow",
+      "scope": "validateBackup",
+      "expected": "reject malformed current snapshot record",
+      "actual": {
+        "validation": null
+      },
+      "status": "reproduced"
+    },
+    {
+      "id": "D06-danglingExec",
+      "scope": "validateBackup",
+      "expected": "reject malformed current snapshot record",
+      "actual": {
+        "validation": "records[0].soldLotId 指向不存在的回补成交 lot:exec:missing"
+      },
+      "status": "not-reproduced-in-this-case"
+    },
+    {
+      "id": "D06-cycle",
+      "scope": "validateBackup",
+      "expected": "reject malformed current snapshot record",
+      "actual": {
+        "validation": "records 记录 1 来源形成循环引用"
+      },
+      "status": "not-reproduced-in-this-case"
+    }
+  ],
+  "fixtures": [
+    {
+      "file": "26年网格记录.xlsx",
+      "rows": 62,
+      "totals": {
+        "rows": 62,
+        "buyQty": 31800,
+        "buyAmountCents": 36032000,
+        "sellCount": 33,
+        "sellQty": 18600,
+        "sellAmountCents": 19055800,
+        "profitCents": 797000,
+        "targetCount": 30,
+        "targetQty": 15200,
+        "targetAmountCents": 20192400,
+        "expectProfitCents": 1257500,
+        "rebuyCount": 4,
+        "rebuyBaseQty": 2000,
+        "rebuyRewardQty": 0,
+        "rebuyQty": 2000,
+        "rebuyAmountCents": 1582000,
+        "rewardQty": 0,
+        "rebuyExecQty": 0,
+        "exposureExecBaseQty": 0,
+        "rebuyRemainingQty": 2000,
+        "netQty": 13200,
+        "exposureQty": 2000
+      },
+      "failedChecks": [],
+      "anomalies": [
+        "negativeProfit",
+        "negativeProfit",
+        "needsPrice",
+        "dateMissing",
+        "dateMissing",
+        "dateMissing",
+        "dateMissing",
+        "dateMissing",
+        "dateMissing",
+        "dateMissing",
+        "dateMissing",
+        "dateMissing"
+      ],
+      "backupValidation": null,
+      "workbookRoundtripExact": true,
+      "workbookDifferences": []
+    },
+    {
+      "file": "26年网格记录-交易记录.csv",
+      "rows": 62,
+      "totals": {
+        "rows": 62,
+        "buyQty": 33300,
+        "buyAmountCents": 37218500,
+        "sellCount": 33,
+        "sellQty": 18600,
+        "sellAmountCents": 19652200,
+        "profitCents": 306100,
+        "targetCount": 30,
+        "targetQty": 14700,
+        "targetAmountCents": 19102600,
+        "expectProfitCents": 1230200,
+        "rebuyCount": 1,
+        "rebuyBaseQty": 500,
+        "rebuyRewardQty": 0,
+        "rebuyQty": 500,
+        "rebuyAmountCents": 400500,
+        "rewardQty": 0,
+        "rebuyExecQty": 0,
+        "exposureExecBaseQty": 0,
+        "rebuyRemainingQty": 500,
+        "netQty": 14700,
+        "exposureQty": 0
+      },
+      "failedChecks": [],
+      "anomalies": [
+        "negativeProfit",
+        "negativeProfit"
+      ],
+      "backupValidation": null,
+      "workbookRoundtripExact": true,
+      "workbookDifferences": []
+    }
+  ]
+}

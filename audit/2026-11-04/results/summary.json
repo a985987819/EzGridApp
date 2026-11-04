@@ -1,0 +1,1872 @@
+{
+  "date": "2026-11-04",
+  "commit": "0d0791a1fb5c1ab94f6e33eee347b621a0d4828e",
+  "environment": {
+    "node": "v22.22.2",
+    "os": "Windows_NT 10.0.26200",
+    "arch": "x64",
+    "cpu": "12th Gen Intel(R) Core(TM) i9-12900KF",
+    "logicalCpus": 24,
+    "totalMemoryBytes": 51343843328
+  },
+  "build": {
+    "schema": 1,
+    "app": "ezgrid",
+    "buildId": "a0cd9be182a1bb5a",
+    "version": "0.9.0",
+    "commit": "0d0791a1fb5c1ab94f6e33eee347b621a0d4828e",
+    "builtAt": "2026-11-04T02:30:37.308Z",
+    "base": "/EzGridApp/",
+    "releaseNotes": [
+      "feat: 管理页规划用钱（资金×温度带×整手可买×值博率）",
+      "perf: 字体子集化、页面拆包与价格树视角保持（预缓存-41%）",
+      "docs: 增加云同步与性能易用性持续优化路线图",
+      "feat: 使用新交易图标并适配安卓及iOS主屏",
+      "feat: 概览新增估值温度带（股价/PE/PB 近5年百分位）"
+    ]
+  },
+  "assets": [
+    {
+      "file": "assets/ManageGuide-Dh_4pSbQ.js",
+      "bytes": 516556,
+      "gzipBytes": 194343
+    },
+    {
+      "file": "assets/xlsx-Cznzrv2E.js",
+      "bytes": 429474,
+      "gzipBytes": 143080
+    },
+    {
+      "file": "pwa-512.png",
+      "bytes": 246748,
+      "gzipBytes": 245120
+    },
+    {
+      "file": "assets/vendor-ui-tMghNRmn.js",
+      "bytes": 198296,
+      "gzipBytes": 63943
+    },
+    {
+      "file": "assets/noto-sans-sc-700-subset-qk3WuCtb.woff2",
+      "bytes": 194844,
+      "gzipBytes": 194922
+    },
+    {
+      "file": "assets/noto-sans-sc-400-subset-_clRQzQM.woff2",
+      "bytes": 190408,
+      "gzipBytes": 190486
+    },
+    {
+      "file": "assets/index-B7Z4vQx3.css",
+      "bytes": 180370,
+      "gzipBytes": 35173
+    },
+    {
+      "file": "assets/sweet-corner.1a590797-EARs38R-.svg",
+      "bytes": 162176,
+      "gzipBytes": 26264
+    },
+    {
+      "file": "assets/index-D6FEbUIX.js",
+      "bytes": 153244,
+      "gzipBytes": 49514
+    },
+    {
+      "file": "assets/valuationData-C0j4aU__.js",
+      "bytes": 147159,
+      "gzipBytes": 37512
+    },
+    {
+      "file": "pwa-maskable-512.png",
+      "bytes": 142132,
+      "gzipBytes": 140109
+    },
+    {
+      "file": "assets/vendor-ui-eHGztPIi.css",
+      "bytes": 142049,
+      "gzipBytes": 25505
+    },
+    {
+      "file": "assets/vendor-dexie-NsN_qb9y.js",
+      "bytes": 99614,
+      "gzipBytes": 32580
+    },
+    {
+      "file": "assets/forest-grove.627786f4-HO7Y83nZ.svg",
+      "bytes": 62606,
+      "gzipBytes": 9059
+    },
+    {
+      "file": "assets/OrdersPage-dhM3AqS2.js",
+      "bytes": 60608,
+      "gzipBytes": 17976
+    },
+    {
+      "file": "assets/starry-camp.8adcb0c0-De327Yuo.svg",
+      "bytes": 59191,
+      "gzipBytes": 8801
+    },
+    {
+      "file": "assets/TradesPage-czgiYOPU.js",
+      "bytes": 48718,
+      "gzipBytes": 15000
+    },
+    {
+      "file": "assets/ManagePage-CvWBA1rQ.js",
+      "bytes": 47141,
+      "gzipBytes": 16606
+    },
+    {
+      "file": "pwa-192.png",
+      "bytes": 46894,
+      "gzipBytes": 46927
+    },
+    {
+      "file": "apple-touch-icon.png",
+      "bytes": 41221,
+      "gzipBytes": 41254
+    },
+    {
+      "file": "assets/Overview-CVSQXTzF.js",
+      "bytes": 37497,
+      "gzipBytes": 13814
+    },
+    {
+      "file": "assets/coffee-break.8079b13b-B-YrWs6V.svg",
+      "bytes": 31656,
+      "gzipBytes": 4703
+    },
+    {
+      "file": "assets/ledgerWorkbook-HcqLuEb8.js",
+      "bytes": 27044,
+      "gzipBytes": 10576
+    },
+    {
+      "file": "assets/nunito-latin-900-normal.8b5d13b8-BVB1fGs6.woff2",
+      "bytes": 16676,
+      "gzipBytes": 16693
+    },
+    {
+      "file": "assets/nunito-latin-500-normal.78b3b3a4-EugFkASW.woff2",
+      "bytes": 16428,
+      "gzipBytes": 16453
+    },
+    {
+      "file": "assets/nunito-latin-700-normal.0b62b606-Dort48En.woff2",
+      "bytes": 16228,
+      "gzipBytes": 16243
+    },
+    {
+      "file": "workbox-9c191d2f.js",
+      "bytes": 15112,
+      "gzipBytes": 5192
+    },
+    {
+      "file": "assets/StatsPage-DjeOAwIr.js",
+      "bytes": 14931,
+      "gzipBytes": 4531
+    },
+    {
+      "file": "assets/BookingCheck-C8VeOh7b.js",
+      "bytes": 11380,
+      "gzipBytes": 5211
+    },
+    {
+      "file": "assets/scrollHold-CVUb12KX.js",
+      "bytes": 5800,
+      "gzipBytes": 2369
+    },
+    {
+      "file": "assets/RepairChainCard-0Mt48jON.js",
+      "bytes": 5701,
+      "gzipBytes": 1958
+    },
+    {
+      "file": "assets/ValuationBand-UlQX8Ysj.js",
+      "bytes": 3721,
+      "gzipBytes": 1831
+    },
+    {
+      "file": "sw.js",
+      "bytes": 3567,
+      "gzipBytes": 1480
+    },
+    {
+      "file": "assets/Select-CCBno4Fm.js",
+      "bytes": 3246,
+      "gzipBytes": 1481
+    },
+    {
+      "file": "favicon.png",
+      "bytes": 2045,
+      "gzipBytes": 2068
+    },
+    {
+      "file": "index.html",
+      "bytes": 1501,
+      "gzipBytes": 749
+    },
+    {
+      "file": "assets/scrollHeader-CHBm3Afc.js",
+      "bytes": 1381,
+      "gzipBytes": 763
+    },
+    {
+      "file": "release-a0cd9be182a1bb5a.js",
+      "bytes": 663,
+      "gzipBytes": 608
+    },
+    {
+      "file": "assets/nanoid-CjuHVE7e.js",
+      "bytes": 601,
+      "gzipBytes": 389
+    },
+    {
+      "file": "version.json",
+      "bytes": 552,
+      "gzipBytes": 507
+    },
+    {
+      "file": "assets/format-DnAQhYsG.js",
+      "bytes": 544,
+      "gzipBytes": 322
+    },
+    {
+      "file": "manifest.webmanifest",
+      "bytes": 502,
+      "gzipBytes": 325
+    }
+  ],
+  "nodePerf": [
+    {
+      "kind": "mixed",
+      "rows": 1000,
+      "stocks": 50,
+      "phase": "ledger",
+      "warmup": 5,
+      "samples": 20,
+      "medianMs": 19.77819999999997,
+      "p95Ms": 28.22129999999993,
+      "rawMs": [
+        20.156499999999937,
+        18.16039999999998,
+        18.314899999999966,
+        25.015100000000075,
+        22.40639999999985,
+        20.183599999999842,
+        19.9692,
+        28.22129999999993,
+        20.597099999999955,
+        18.960800000000063,
+        18.703500000000076,
+        16.367700000000013,
+        24.171299999999974,
+        28.317599999999857,
+        25.498399999999947,
+        18.639499999999998,
+        19.044399999999996,
+        19.58719999999994,
+        18.10419999999999,
+        17.609399999999823
+      ],
+      "outputHash": "3fca83e936dd1c7f7eadd0cd0d4266c69b85f9929e5a0ee5d8e5191fdf7d2cf6",
+      "inputBytes": 364437,
+      "inputHash": "15ae3be1ea40eea059d27c0640817deb65ac1a355dd1b400a92754302a9b7e68",
+      "relationCounts": {
+        "executions": 150,
+        "hedges": 50,
+        "chains": 50,
+        "targets": 100,
+        "buyTargets": 50,
+        "receipts": 50
+      },
+      "failedChecks": [],
+      "anomalies": {}
+    },
+    {
+      "kind": "mixed",
+      "rows": 1000,
+      "stocks": 50,
+      "phase": "validate",
+      "warmup": 5,
+      "samples": 20,
+      "medianMs": 1.1012499999999932,
+      "p95Ms": 1.869899999999916,
+      "rawMs": [
+        1.0991000000000213,
+        1.869899999999916,
+        1.0833999999999833,
+        1.324200000000019,
+        1.0773000000000366,
+        1.045099999999934,
+        1.044499999999971,
+        1.124400000000037,
+        1.103399999999965,
+        1.068899999999985,
+        1.0439999999999827,
+        1.0298999999999978,
+        1.0346999999999298,
+        1.1298000000000457,
+        1.1281999999999925,
+        1.288599999999974,
+        1.4185000000001082,
+        1.9200000000000728,
+        1.044399999999996,
+        1.322999999999979
+      ],
+      "outputHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "inputBytes": 364437,
+      "inputHash": "15ae3be1ea40eea059d27c0640817deb65ac1a355dd1b400a92754302a9b7e68",
+      "relationCounts": {
+        "executions": 150,
+        "hedges": 50,
+        "chains": 50,
+        "targets": 100,
+        "buyTargets": 50,
+        "receipts": 50
+      },
+      "validation": null
+    },
+    {
+      "kind": "mixed",
+      "rows": 1000,
+      "stocks": 50,
+      "phase": "views",
+      "warmup": 5,
+      "samples": 20,
+      "medianMs": 27.4366,
+      "p95Ms": 31.486400000000003,
+      "rawMs": [
+        31.27710000000002,
+        28.607200000000034,
+        28.78229999999985,
+        26.605000000000018,
+        25.92990000000009,
+        27.28729999999996,
+        26.76019999999994,
+        26.261400000000094,
+        26.950000000000045,
+        31.80709999999999,
+        31.486400000000003,
+        27.605099999999993,
+        27.585900000000038,
+        26.917699999999968,
+        28.22239999999988,
+        28.90409999999997,
+        30.407600000000002,
+        25.320500000000038,
+        25.537000000000035,
+        26.170500000000175
+      ],
+      "outputHash": "7d14bf18493a62ab297ee85cd7ba5d616728241b4afd71c7b79b3598f5c4087b",
+      "inputBytes": 364437,
+      "inputHash": "15ae3be1ea40eea059d27c0640817deb65ac1a355dd1b400a92754302a9b7e68",
+      "relationCounts": {
+        "executions": 150,
+        "hedges": 50,
+        "chains": 50,
+        "targets": 100,
+        "buyTargets": 50,
+        "receipts": 50
+      }
+    },
+    {
+      "kind": "mixed",
+      "rows": 10000,
+      "stocks": 500,
+      "phase": "ledger",
+      "warmup": 5,
+      "samples": 20,
+      "medianMs": 5935.625349999995,
+      "p95Ms": 7388.931800000006,
+      "rawMs": [
+        5913.3943,
+        5529.346400000002,
+        6078.402000000002,
+        5977.369400000003,
+        5666.821400000001,
+        5685.806699999986,
+        5592.2734000000055,
+        6421.449399999998,
+        5736.280099999989,
+        7388.931800000006,
+        6319.692800000004,
+        5500.410399999993,
+        6046.740600000005,
+        5457.519199999995,
+        7853.825100000002,
+        6465.930499999988,
+        5690.693299999984,
+        5976.216199999995,
+        5957.85639999999,
+        5570.657600000006
+      ],
+      "outputHash": "50257d66b540f5510df46eeeadb1571bb56c3544fd05c9962adea988c1cd2188",
+      "inputBytes": 3676891,
+      "inputHash": "1c3a03675c30b90b7e5f73a19dae1cc8246083f2fbbc45682a0f811455b34f73",
+      "relationCounts": {
+        "executions": 1500,
+        "hedges": 500,
+        "chains": 500,
+        "targets": 1000,
+        "buyTargets": 500,
+        "receipts": 500
+      },
+      "failedChecks": [],
+      "anomalies": {}
+    },
+    {
+      "kind": "mixed",
+      "rows": 10000,
+      "stocks": 500,
+      "phase": "validate",
+      "warmup": 5,
+      "samples": 20,
+      "medianMs": 29.768300000000067,
+      "p95Ms": 37.39229999999998,
+      "rawMs": [
+        34.990099999999984,
+        27.965200000000095,
+        25.864499999999907,
+        23.308199999999943,
+        24.08549999999991,
+        23.479299999999967,
+        25.243400000000065,
+        30.272899999999936,
+        23.41949999999997,
+        24.053199999999833,
+        26.345800000000054,
+        36.36709999999994,
+        37.39229999999998,
+        34.08889999999997,
+        31.18820000000005,
+        44.36959999999999,
+        34.64879999999994,
+        29.2637000000002,
+        32.01870000000008,
+        34.214500000000044
+      ],
+      "outputHash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "inputBytes": 3676891,
+      "inputHash": "1c3a03675c30b90b7e5f73a19dae1cc8246083f2fbbc45682a0f811455b34f73",
+      "relationCounts": {
+        "executions": 1500,
+        "hedges": 500,
+        "chains": 500,
+        "targets": 1000,
+        "buyTargets": 500,
+        "receipts": 500
+      },
+      "validation": null
+    },
+    {
+      "kind": "mixed-four-stocks",
+      "rows": 1000,
+      "stocks": 4,
+      "phase": "ledger",
+      "warmup": 5,
+      "samples": 20,
+      "medianMs": 9.47610000000003,
+      "p95Ms": 11.752200000000016,
+      "rawMs": [
+        9.720100000000002,
+        9.632299999999987,
+        8.625700000000052,
+        10.684099999999944,
+        7.606899999999996,
+        11.131799999999998,
+        8.105000000000018,
+        8.489300000000071,
+        10.782600000000002,
+        7.795500000000061,
+        10.849999999999909,
+        8.981600000000071,
+        9.319900000000075,
+        11.44780000000003,
+        8.812900000000013,
+        11.028800000000047,
+        8.641200000000026,
+        11.752200000000016,
+        8.691299999999956,
+        11.981999999999971
+      ],
+      "outputHash": "c76dd7831e570549c359c7730d8762359eb43c89e7c2f8a415c456016a72dee9",
+      "inputBytes": 354295,
+      "inputHash": "a3aba4ea01ae147753bd779972a084e3e851145cb2798757a5d646882b1af5f0",
+      "relationCounts": {
+        "executions": 150,
+        "hedges": 50,
+        "chains": 50,
+        "targets": 100,
+        "buyTargets": 50,
+        "receipts": 50
+      },
+      "failedChecks": [],
+      "anomalies": {}
+    },
+    {
+      "kind": "ordinary",
+      "rows": 10000,
+      "stocks": 4,
+      "phase": "ledger",
+      "warmup": 5,
+      "samples": 20,
+      "medianMs": 28.31770000000006,
+      "p95Ms": 42.537700000000086,
+      "rawMs": [
+        32.992500000000064,
+        47.42900000000009,
+        42.537700000000086,
+        33.45789999999988,
+        30.76520000000005,
+        24.59180000000015,
+        28.414800000000014,
+        33.0338999999999,
+        27.452800000000025,
+        29.935400000000072,
+        33.42730000000006,
+        28.220600000000104,
+        29.03559999999993,
+        25.16729999999984,
+        24.566400000000158,
+        27.517799999999852,
+        22.720800000000054,
+        23.60419999999999,
+        24.057399999999916,
+        27.756999999999834
+      ],
+      "outputHash": "37bf0a5b7f74de262807a1394145b7552bcaf84eb487b6c704dc67f82d4a8faa",
+      "inputBytes": 2788379,
+      "inputHash": "f68574e195568c3d37674135280df2da263097e5a84367313c0edbdfb648e350",
+      "relationCounts": {
+        "executions": 0,
+        "hedges": 0,
+        "chains": 0,
+        "targets": 0,
+        "buyTargets": 0,
+        "receipts": 0
+      },
+      "failedChecks": [],
+      "anomalies": {}
+    },
+    {
+      "kind": "ordinary",
+      "rows": 50000,
+      "stocks": 4,
+      "phase": "ledger",
+      "warmup": 5,
+      "samples": 20,
+      "medianMs": 162.88919999999985,
+      "p95Ms": 227.36369999999988,
+      "rawMs": [
+        142.3809000000001,
+        175.34899999999993,
+        186.5643,
+        170.65599999999995,
+        149.21129999999994,
+        126.6577000000002,
+        110.0909999999999,
+        138.57489999999962,
+        145.15750000000025,
+        139.7247000000002,
+        117.35729999999967,
+        155.12239999999974,
+        219.42419999999993,
+        261.05480000000034,
+        222.82960000000003,
+        196.80340000000024,
+        227.36369999999988,
+        183.40310000000045,
+        145.56780000000072,
+        226.53819999999996
+      ],
+      "outputHash": "daadc82379740f3ed20f2778918f3ff681a92078c38dff2e8abeb48ef9c71b73",
+      "inputBytes": 14028379,
+      "inputHash": "6bc93359a13eb4c7231b3eec1a8b63f8e4ef7f57ed939c57828bee698a147f3f",
+      "relationCounts": {
+        "executions": 0,
+        "hedges": 0,
+        "chains": 0,
+        "targets": 0,
+        "buyTargets": 0,
+        "receipts": 0
+      },
+      "failedChecks": [],
+      "anomalies": {}
+    }
+  ],
+  "profile": {
+    "totalMs": 1804.096,
+    "self": [
+      {
+        "name": "(anonymous)",
+        "url": "file:///E:/project/EzGridApp/src/domain/chain.ts",
+        "line": 520,
+        "ms": 120.428,
+        "percent": 6.67525453190961
+      },
+      {
+        "name": "buildRepairChains",
+        "url": "file:///E:/project/EzGridApp/src/domain/chain.ts",
+        "line": 242,
+        "ms": 104.243,
+        "percent": 5.77812932349498
+      },
+      {
+        "name": "buildLedger",
+        "url": "file:///E:/project/EzGridApp/src/domain/ledger.ts",
+        "line": 30,
+        "ms": 69.556,
+        "percent": 3.8554489339813403
+      },
+      {
+        "name": "(anonymous)",
+        "url": "file:///E:/project/EzGridApp/src/domain/chain.ts",
+        "line": 165,
+        "ms": 21.739,
+        "percent": 1.2049802227819362
+      },
+      {
+        "name": "(anonymous)",
+        "url": "file:///E:/project/EzGridApp/src/domain/ledger.ts",
+        "line": 807,
+        "ms": 19.986,
+        "percent": 1.1078124445705773
+      },
+      {
+        "name": "serialToIso",
+        "url": "file:///E:/project/EzGridApp/src/domain/defaults.ts",
+        "line": 45,
+        "ms": 19.723,
+        "percent": 1.0932345063677322
+      },
+      {
+        "name": "rootsForLot",
+        "url": "file:///E:/project/EzGridApp/src/domain/chain.ts",
+        "line": 180,
+        "ms": 14.183,
+        "percent": 0.7861555039199688
+      },
+      {
+        "name": "(anonymous)",
+        "url": "file:///E:/project/EzGridApp/src/domain/chain.ts",
+        "line": 525,
+        "ms": 12.578,
+        "percent": 0.6971912802866367
+      },
+      {
+        "name": "collectPriceSlots",
+        "url": "file:///E:/project/EzGridApp/src/domain/chain.ts",
+        "line": 90,
+        "ms": 11.786,
+        "percent": 0.6532911774096279
+      },
+      {
+        "name": "defaultHedges",
+        "url": "file:///E:/project/EzGridApp/src/domain/sellFirst.ts",
+        "line": 10,
+        "ms": 10.336,
+        "percent": 0.5729185143140941
+      },
+      {
+        "name": "slotBranch",
+        "url": "file:///E:/project/EzGridApp/src/domain/chain.ts",
+        "line": 209,
+        "ms": 7.973,
+        "percent": 0.44193878817978643
+      },
+      {
+        "name": "(anonymous)",
+        "url": "file:///E:/project/EzGridApp/src/domain/chain.ts",
+        "line": 268,
+        "ms": 7.85,
+        "percent": 0.4351209691723722
+      },
+      {
+        "name": "serialToIso",
+        "url": "file:///E:/project/EzGridApp/src/domain/defaults.ts",
+        "line": 45,
+        "ms": 6.233,
+        "percent": 0.345491592465146
+      },
+      {
+        "name": "(anonymous)",
+        "url": "file:///E:/project/EzGridApp/src/domain/ledger.ts",
+        "line": 816,
+        "ms": 6.219,
+        "percent": 0.3447155805456029
+      }
+    ],
+    "inclusive": [
+      {
+        "name": "buildLedger",
+        "url": "file:///E:/project/EzGridApp/src/domain/ledger.ts",
+        "line": 30,
+        "ms": 548.821,
+        "percent": 30.42083126396821
+      },
+      {
+        "name": "buildRepairChains",
+        "url": "file:///E:/project/EzGridApp/src/domain/chain.ts",
+        "line": 242,
+        "ms": 335.763,
+        "percent": 18.61114929582461
+      },
+      {
+        "name": "(anonymous)",
+        "url": "file:///E:/project/EzGridApp/src/domain/chain.ts",
+        "line": 520,
+        "ms": 136.278,
+        "percent": 7.553810883678031
+      },
+      {
+        "name": "collectPriceSlots",
+        "url": "file:///E:/project/EzGridApp/src/domain/chain.ts",
+        "line": 90,
+        "ms": 58.544,
+        "percent": 3.2450601298378805
+      },
+      {
+        "name": "summarizeByStock",
+        "url": "file:///E:/project/EzGridApp/src/domain/ledger.ts",
+        "line": 805,
+        "ms": 44.32,
+        "percent": 2.4566320195821065
+      },
+      {
+        "name": "(anonymous)",
+        "url": "file:///E:/project/EzGridApp/src/domain/ledger.ts",
+        "line": 807,
+        "ms": 42.706,
+        "percent": 2.367168931143354
+      },
+      {
+        "name": "(anonymous)",
+        "url": "file:///E:/project/EzGridApp/src/domain/chain.ts",
+        "line": 165,
+        "ms": 21.739,
+        "percent": 1.2049802227819362
+      },
+      {
+        "name": "rootsForLot",
+        "url": "file:///E:/project/EzGridApp/src/domain/chain.ts",
+        "line": 180,
+        "ms": 20.218,
+        "percent": 1.1206720706658626
+      },
+      {
+        "name": "serialToIso",
+        "url": "file:///E:/project/EzGridApp/src/domain/defaults.ts",
+        "line": 45,
+        "ms": 19.723,
+        "percent": 1.0932345063677322
+      },
+      {
+        "name": "baseTSurplusTargets",
+        "url": "file:///E:/project/EzGridApp/src/domain/gridStrategy.ts",
+        "line": 7,
+        "ms": 14.341,
+        "percent": 0.7949133527262408
+      },
+      {
+        "name": "defaultHedges",
+        "url": "file:///E:/project/EzGridApp/src/domain/sellFirst.ts",
+        "line": 10,
+        "ms": 13.63,
+        "percent": 0.7555030330980169
+      },
+      {
+        "name": "(anonymous)",
+        "url": "file:///E:/project/EzGridApp/src/domain/chain.ts",
+        "line": 525,
+        "ms": 12.578,
+        "percent": 0.6971912802866367
+      },
+      {
+        "name": "strategySales",
+        "url": "file:///E:/project/EzGridApp/src/domain/gridStrategy.ts",
+        "line": 50,
+        "ms": 8.928,
+        "percent": 0.4948738869771897
+      },
+      {
+        "name": "slotBranch",
+        "url": "file:///E:/project/EzGridApp/src/domain/chain.ts",
+        "line": 209,
+        "ms": 7.973,
+        "percent": 0.44193878817978643
+      }
+    ]
+  },
+  "perfRun": [
+    {
+      "name": "mixed-1000-ledger",
+      "code": 0,
+      "timedOut": false,
+      "totalBudgetSeconds": 60,
+      "first": "{\"progress\":\"first\",\"kind\":\"mixed\",\"rows\":1000,\"phase\":\"ledger\",\"ms\":44.139999999999986}"
+    },
+    {
+      "name": "mixed-1000-views",
+      "code": 0,
+      "timedOut": false,
+      "totalBudgetSeconds": 60,
+      "first": "{\"progress\":\"first\",\"kind\":\"mixed\",\"rows\":1000,\"phase\":\"views\",\"ms\":59.843599999999924}"
+    },
+    {
+      "name": "mixed-1000-validate",
+      "code": 0,
+      "timedOut": false,
+      "totalBudgetSeconds": 60,
+      "first": "{\"progress\":\"first\",\"kind\":\"mixed\",\"rows\":1000,\"phase\":\"validate\",\"ms\":4.373699999999985}"
+    },
+    {
+      "name": "mixed-10000-ledger",
+      "code": null,
+      "timedOut": true,
+      "totalBudgetSeconds": 60,
+      "first": "{\"progress\":\"first\",\"kind\":\"mixed\",\"rows\":10000,\"phase\":\"ledger\",\"ms\":4896.7777}"
+    },
+    {
+      "name": "ordinary-10000-ledger",
+      "code": 0,
+      "timedOut": false,
+      "totalBudgetSeconds": 60,
+      "first": "{\"progress\":\"first\",\"kind\":\"ordinary\",\"rows\":10000,\"phase\":\"ledger\",\"ms\":44.282499999999914}"
+    },
+    {
+      "name": "mixed-10000-validate",
+      "code": 0,
+      "timedOut": false,
+      "totalBudgetSeconds": 60,
+      "first": "{\"progress\":\"first\",\"kind\":\"mixed\",\"rows\":10000,\"phase\":\"validate\",\"ms\":55.97120000000007}"
+    },
+    {
+      "name": "mixed-10000-views",
+      "code": null,
+      "timedOut": true,
+      "totalBudgetSeconds": 60,
+      "first": "{\"progress\":\"first\",\"kind\":\"mixed\",\"rows\":10000,\"phase\":\"views\",\"ms\":6353.6858}"
+    },
+    {
+      "name": "ordinary-50000-ledger",
+      "code": 0,
+      "timedOut": false,
+      "totalBudgetSeconds": 60,
+      "first": "{\"progress\":\"first\",\"kind\":\"ordinary\",\"rows\":50000,\"phase\":\"ledger\",\"ms\":176.01229999999998}"
+    },
+    {
+      "name": "mixed-50000-ledger",
+      "code": null,
+      "timedOut": true,
+      "totalBudgetSeconds": 60
+    }
+  ],
+  "fixturePerf": [
+    {
+      "file": "26年网格记录.xlsx",
+      "rows": 62,
+      "coldParseMs": 136.41530000000012,
+      "phases": {
+        "parse": [
+          47.14150000000018,
+          51.06729999999993,
+          64.21810000000005,
+          50.897899999999936,
+          50.779399999999896,
+          61.663099999999986,
+          48.74209999999994,
+          44.65549999999985,
+          47.84479999999985,
+          43.024700000000166,
+          41.287900000000036,
+          41.0659999999998,
+          39.08089999999993,
+          49.36149999999998,
+          49.702800000000025,
+          39.12379999999985,
+          40.68069999999989,
+          36.473999999999705,
+          36.8775999999998,
+          37.83499999999958
+        ],
+        "ledger": [
+          0.76949999999988,
+          0.7220999999999549,
+          0.8665000000000873,
+          1.4084000000000287,
+          0.8044999999999618,
+          0.7848999999998796,
+          0.9800000000000182,
+          0.9016999999998916,
+          1.363299999999981,
+          0.6490999999998621,
+          0.6242999999999483,
+          1.7623999999998432,
+          0.7334999999998217,
+          0.9194000000002234,
+          0.7220000000002074,
+          0.593199999999797,
+          1.2580000000002656,
+          0.6195999999999913,
+          0.6407999999996719,
+          0.6472999999996318
+        ],
+        "recordIndex": [
+          0.015099999999847569,
+          0.016100000000051296,
+          0.022799999999961074,
+          0.02289999999993597,
+          0.019300000000157524,
+          0.016400000000203363,
+          0.012400000000070577,
+          0.011999999999943611,
+          0.07330000000001746,
+          0.010099999999965803,
+          0.009199999999964348,
+          0.014300000000048385,
+          0.011300000000119326,
+          0.014099999999871216,
+          0.009399999999914144,
+          0.008499999999912689,
+          0.010700000000269938,
+          0.00889999999981228,
+          0.008299999999962893,
+          0.02680000000009386
+        ]
+      },
+      "stats": {
+        "parse": {
+          "samples": 20,
+          "median": 45.89850000000001,
+          "p95": 61.663099999999986
+        },
+        "ledger": {
+          "samples": 20,
+          "median": 0.7771999999998798,
+          "p95": 1.4084000000000287
+        },
+        "recordIndex": {
+          "samples": 20,
+          "median": 0.013249999999970896,
+          "p95": 0.02680000000009386
+        }
+      }
+    },
+    {
+      "file": "26年网格记录-交易记录.csv",
+      "rows": 62,
+      "coldParseMs": 4.663199999999961,
+      "phases": {
+        "parse": [
+          1.3598000000001775,
+          1.0824999999999818,
+          0.9892999999997301,
+          1.013499999999567,
+          0.9746000000000095,
+          0.8820000000000618,
+          0.8498999999997068,
+          1.194999999999709,
+          1.4281999999998334,
+          1.12270000000035,
+          1.0122999999998683,
+          0.8989999999998872,
+          0.9382999999997992,
+          0.8468000000002576,
+          0.8600000000001273,
+          0.808100000000195,
+          1.0187999999998283,
+          1.5094999999996617,
+          0.973700000000008,
+          1.0509000000001834
+        ],
+        "ledger": [
+          2.3416000000001986,
+          0.783100000000104,
+          0.7462000000000444,
+          0.7170999999998457,
+          0.7483000000001994,
+          0.6727000000000771,
+          0.6775000000002365,
+          0.8884000000002743,
+          1.7683000000001812,
+          0.689900000000307,
+          0.6797999999998865,
+          0.6409000000003289,
+          0.5988999999999578,
+          0.6367000000000189,
+          0.5996000000000095,
+          0.604399999999714,
+          1.7019999999997708,
+          0.7210000000000036,
+          0.7789999999999964,
+          0.6548000000002503
+        ],
+        "recordIndex": [
+          0.007700000000113505,
+          0.007599999999911233,
+          0.0065999999997075065,
+          0.00680000000011205,
+          0.007300000000213913,
+          0.0052999999998064595,
+          0.0059000000001105946,
+          0.01389999999992142,
+          0.008299999999962893,
+          0.007699999999658758,
+          0.007399999999961437,
+          0.005799999999908323,
+          0.005999999999858119,
+          0.005400000000008731,
+          0.005700000000160799,
+          0.005499999999756255,
+          0.009100000000216824,
+          0.008299999999962893,
+          0.015600000000176806,
+          0.04169999999976426
+        ]
+      },
+      "stats": {
+        "parse": {
+          "samples": 20,
+          "median": 1.0007999999997992,
+          "p95": 1.4281999999998334
+        },
+        "ledger": {
+          "samples": 20,
+          "median": 0.7035000000000764,
+          "p95": 1.7683000000001812
+        },
+        "recordIndex": {
+          "samples": 20,
+          "median": 0.007350000000087675,
+          "p95": 0.015600000000176806
+        }
+      }
+    }
+  ],
+  "extendedRun": [
+    {
+      "name": "mixed-10000-ledger",
+      "code": 0,
+      "timedOut": false,
+      "totalBudgetSeconds": 180,
+      "first": "{\"progress\":\"first\",\"kind\":\"mixed\",\"rows\":10000,\"phase\":\"ledger\",\"ms\":8420.4043}"
+    }
+  ],
+  "browserStore": {
+    "date": "2026-11-04",
+    "browser": {
+      "protocolVersion": "1.3",
+      "product": "Chrome/156.0.8078.80",
+      "revision": "@fb096c0011f9d50f0a264a9376420cdea9c421e3",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
+      "jsVersion": "15.6.75.27"
+    },
+    "cases": [
+      {
+        "id": "D08-public-import",
+        "actual": [
+          {
+            "date": 46083,
+            "qty": 100
+          }
+        ]
+      },
+      {
+        "id": "D09-public-import",
+        "actual": {
+          "qty": 100.5,
+          "validation": "records[0] buyQtyRaw 必须是有限安全整数"
+        }
+      },
+      {
+        "id": "D06-public-restore-minimal",
+        "actual": {
+          "accepted": true,
+          "records": [
+            {
+              "sourceRow": 2,
+              "stockName": "T",
+              "importKey": "minimal"
+            }
+          ]
+        }
+      },
+      {
+        "id": "V05-public-manual",
+        "actual": {
+          "accepted": false,
+          "error": "成交价量必须是大于0的安全整数"
+        }
+      },
+      {
+        "id": "D07-public-empty-json",
+        "actual": {
+          "accepted": false,
+          "error": "这不是完整备份：缺少交易记录表，拒绝混合恢复"
+        }
+      },
+      {
+        "id": "export-side-effects",
+        "actual": {
+          "before": "1793759807735",
+          "after": "1793759807748"
+        }
+      },
+      {
+        "id": "post-probe-state",
+        "actual": {
+          "rows": 1000,
+          "checks": [],
+          "total": {
+            "rows": 950,
+            "buyQty": 410000,
+            "buyAmountCents": 380000000,
+            "sellCount": 300,
+            "sellQty": 90000,
+            "sellAmountCents": 80500000,
+            "profitCents": 500000,
+            "targetCount": 850,
+            "targetQty": 320000,
+            "targetAmountCents": 360500000,
+            "expectProfitCents": 60500000,
+            "rebuyCount": 200,
+            "rebuyBaseQty": 55000,
+            "rebuyRewardQty": 5000,
+            "rebuyQty": 60000,
+            "rebuyAmountCents": 30000000,
+            "rewardQty": 5000,
+            "rebuyExecQty": 35000,
+            "exposureExecBaseQty": 0,
+            "rebuyRemainingQty": 25000,
+            "netQty": 320000,
+            "exposureQty": 0
+          }
+        }
+      }
+    ],
+    "timings": {
+      "indexedDbRead": [
+        5,
+        4.599999904632568,
+        4.299999952316284,
+        5.6000001430511475,
+        4.5,
+        4.599999904632568,
+        6.6000001430511475,
+        5,
+        4.8999998569488525,
+        6,
+        4.799999952316284,
+        4.5,
+        5.300000190734863,
+        5.199999809265137,
+        4.700000047683716,
+        4.700000047683716,
+        6.700000047683716,
+        4.8999998569488525,
+        4.800000190734863,
+        6
+      ],
+      "exportBackup": [
+        5.799999952316284,
+        8.099999904632568,
+        21.200000047683716,
+        6.299999952316284,
+        5.6000001430511475,
+        7.099999904632568,
+        6.799999952316284,
+        7.900000095367432,
+        6.200000047683716,
+        5.699999809265137,
+        7.400000095367432,
+        6.200000047683716,
+        6.599999904632568,
+        6,
+        6.200000047683716,
+        7,
+        5.900000095367432,
+        8,
+        6.3999998569488525,
+        5.900000095367432
+      ]
+    },
+    "environment": {
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
+      "timezone": "Asia/Shanghai",
+      "rows": 1000,
+      "checks": []
+    },
+    "timingStats": {
+      "indexedDbRead": {
+        "samples": 20,
+        "median": 4.8999998569488525,
+        "p95": 6.6000001430511475
+      },
+      "exportBackup": {
+        "samples": 20,
+        "median": 6.349999904632568,
+        "p95": 8.099999904632568
+      }
+    }
+  },
+  "production": {
+    "date": "2026-11-04",
+    "base": "http://127.0.0.1:4184/EzGridApp/",
+    "version": {
+      "schema": 1,
+      "app": "ezgrid",
+      "buildId": "a0cd9be182a1bb5a",
+      "version": "0.9.0",
+      "commit": "0d0791a1fb5c1ab94f6e33eee347b621a0d4828e",
+      "builtAt": "2026-11-04T02:30:37.308Z",
+      "base": "/EzGridApp/",
+      "releaseNotes": [
+        "feat: 管理页规划用钱（资金×温度带×整手可买×值博率）",
+        "perf: 字体子集化、页面拆包与价格树视角保持（预缓存-41%）",
+        "docs: 增加云同步与性能易用性持续优化路线图",
+        "feat: 使用新交易图标并适配安卓及iOS主屏",
+        "feat: 概览新增估值温度带（股价/PE/PB 近5年百分位）"
+      ]
+    },
+    "browser": {
+      "protocolVersion": "1.3",
+      "product": "Chrome/156.0.8078.80",
+      "revision": "@fb096c0011f9d50f0a264a9376420cdea9c421e3",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
+      "jsVersion": "15.6.75.27"
+    },
+    "conditions": {
+      "viewport": [
+        390,
+        844
+      ],
+      "cpuRate": 4,
+      "network": "local HTTP, no network throttling",
+      "serviceWorker": "bypassed",
+      "warmup": 5,
+      "samples": 20
+    },
+    "cases": [
+      {
+        "name": "empty-first-install",
+        "timeOrigin": 1793759882680,
+        "readyMs": 816.7000000476837,
+        "lcpMs": 576,
+        "cls": 0,
+        "longTasks": [
+          {
+            "start": 97.20000004768372,
+            "ms": 65
+          },
+          {
+            "start": 165.30000019073486,
+            "ms": 62
+          },
+          {
+            "start": 482.5,
+            "ms": 59
+          }
+        ],
+        "resources": [
+          {
+            "name": "/EzGridApp/assets/index-D6FEbUIX.js",
+            "transfer": 49814,
+            "encoded": 49514,
+            "duration": 16.59999990463257
+          },
+          {
+            "name": "/EzGridApp/assets/vendor-ui-tMghNRmn.js",
+            "transfer": 64243,
+            "encoded": 63943,
+            "duration": 14.599999904632568
+          },
+          {
+            "name": "/EzGridApp/assets/vendor-dexie-NsN_qb9y.js",
+            "transfer": 32880,
+            "encoded": 32580,
+            "duration": 10.399999856948853
+          },
+          {
+            "name": "/EzGridApp/assets/vendor-ui-eHGztPIi.css",
+            "transfer": 25805,
+            "encoded": 25505,
+            "duration": 13.700000047683716
+          },
+          {
+            "name": "/EzGridApp/assets/index-B7Z4vQx3.css",
+            "transfer": 35473,
+            "encoded": 35173,
+            "duration": 12.899999856948853
+          },
+          {
+            "name": "/EzGridApp/manifest.webmanifest",
+            "transfer": 802,
+            "encoded": 502,
+            "duration": 3.700000047683716
+          },
+          {
+            "name": "/EzGridApp/assets/nunito-latin-500-normal.78b3b3a4-EugFkASW.woff2",
+            "transfer": 16728,
+            "encoded": 16428,
+            "duration": 2.5
+          },
+          {
+            "name": "/EzGridApp/assets/noto-sans-sc-400-subset-_clRQzQM.woff2",
+            "transfer": 190708,
+            "encoded": 190408,
+            "duration": 5.400000095367432
+          },
+          {
+            "name": "/EzGridApp/favicon.png",
+            "transfer": 2345,
+            "encoded": 2045,
+            "duration": 4.400000095367432
+          },
+          {
+            "name": "/EzGridApp/pwa-192.png",
+            "transfer": 47194,
+            "encoded": 46894,
+            "duration": 2.8999998569488525
+          },
+          {
+            "name": "/EzGridApp/assets/Overview-CVSQXTzF.js",
+            "transfer": 14114,
+            "encoded": 13814,
+            "duration": 4.3999998569488525
+          },
+          {
+            "name": "/EzGridApp/assets/Select-CCBno4Fm.js",
+            "transfer": 1781,
+            "encoded": 1481,
+            "duration": 4.700000047683716
+          },
+          {
+            "name": "/EzGridApp/assets/format-DnAQhYsG.js",
+            "transfer": 844,
+            "encoded": 544,
+            "duration": 3.5
+          },
+          {
+            "name": "/EzGridApp/assets/RepairChainCard-0Mt48jON.js",
+            "transfer": 2258,
+            "encoded": 1958,
+            "duration": 3.5999999046325684
+          },
+          {
+            "name": "/EzGridApp/assets/ValuationBand-UlQX8Ysj.js",
+            "transfer": 2131,
+            "encoded": 1831,
+            "duration": 3.799999952316284
+          },
+          {
+            "name": "/EzGridApp/assets/valuationData-C0j4aU__.js",
+            "transfer": 37812,
+            "encoded": 37512,
+            "duration": 8.199999809265137
+          },
+          {
+            "name": "/EzGridApp/version.json?check=1793759883160-qgy9dzs30qk",
+            "transfer": 852,
+            "encoded": 552,
+            "duration": 1.8000001907348633
+          },
+          {
+            "name": "/EzGridApp/assets/nunito-latin-700-normal.0b62b606-Dort48En.woff2",
+            "transfer": 16528,
+            "encoded": 16228,
+            "duration": 2.4000000953674316
+          },
+          {
+            "name": "/EzGridApp/assets/noto-sans-sc-700-subset-qk3WuCtb.woff2",
+            "transfer": 195144,
+            "encoded": 194844,
+            "duration": 2.4000000953674316
+          }
+        ]
+      },
+      {
+        "name": "empty-cold-cache",
+        "stats": {
+          "readyMs": {
+            "samples": 20,
+            "median": 667.1499999761581,
+            "p95": 742.2999999523163
+          },
+          "lcpMs": {
+            "samples": 20,
+            "median": 428,
+            "p95": 508
+          },
+          "maxLongTaskMs": {
+            "samples": 20,
+            "median": 63,
+            "p95": 87
+          },
+          "cls": {
+            "samples": 20,
+            "median": 0,
+            "p95": 0
+          },
+          "resourceEncodedBytes": {
+            "samples": 20,
+            "median": 731204,
+            "p95": 731204
+          },
+          "resourceTransferBytes": {
+            "samples": 20,
+            "median": 736604,
+            "p95": 736604
+          }
+        },
+        "lastSample": {
+          "timeOrigin": 1793759902702.4,
+          "readyMs": 726,
+          "lcpMs": 472,
+          "cls": 0,
+          "longTasks": [
+            {
+              "start": 89.29999995231628,
+              "ms": 61
+            },
+            {
+              "start": 159.70000004768372,
+              "ms": 52
+            },
+            {
+              "start": 212.59999990463257,
+              "ms": 51
+            },
+            {
+              "start": 386.89999985694885,
+              "ms": 60
+            }
+          ],
+          "resources": [
+            {
+              "name": "/EzGridApp/assets/index-D6FEbUIX.js",
+              "transfer": 49814,
+              "encoded": 49514,
+              "duration": 12.099999904632568
+            },
+            {
+              "name": "/EzGridApp/assets/vendor-ui-tMghNRmn.js",
+              "transfer": 64243,
+              "encoded": 63943,
+              "duration": 17.700000047683716
+            },
+            {
+              "name": "/EzGridApp/assets/vendor-dexie-NsN_qb9y.js",
+              "transfer": 32880,
+              "encoded": 32580,
+              "duration": 15.899999856948853
+            },
+            {
+              "name": "/EzGridApp/assets/vendor-ui-eHGztPIi.css",
+              "transfer": 25805,
+              "encoded": 25505,
+              "duration": 14.899999856948853
+            },
+            {
+              "name": "/EzGridApp/assets/index-B7Z4vQx3.css",
+              "transfer": 35473,
+              "encoded": 35173,
+              "duration": 15.099999904632568
+            },
+            {
+              "name": "/EzGridApp/manifest.webmanifest",
+              "transfer": 802,
+              "encoded": 502,
+              "duration": 6
+            },
+            {
+              "name": "/EzGridApp/assets/nunito-latin-500-normal.78b3b3a4-EugFkASW.woff2",
+              "transfer": 16728,
+              "encoded": 16428,
+              "duration": 3.799999952316284
+            },
+            {
+              "name": "/EzGridApp/assets/noto-sans-sc-400-subset-_clRQzQM.woff2",
+              "transfer": 190708,
+              "encoded": 190408,
+              "duration": 2.799999952316284
+            },
+            {
+              "name": "/EzGridApp/favicon.png",
+              "transfer": 2345,
+              "encoded": 2045,
+              "duration": 2.9000000953674316
+            },
+            {
+              "name": "/EzGridApp/pwa-192.png",
+              "transfer": 47194,
+              "encoded": 46894,
+              "duration": 3.4000000953674316
+            },
+            {
+              "name": "/EzGridApp/assets/Overview-CVSQXTzF.js",
+              "transfer": 14114,
+              "encoded": 13814,
+              "duration": 6.200000047683716
+            },
+            {
+              "name": "/EzGridApp/assets/Select-CCBno4Fm.js",
+              "transfer": 1781,
+              "encoded": 1481,
+              "duration": 4.799999952316284
+            },
+            {
+              "name": "/EzGridApp/assets/format-DnAQhYsG.js",
+              "transfer": 844,
+              "encoded": 544,
+              "duration": 3.4000000953674316
+            },
+            {
+              "name": "/EzGridApp/assets/RepairChainCard-0Mt48jON.js",
+              "transfer": 2258,
+              "encoded": 1958,
+              "duration": 5.299999952316284
+            },
+            {
+              "name": "/EzGridApp/assets/ValuationBand-UlQX8Ysj.js",
+              "transfer": 2131,
+              "encoded": 1831,
+              "duration": 5.099999904632568
+            },
+            {
+              "name": "/EzGridApp/assets/valuationData-C0j4aU__.js",
+              "transfer": 37812,
+              "encoded": 37512,
+              "duration": 9.200000047683716
+            },
+            {
+              "name": "/EzGridApp/assets/nunito-latin-700-normal.0b62b606-Dort48En.woff2",
+              "transfer": 16528,
+              "encoded": 16228,
+              "duration": 2.6999998092651367
+            },
+            {
+              "name": "/EzGridApp/assets/noto-sans-sc-700-subset-qk3WuCtb.woff2",
+              "transfer": 195144,
+              "encoded": 194844,
+              "duration": 4.700000047683716
+            }
+          ]
+        }
+      },
+      {
+        "name": "empty-warm-cache",
+        "stats": {
+          "readyMs": {
+            "samples": 20,
+            "median": 636.4999998807907,
+            "p95": 695.2000000476837
+          },
+          "lcpMs": {
+            "samples": 20,
+            "median": 396,
+            "p95": 460
+          },
+          "maxLongTaskMs": {
+            "samples": 20,
+            "median": 59.5,
+            "p95": 69
+          },
+          "cls": {
+            "samples": 20,
+            "median": 0,
+            "p95": 0
+          },
+          "resourceEncodedBytes": {
+            "samples": 20,
+            "median": 729159,
+            "p95": 729159
+          },
+          "resourceTransferBytes": {
+            "samples": 20,
+            "median": 5100,
+            "p95": 5100
+          }
+        },
+        "lastSample": {
+          "timeOrigin": 1793759920881.4,
+          "readyMs": 621.5,
+          "lcpMs": 392,
+          "cls": 0,
+          "longTasks": [
+            {
+              "start": 291.09999990463257,
+              "ms": 68
+            }
+          ],
+          "resources": [
+            {
+              "name": "/EzGridApp/assets/index-D6FEbUIX.js",
+              "transfer": 300,
+              "encoded": 49514,
+              "duration": 4.5
+            },
+            {
+              "name": "/EzGridApp/assets/vendor-ui-tMghNRmn.js",
+              "transfer": 300,
+              "encoded": 63943,
+              "duration": 5.200000047683716
+            },
+            {
+              "name": "/EzGridApp/assets/vendor-dexie-NsN_qb9y.js",
+              "transfer": 300,
+              "encoded": 32580,
+              "duration": 5.3999998569488525
+            },
+            {
+              "name": "/EzGridApp/assets/vendor-ui-eHGztPIi.css",
+              "transfer": 300,
+              "encoded": 25505,
+              "duration": 5.8999998569488525
+            },
+            {
+              "name": "/EzGridApp/assets/index-B7Z4vQx3.css",
+              "transfer": 300,
+              "encoded": 35173,
+              "duration": 6.1000001430511475
+            },
+            {
+              "name": "/EzGridApp/manifest.webmanifest",
+              "transfer": 300,
+              "encoded": 502,
+              "duration": 1.5
+            },
+            {
+              "name": "/EzGridApp/assets/nunito-latin-500-normal.78b3b3a4-EugFkASW.woff2",
+              "transfer": 300,
+              "encoded": 16428,
+              "duration": 39.09999990463257
+            },
+            {
+              "name": "/EzGridApp/assets/noto-sans-sc-400-subset-_clRQzQM.woff2",
+              "transfer": 300,
+              "encoded": 190408,
+              "duration": 6
+            },
+            {
+              "name": "/EzGridApp/pwa-192.png",
+              "transfer": 300,
+              "encoded": 46894,
+              "duration": 1.3999998569488525
+            },
+            {
+              "name": "/EzGridApp/assets/Overview-CVSQXTzF.js",
+              "transfer": 300,
+              "encoded": 13814,
+              "duration": 2.8999998569488525
+            },
+            {
+              "name": "/EzGridApp/assets/Select-CCBno4Fm.js",
+              "transfer": 300,
+              "encoded": 1481,
+              "duration": 3.1000001430511475
+            },
+            {
+              "name": "/EzGridApp/assets/format-DnAQhYsG.js",
+              "transfer": 300,
+              "encoded": 544,
+              "duration": 3.700000047683716
+            },
+            {
+              "name": "/EzGridApp/assets/RepairChainCard-0Mt48jON.js",
+              "transfer": 300,
+              "encoded": 1958,
+              "duration": 3.5
+            },
+            {
+              "name": "/EzGridApp/assets/ValuationBand-UlQX8Ysj.js",
+              "transfer": 300,
+              "encoded": 1831,
+              "duration": 2.8000001907348633
+            },
+            {
+              "name": "/EzGridApp/assets/valuationData-C0j4aU__.js",
+              "transfer": 300,
+              "encoded": 37512,
+              "duration": 1.7999999523162842
+            },
+            {
+              "name": "/EzGridApp/assets/nunito-latin-700-normal.0b62b606-Dort48En.woff2",
+              "transfer": 300,
+              "encoded": 16228,
+              "duration": 68.20000004768372
+            },
+            {
+              "name": "/EzGridApp/assets/noto-sans-sc-700-subset-qk3WuCtb.woff2",
+              "transfer": 300,
+              "encoded": 194844,
+              "duration": 3.799999952316284
+            }
+          ]
+        }
+      },
+      {
+        "name": "mixed-1000-warm-cache",
+        "stats": {
+          "readyMs": {
+            "samples": 20,
+            "median": 1007.8499999046326,
+            "p95": 1116.9000000953674
+          },
+          "lcpMs": {
+            "samples": 20,
+            "median": 228,
+            "p95": 260
+          },
+          "maxLongTaskMs": {
+            "samples": 20,
+            "median": 225.5,
+            "p95": 256
+          },
+          "cls": {
+            "samples": 20,
+            "median": 0.00005571412856738883,
+            "p95": 0.00005571412856738883
+          },
+          "resourceEncodedBytes": {
+            "samples": 20,
+            "median": 745835,
+            "p95": 745835
+          },
+          "resourceTransferBytes": {
+            "samples": 20,
+            "median": 5400,
+            "p95": 5400
+          }
+        },
+        "lastSample": {
+          "timeOrigin": 1793759947755.7,
+          "readyMs": 996.8000001907349,
+          "lcpMs": 220,
+          "cls": 0.00005571412856738883,
+          "longTasks": [
+            {
+              "start": 273,
+              "ms": 155
+            },
+            {
+              "start": 483,
+              "ms": 229
+            }
+          ],
+          "resources": [
+            {
+              "name": "/EzGridApp/assets/index-D6FEbUIX.js",
+              "transfer": 300,
+              "encoded": 49514,
+              "duration": 4.299999952316284
+            },
+            {
+              "name": "/EzGridApp/assets/vendor-ui-tMghNRmn.js",
+              "transfer": 300,
+              "encoded": 63943,
+              "duration": 5.300000190734863
+            },
+            {
+              "name": "/EzGridApp/assets/vendor-dexie-NsN_qb9y.js",
+              "transfer": 300,
+              "encoded": 32580,
+              "duration": 4.099999904632568
+            },
+            {
+              "name": "/EzGridApp/assets/vendor-ui-eHGztPIi.css",
+              "transfer": 300,
+              "encoded": 25505,
+              "duration": 4.400000095367432
+            },
+            {
+              "name": "/EzGridApp/assets/index-B7Z4vQx3.css",
+              "transfer": 300,
+              "encoded": 35173,
+              "duration": 4.6000001430511475
+            },
+            {
+              "name": "/EzGridApp/manifest.webmanifest",
+              "transfer": 300,
+              "encoded": 502,
+              "duration": 1.7999999523162842
+            },
+            {
+              "name": "/EzGridApp/assets/nunito-latin-500-normal.78b3b3a4-EugFkASW.woff2",
+              "transfer": 300,
+              "encoded": 16428,
+              "duration": 37.700000047683716
+            },
+            {
+              "name": "/EzGridApp/assets/noto-sans-sc-400-subset-_clRQzQM.woff2",
+              "transfer": 300,
+              "encoded": 190408,
+              "duration": 6.599999904632568
+            },
+            {
+              "name": "/EzGridApp/pwa-192.png",
+              "transfer": 300,
+              "encoded": 46894,
+              "duration": 1.7999999523162842
+            },
+            {
+              "name": "/EzGridApp/assets/Overview-CVSQXTzF.js",
+              "transfer": 300,
+              "encoded": 13814,
+              "duration": 2.0999999046325684
+            },
+            {
+              "name": "/EzGridApp/assets/Select-CCBno4Fm.js",
+              "transfer": 300,
+              "encoded": 1481,
+              "duration": 1.7999999523162842
+            },
+            {
+              "name": "/EzGridApp/assets/format-DnAQhYsG.js",
+              "transfer": 300,
+              "encoded": 544,
+              "duration": 1.7999999523162842
+            },
+            {
+              "name": "/EzGridApp/assets/RepairChainCard-0Mt48jON.js",
+              "transfer": 300,
+              "encoded": 1958,
+              "duration": 1.9000000953674316
+            },
+            {
+              "name": "/EzGridApp/assets/ValuationBand-UlQX8Ysj.js",
+              "transfer": 300,
+              "encoded": 1831,
+              "duration": 1.7999999523162842
+            },
+            {
+              "name": "/EzGridApp/assets/nunito-latin-700-normal.0b62b606-Dort48En.woff2",
+              "transfer": 300,
+              "encoded": 16228,
+              "duration": 223.90000009536743
+            },
+            {
+              "name": "/EzGridApp/assets/nunito-latin-900-normal.8b5d13b8-BVB1fGs6.woff2",
+              "transfer": 300,
+              "encoded": 16676,
+              "duration": 223.70000004768372
+            },
+            {
+              "name": "/EzGridApp/assets/valuationData-C0j4aU__.js",
+              "transfer": 300,
+              "encoded": 37512,
+              "duration": 2.5999999046325684
+            },
+            {
+              "name": "/EzGridApp/assets/noto-sans-sc-700-subset-qk3WuCtb.woff2",
+              "transfer": 300,
+              "encoded": 194844,
+              "duration": 11
+            }
+          ]
+        }
+      }
+    ],
+    "caseNotes": "readyMs sampled after 75ms readiness polling + fixed 250ms paint settle; not a raw LCP or INP measurement. Empty cases reuse initialized DB except first install."
+  }
+}

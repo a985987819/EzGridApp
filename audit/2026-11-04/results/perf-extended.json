@@ -1,0 +1,9 @@
+[
+  {
+    "name": "mixed-10000-ledger",
+    "code": 0,
+    "timedOut": false,
+    "totalBudgetSeconds": 180,
+    "first": "{\"progress\":\"first\",\"kind\":\"mixed\",\"rows\":10000,\"phase\":\"ledger\",\"ms\":8420.4043}"
+  }
+]

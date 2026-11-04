@@ -1,0 +1,9 @@
+
+ RUN  v2.1.9 E:/project/EzGridApp
+
+ ✓ src/help/content.spec.ts (4 tests) 5ms
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Start at  10:45:26
+   Duration  522ms (transform 85ms, setup 0ms, collect 310ms, tests 5ms, environment 0ms, prepare 58ms)

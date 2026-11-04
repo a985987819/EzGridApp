@@ -1,0 +1,7 @@
+
+> grid-trading@0.9.0 subset-fonts
+> node scripts/subsetFonts.mjs
+
+语料：146 个文件 / 1231247 字符 → 去重 1449 个字符
+  400 字重：1116KB → 186KB（−83%）→ E:\project\EzGridApp\src\assets\fonts\noto-sans-sc-400-subset.woff2
+  700 字重：1145KB → 190KB（−83%）→ E:\project\EzGridApp\src\assets\fonts\noto-sans-sc-700-subset.woff2
