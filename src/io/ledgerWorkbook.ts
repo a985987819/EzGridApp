@@ -28,7 +28,7 @@ const cols = (spec: string): Column[] => spec.split(';').map((s) => {
   return { key, label, type, values: enums?.split(',') }
 })
 const TABLES = [
-  { key: 'records', name: '交易数据', columns: cols('sourceRow|记录ID|i;excelRow|原Excel行号|i?;soldLotId|卖出来源批次ID|s?;nextRoundOfRow|下一轮来源记录ID|i?;stockName|股票|s;buyDateSerial|买入日期序列值|n~;buyPriceCents|买入价（分）|i~;buyQtyRaw|买入股数|i~;qtyNeedsDerive|推定买入股数|b;targetPriceCents|目标或成交售价（分）|i~;targetNeedsDerive|推定售价|b;soldQty|卖出股数|i~;sellDateSerial|卖出日期序列值|n~;earlyBuyPriceCents|回补价（分）|i~;rebuyPriceSource|回补价来源|s?|custom,lot,p,sellMinusInterval,repaid;rawProfitCents|原表盈利（分）|i~;importKey|原始身份键|s;origin|录入来源|s?|excel,manual;deletedAt|软删除时间戳|i?~;editedAt|编辑时间戳|i?~;buyDateNeedsToday|原买入日期为TODAY|b?;sellDateNeedsToday|原卖出日期为TODAY|b?;batchId|导入批次ID|s?~;soldTargetId|卖出来源档ID|s?') },
+  { key: 'records', name: '交易数据', columns: cols('sourceRow|记录ID|i;excelRow|原Excel行号|i?;soldLotId|卖出来源批次ID|s?;nextRoundOfRow|下一轮来源记录ID|i?;stockName|股票|s;buyDateSerial|买入日期序列值|n~;buyPriceCents|买入价（分）|i~;buyQtyRaw|买入股数|i~;qtyNeedsDerive|推定买入股数|b;targetPriceCents|目标或成交售价（分）|i~;targetNeedsDerive|推定售价|b;soldQty|卖出股数|i~;sellDateSerial|卖出日期序列值|n~;earlyBuyPriceCents|回补价（分）|i~;rebuyPriceSource|回补价来源|s?|custom,lot,p,sellMinusInterval,repaid;rawProfitCents|原表盈利（分）|i~;importKey|原始身份键|s;origin|录入来源|s?|excel,manual;deletedAt|软删除时间戳|i?~;editedAt|编辑时间戳|i?~;buyDateNeedsToday|原买入日期为TODAY|b?;sellDateNeedsToday|原卖出日期为TODAY|b?;batchId|导入批次ID|s?~;soldTargetId|卖出来源档ID|s?;profitRewardQty|盈利奖励股数|i?;profitRewardGroupKey|盈利奖励原价组|s?') },
   { key: 'stocks', name: '股票设置', columns: cols('id|股票ID|s;name|股票|s;code|代码|t?;intervalCents|默认间隔（分）|i;priceLimitType|涨跌幅类型|s|main_10,gem_20,star_20,bse_30,st_5,custom,unknown;customLimitPct|自定义百分比|n?~;note|备注|t?;order|排序|i?;enabled|启用|b?') },
   { key: 'rebuyExecutions', name: '回补成交', columns: cols('id|成交ID|s;orderId|订单ID|s;sellExecId|卖出成交ID|s;stockId|股票ID|s;stockName|股票|s;qty|成交股数|i;priceCents|成交价（分）|i;rewardQty|奖励股数|i;groupKeyAtExecution|原奖励价组|t;at|成交时间戳|i;note|备注|t?;buyTargetId|买入来源档ID|s?') },
   { key: 'hedges', name: '人工高位关联', columns: cols('id|关联ID|s;sellRow|卖出记录ID|i;at|设置时间戳|i') },
@@ -84,7 +84,7 @@ export function ledgerWorkbookRows(snapshot: LedgerSnapshot): Record<string, Sna
     sheets[name] = rows
   }
   append(LEDGER_META_SHEET, [
-    ['项目', '值'], ['格式', FORMAT], ['格式版本', VERSION], ['计算口径版本', 2], ['备份结构版本', snapshot.schemaVersion],
+    ['项目', '值'], ['格式', FORMAT], ['格式版本', VERSION], ['计算口径版本', 3], ['备份结构版本', snapshot.schemaVersion],
     ['导出时间', snapshot.exportedAt], ['推定已成交售价', snapshot.settings.deriveSellPrice],
     ['恢复方式', '整库替换，不增量合并；恢复前自动下载当前 JSON 快照。'],
     ['编辑范围', '交易数据、股票设置、人工关联、成交和挂单计划可编辑；核对_ 开头的表仅为快照，恢复时重新计算。'],
@@ -167,7 +167,7 @@ export async function parseLedgerWorkbook(buffer: ArrayBuffer | Uint8Array): Pro
   for (const key of ['格式', '格式版本', '计算口径版本', '导出时间', '推定已成交售价']) {
     if (metaRows.filter((r) => r[0] === key).length !== 1) throw new Error(`台账说明：${key} 缺失或重复`)
   }
-  if (meta.get('格式') !== FORMAT || meta.get('格式版本') !== VERSION || ![1, 2].includes(meta.get('计算口径版本') as number)) throw new Error('台账说明：不支持的完整台账格式或计算口径版本')
+  if (meta.get('格式') !== FORMAT || meta.get('格式版本') !== VERSION || ![1, 2, 3].includes(meta.get('计算口径版本') as number)) throw new Error('台账说明：不支持的完整台账格式或计算口径版本')
   if (typeof meta.get('推定已成交售价') !== 'boolean') throw new Error('台账说明：推定已成交售价必须为布尔值')
   if (typeof meta.get('导出时间') !== 'string' || !Number.isFinite(Date.parse(meta.get('导出时间') as string))) throw new Error('台账说明：导出时间不合法')
   const tables: Record<string, Row[]> = {}
@@ -178,6 +178,7 @@ export async function parseLedgerWorkbook(buffer: ArrayBuffer | Uint8Array): Pro
     const indices = columns.map((c) => {
       const index = headers.indexOf(c.label)
       if (index < 0 && c.key === 'strategyJson' && Number(meta.get('备份结构版本') ?? 11) < 13) return -1
+      if (index < 0 && ['profitRewardQty','profitRewardGroupKey'].includes(c.key) && Number(meta.get('备份结构版本') ?? 11) < 14) return -1
       if (index < 0 && meta.get('计算口径版本') === 1 && ['soldTargetId', 'buyTargetId'].includes(c.key)) return -1
       if (index < 0 || headers.lastIndexOf(c.label) !== index) throw new Error(`工作表「${t.name}」：列「${c.label}」缺失或重复`)
       return index
@@ -225,7 +226,7 @@ export async function parseLedgerWorkbook(buffer: ArrayBuffer | Uint8Array): Pro
     catch { throw new Error(`成交回执 ${String(r.id)}：分配JSON不合法`) }
   })
   const schemaVersion = meta.get('备份结构版本') ?? 11
-  if (![11, 12, 13].includes(Number(schemaVersion))) throw new Error('台账说明：不支持的备份结构版本')
+  if (![11, 12, 13, 14].includes(Number(schemaVersion))) throw new Error('台账说明：不支持的备份结构版本')
   tables.extraTargets = tables.extraTargets.map(r => {
     const { strategyJson, ...rest } = r
     if (strategyJson === undefined) return rest

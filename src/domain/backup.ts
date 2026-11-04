@@ -50,6 +50,13 @@ function checkRecords(records: unknown[]): string | null {
       if (rec[key] !== undefined && rec[key] !== null && (!Number.isSafeInteger(rec[key]) || (key !== 'rawProfitCents' && (rec[key] as number) < 0))) return `records[${i}] ${key} 必须是有限安全整数`
     }
     for (const key of ['buyDateSerial', 'sellDateSerial', 'deletedAt', 'editedAt']) if (rec[key] !== undefined && rec[key] !== null && !isNum(rec[key])) return `records[${i}] ${key} 不合法`
+    if (rec.profitRewardQty !== undefined) {
+      const reward = rec.profitRewardQty
+      if (!Number.isSafeInteger(reward) || (reward as number) < 0 || (reward as number) % 100 !== 0 || !Number.isSafeInteger(rec.buyQtyRaw) || (reward as number) > (rec.buyQtyRaw as number)) return `records[${i}] 盈利奖励股数须为买入量内的非负整手`
+      if ((reward as number) > 0 && (typeof rec.profitRewardGroupKey !== 'string' || !rec.profitRewardGroupKey || !isRow(rec.nextRoundOfRow) || rec.soldLotId !== undefined || !Number.isSafeInteger(rec.buyPriceCents) || (rec.buyPriceCents as number) <= 0)) return `records[${i}] 盈利奖励缺少有效价组或下一轮买入来源`
+      if ((reward as number) > 0 && !Number.isSafeInteger((reward as number) * (rec.buyPriceCents as number))) return `records[${i}] 盈利奖励金额超出安全整数范围`
+    }
+    if (rec.profitRewardGroupKey !== undefined && (typeof rec.profitRewardGroupKey !== 'string' || !rec.profitRewardGroupKey || !Number.isSafeInteger(rec.profitRewardQty) || (rec.profitRewardQty as number) <= 0)) return `records[${i}] 盈利奖励价组须对应有效奖励股数`
   }
   return null
 }
@@ -232,6 +239,16 @@ function checkReferences(data: BackupShape): string | null {
    * - nextRoundOfRow 指向不存在的行 → 下一轮买入的「已消耗额度」对不上。
    */
   for (let i = 0; i < recordList.length; i += 1) {
+    const rewardKey = recordList[i].profitRewardGroupKey
+    if (typeof rewardKey === 'string') {
+      const cleanKey = rewardKey.replace(/^acc:[^|]*\|/, '')
+      const separator = cleanKey.lastIndexOf('|')
+      const stockId = cleanKey.slice(0, separator), priceText = cleanKey.slice(separator + 1)
+      const stock = list(data.stocks).find(candidate => candidate.name === recordList[i].stockName)
+      if (separator < 1 || stockId !== (stock?.id ?? `stock:${String(recordList[i].stockName)}`) || !/^\d+$/.test(priceText) || !Number.isSafeInteger(Number(priceText)) || Number(priceText) <= 0) return `records[${i}] 盈利奖励价组与股票或成本不匹配`
+      const parent = recordList.find(record => record.sourceRow === recordList[i].nextRoundOfRow)
+      if (!parent || parent.stockName !== recordList[i].stockName) return `records[${i}] 盈利奖励下一轮来源必须属于同一股票`
+    }
     const sold = recordList[i].soldLotId
     if (sold !== undefined) {
       if (typeof sold !== 'string') return `records[${i}].soldLotId 不是字符串`

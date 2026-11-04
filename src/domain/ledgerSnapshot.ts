@@ -8,7 +8,7 @@ import type { AuditLog, ExtraBuyTarget, ExtraTarget, HedgeLink, LotMergeLink, Ra
 
 /** 全量交换格式：只保存派生输入，稳定身份沿用内部主键，与工作表行位置无关。 */
 export interface LedgerSnapshot {
-  schemaVersion: 11 | 12 | 13
+  schemaVersion: 11 | 12 | 13 | 14
   exportedAt: string
   settings: { deriveSellPrice: boolean }
   stocks: StockConfig[]
@@ -39,8 +39,8 @@ export function snapshotViews(data: LedgerSnapshot): Record<string, SnapshotRow[
   const no = buildRecordNoIndex(data.records)
   const buys = buildBuySuggestions(ledger.buySplits, buildNextRoundBuyRows({
     lots: ledger.lots, orders: ledger.orders, sells: ledger.sells, merges: data.merges,
-    consumed: consumedNextRounds(data.records),
-  }), data.plans)
+    consumed: consumedNextRounds(data.records), groups: ledger.groups,
+  }), data.plans, ledger.groups)
   const sells = mergeTargetRows({ targets: ledger.targets, lots: ledger.lots, merges: data.merges, plans: data.plans })
   return {
     '核对_合计': [scalar(ledger.totals)],

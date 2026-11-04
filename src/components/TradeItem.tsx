@@ -6,6 +6,8 @@
  */
 import { Card, Tag } from 'animal-island-ui'
 import type { ReactNode } from 'react'
+import type { GroupPool } from '../domain/types'
+import { LevelProfit } from './LevelProfit'
 import { serialToIso } from '../domain/defaults'
 import { price, qty, signedMoney, tone } from '../ui/format'
 import type { TradeRow } from '../domain/tradeState'
@@ -30,6 +32,7 @@ export function TradeItem({
   extraTag,
   anim,
   chain,
+  levelProfit,
 }: {
   row: TradeRow
   /** 第几笔（V9.43 统一身份：导入与应用内新增一样） */
@@ -47,6 +50,7 @@ export function TradeItem({
    * V9.49：branch = 价位槽里那笔「同价再卖 / 同价买回」，点开能看到整条链的账。
    */
   chain?: 'anchor' | 'member' | 'branch'
+  levelProfit?: { priceCents: number; group?: GroupPool }
 }) {
   const { rec, lot, sell } = row
   const deleted = Boolean(rec.deletedAt)
@@ -104,6 +108,7 @@ export function TradeItem({
           卖出 <b>{sellDateOf(row) ?? '—'}</b>
         </span>
       </div>
+      {levelProfit && !deleted && <LevelProfit {...levelProfit} />}
       <div className="tag-row">
         {sell?.rebuyStatus === 'pending' && <Tag size="small" variant="soft" color="app-orange">待回补</Tag>}
         {sell?.sellBeforeBuy && <Tag size="small" variant="soft" color="app-teal">先卖后买</Tag>}

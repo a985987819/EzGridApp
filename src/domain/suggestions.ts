@@ -1,4 +1,4 @@
-import type { BuySplit, Ledger, RawRecord, TradePlan } from './types'
+import type { BuySplit, GroupPool, Ledger, RawRecord, TradePlan } from './types'
 import type { NextRoundBuyRow } from './buyBoard'
 
 export type BuySource =
@@ -13,8 +13,11 @@ export type BuySource =
       sellFirst?: boolean
       strategyMode?: 'repair' | 'baseT'
       strategyIsDefault?: true
+      /** 本来源数量中由价位盈利支付的份额；只授整手，基础贡献优先。 */
+      rewardQty?: number
+      rewardGroupKey?: string
     }
-  | { kind: 'next'; id: string; qty: number; row: number }
+  | { kind: 'next'; id: string; qty: number; row: number; rewardQty?: number; rewardGroupKey?: string }
 export interface BuySuggestion {
   strategyMode?: 'repair' | 'baseT'
   strategyIsDefault?: true
@@ -23,7 +26,12 @@ export interface BuySuggestion {
   priceCents: number
   qty: number
   amountCents: number
+  /** 所有改单应用前、当前仍可推荐的量与金额；碰撞合并按各原价累计。纯展示。 */
+  originalQty?: number
+  originalAmountCents?: number
   sources: BuySource[]
+  /** 现有来源实际贡献的盈利奖励合计，已经包含在 qty 中。 */
+  rewardQty?: number
   /** V9.53：这一条推荐被人工「改单」过（计划价/计划量只改显示，不动来源） */
   edited?: boolean
   /**
@@ -41,8 +49,105 @@ export interface BuySuggestion {
 }
 export function consumedNextRounds(records: readonly RawRecord[]): Map<number,number> {
   const out=new Map<number,number>()
-  for(const r of records)if(!r.deletedAt && r.nextRoundOfRow!==undefined)out.set(r.nextRoundOfRow,(out.get(r.nextRoundOfRow)??0)+(r.buyQtyRaw??0))
+  for(const r of records)if(!r.deletedAt && r.nextRoundOfRow!==undefined)out.set(r.nextRoundOfRow,(out.get(r.nextRoundOfRow)??0)+Math.max(0,(r.buyQtyRaw??0)-(r.profitRewardQty??0)))
   return out
+}
+
+const rewardOf = (source: BuySource): number => Math.max(0, Math.min(source.qty, source.rewardQty ?? 0))
+/** 缩量先保留整行的基础来源，剩余空间才留整手奖励，不能把零碎奖励当基础股。 */
+function clampBuySources(sources: readonly BuySource[], requestedQty: number): BuySource[] {
+  const total = sources.reduce((sum, source) => sum + source.qty, 0)
+  const limit = Math.max(0, Math.min(total, requestedQty))
+  let baseLeft = Math.min(limit, sources.reduce((sum, source) => sum + source.qty - rewardOf(source), 0))
+  const baseParts = sources.map(source => {
+    const qty = Math.min(baseLeft, source.qty - rewardOf(source))
+    baseLeft -= qty
+    return qty
+  })
+  let rewardLeft = Math.max(0, limit - baseParts.reduce((sum, qty) => sum + qty, 0))
+  return sources.flatMap((source, index) => {
+    const rewardQty = Math.floor(Math.min(rewardLeft, rewardOf(source)) / 100) * 100
+    rewardLeft -= rewardQty
+    const qty = baseParts[index] + rewardQty
+    if (qty <= 0) return []
+    return [{ ...source, qty, ...(source.rewardQty !== undefined || source.rewardGroupKey ? { rewardQty } : {}) }]
+  })
+}
+
+/** 最终改单价只能缩减已分配的奖励，不增加奖励；所有来源共用同一价组现金预算。 */
+function capRewardCash(rows: BuySuggestion[], groups: readonly GroupPool[]): void {
+  const cash = new Map(groups.map(group => {
+    const available = group.grossProfitCents - group.usedProfitCents
+    return [group.groupKey, Number.isSafeInteger(available) ? Math.max(0, available) : 0] as const
+  }))
+  const nextCash = new Map(groups.map(group => {
+    const available = group.grossProfitCents - group.usedProfitCents
+    // 下一轮只使用订单最初授予后留下的预算，不能挪用未展示或被缩量的订单份额。
+    const reserve = group.grantedHands * 100 * group.rebuyPriceCents
+    return [group.groupKey, Number.isSafeInteger(available) && Number.isSafeInteger(reserve) ? Math.max(0, available - reserve) : 0] as const
+  }))
+  const sources = rows.flatMap(row => row.sources.map(source => ({ row, source })))
+  sources.sort((a, b) => Number(a.source.kind === 'next') - Number(b.source.kind === 'next'))
+  for (const { row, source } of sources) {
+    const rewardQty = rewardOf(source)
+    if (rewardQty <= 0) continue
+    const handCost = row.priceCents * 100
+    const remaining = source.rewardGroupKey ? cash.get(source.rewardGroupKey) ?? 0 : 0
+    const budget = source.kind === 'next' ? Math.min(remaining, source.rewardGroupKey ? nextCash.get(source.rewardGroupKey) ?? 0 : 0) : remaining
+    const affordable = Number.isSafeInteger(handCost) && handCost > 0 ? Math.floor(budget / handCost) * 100 : 0
+    const granted = Math.min(Math.floor(rewardQty / 100) * 100, affordable)
+    source.qty -= rewardQty - granted
+    source.rewardQty = granted
+    if (source.rewardGroupKey) {
+      const spent = granted * row.priceCents
+      cash.set(source.rewardGroupKey, remaining - spent)
+      if (source.kind === 'next') nextCash.set(source.rewardGroupKey, budget - spent)
+    }
+  }
+  for (const row of rows) {
+    row.sources = row.sources.filter(source => source.qty > 0)
+    row.qty = row.sources.reduce((sum, source) => sum + source.qty, 0)
+    row.amountCents = row.priceCents * row.qty
+  }
+}
+
+/** 旧整单计划只在展示层缩量；同一母单多档共用一次上限，基础贡献优先。 */
+function applyOrderPlanQuantities(splits: readonly BuySplit[], plans: readonly TradePlan[]): BuySplit[] {
+  const byOrder = new Map<string, BuySplit[]>()
+  for (const split of splits) {
+    const list = byOrder.get(split.orderId) ?? []
+    list.push(split)
+    byOrder.set(split.orderId, list)
+  }
+  const quantityByKey = new Map<string, number>()
+  for (const [orderId, rows] of byOrder) {
+    const plan = plans.find(plan => plan.kind === 'buy' && plan.refId === orderId)
+    if (!plan) continue
+    const sources: BuySource[] = rows.map(split => ({ kind: 'order', id: split.orderId, row: split.sourceRow,
+      splitKey: split.key, qty: split.qty, rewardQty: Math.max(0, split.qty - split.baseRemainingQty), rewardGroupKey: split.rewardGroupKey }))
+    const kept = clampBuySources(sources, plan.qty)
+    for (const split of rows) quantityByKey.set(split.key, 0)
+    for (const source of kept) quantityByKey.set(source.kind === 'order' ? source.splitKey! : '', source.qty)
+  }
+  return splits.map(split => ({ ...split, qty: quantityByKey.get(split.key) ?? split.qty }))
+}
+
+/** 沙盒按拆档直接展示，沿用相同现金上限，但保留每档身份和基础可回补量。 */
+export function capBuySplitRewardCash(splits: readonly BuySplit[], groups: readonly GroupPool[], plans: readonly TradePlan[] = []): BuySplit[] {
+  const cash = new Map(groups.map(group => {
+    const available = group.grossProfitCents - group.usedProfitCents
+    return [group.groupKey, Number.isSafeInteger(available) ? Math.max(0, available) : 0] as const
+  }))
+  return applyOrderPlanQuantities(splits, plans).map(split => {
+    const rewardQty = Math.max(0, split.qty - split.baseRemainingQty)
+    if (rewardQty === 0) return { ...split }
+    const handCost = split.priceCents * 100
+    const budget = split.rewardGroupKey ? cash.get(split.rewardGroupKey) ?? 0 : 0
+    const affordable = Number.isSafeInteger(handCost) && handCost > 0 ? Math.floor(budget / handCost) * 100 : 0
+    const granted = Math.min(Math.floor(rewardQty / 100) * 100, affordable)
+    if (split.rewardGroupKey) cash.set(split.rewardGroupKey, budget - granted * split.priceCents)
+    return { ...split, qty: split.qty - rewardQty + granted }
+  })
 }
 /** 挂单买入侧统一按最终价格从高到低排列。 */
 export function compareBuyPrice(a: { priceCents: number }, b: { priceCents: number }): number {
@@ -57,10 +162,9 @@ function compareBuySuggestion(a: BuySuggestion, b: BuySuggestion): number {
  * 买入建议（V9.50）：输入改成「待买展示档」——卖单拆了几笔买入就按几档出建议，
  * 同价再合并（7.01 买 500 ×2 → 7.01 买 1000）。账务仍按 orderId 记成交。
  */
-export function buildBuySuggestions(splits: readonly BuySplit[], next: readonly NextRoundBuyRow[], plans: readonly TradePlan[]): BuySuggestion[] {
+export function buildBuySuggestions(splits: readonly BuySplit[], next: readonly NextRoundBuyRow[], plans: readonly TradePlan[], groups?: readonly GroupPool[]): BuySuggestion[] {
   const rows=new Map<string,BuySuggestion>()
-  const add=(stockName:string,p:number,source:BuySource)=>{
-    if(source.qty<=0)return
+  const add=(stockName:string,p:number,source:BuySource,originalQty=source.qty,originalAmountCents=p*originalQty,orderPlanRef?:string)=>{
     const purpose = source.kind === 'order' && source.sellFirst ? 'cover' : 'optional'
     const strategyMode = source.kind === 'order' ? source.strategyMode : undefined
     const strategyIsDefault = source.kind === 'order' ? source.strategyIsDefault : undefined
@@ -71,18 +175,36 @@ export function buildBuySuggestions(splits: readonly BuySplit[], next: readonly 
     if(hit){
       hit.qty+=source.qty
       hit.amountCents+=p*source.qty
-      hit.sources.push(source)
+      hit.originalQty=(hit.originalQty??0)+originalQty
+      hit.originalAmountCents=(hit.originalAmountCents??0)+originalAmountCents
+      if(source.qty>0)hit.sources.push(source)
+      if(orderPlanRef){hit.edited=true;hit.planRefs=[...new Set([...(hit.planRefs??[]),orderPlanRef])]}
       // 同价合并后只要有一笔先卖后买，整条就按先卖后买分组/标示。
       if(source.kind==='order'&&source.sellFirst)hit.sellFirst=true
     }
-    else rows.set(key,{key,stockName,priceCents:p,qty:source.qty,amountCents:p*source.qty,sources:[source],purpose,strategyMode,strategyIsDefault,sellFirst:purpose==='cover'})
+    else rows.set(key,{key,stockName,priceCents:p,qty:source.qty,amountCents:p*source.qty,originalQty,originalAmountCents,sources:source.qty>0?[source]:[],purpose,strategyMode,strategyIsDefault,sellFirst:purpose==='cover',...(orderPlanRef?{edited:true,planRefs:[orderPlanRef]}:{})})
   }
-  for(const b of splits)if(b.qty>0)add(b.stockName,b.priceCents,{kind:'order',id:b.orderId,row:b.sourceRow,qty:b.qty,splitKey:b.key,sellFirst:b.sellFirst===true,strategyMode:b.strategyMode,strategyIsDefault:b.strategyIsDefault})
+  const plannedSplits=applyOrderPlanQuantities(splits,plans)
+  for(let index=0;index<plannedSplits.length;index++){
+    const b=plannedSplits[index],original=splits[index]
+    if(original.qty<=0)continue
+    const rewardQty=Math.max(0,b.qty-b.baseRemainingQty)
+    add(b.stockName,b.priceCents,{kind:'order',id:b.orderId,row:b.sourceRow,qty:b.qty,splitKey:b.key,sellFirst:b.sellFirst===true,strategyMode:b.strategyMode,strategyIsDefault:b.strategyIsDefault,
+      ...(rewardQty>0?{rewardQty,rewardGroupKey:b.rewardGroupKey}:{})},original.qty,(original.originalPriceCents??original.priceCents)*original.qty,
+      plans.some(plan=>plan.kind==='buy'&&plan.refId===b.orderId)?b.orderId:undefined)
+  }
   for(const n of next) {
     const plan=plans.find((p)=>p.kind==='buy'&&p.refId===n.key)
-    let left=Math.min(n.qty,plan?.qty??n.qty)
+    let originalQty=n.qty
     // next 单行通常是一笔；合并来源的额度由 store 根据最新账本再次分配。
-    for(const row of n.rows){if(left<=0)break;const qty=Math.min(left,n.sourceQty?.[row]??n.qty);add(n.stockName,plan?.priceCents??n.priceCents,{kind:'next',id:n.key,row,qty});left-=qty}
+    const sources=n.rows.map((row):BuySource=>{
+      const rewardQty=n.sourceRewardQty?.[row]??0
+      return {kind:'next',id:n.key,row,qty:(n.sourceQty?.[row]??n.baseQty??n.qty)+rewardQty,...(rewardQty>0?{rewardQty,rewardGroupKey:n.rewardGroupKey}:{})}
+    })
+    for(const source of clampBuySources(sources,Math.min(n.qty,plan?.qty??n.qty))){
+      add(n.stockName,plan?.priceCents??n.priceCents,source,originalQty,n.priceCents*originalQty)
+      originalQty=0
+    }
   }
   const out=[...rows.values()]
   /**
@@ -98,20 +220,16 @@ export function buildBuySuggestions(splits: readonly BuySplit[], next: readonly 
     const specific=plans.find((p)=>p.kind==='buy'&&p.refId===r.key)
     const acceptsLegacy = !ambiguous && (!r.strategyMode || r.strategyIsDefault)
     const plan=specific ?? (acceptsLegacy ? legacy : undefined)
-    r.planRefs = [r.key, ...(acceptsLegacy && legacy ? [legacyRef] : [])]
+    r.planRefs = [...new Set([...(r.planRefs??[]),r.key, ...(acceptsLegacy && legacy ? [legacyRef] : [])])]
     r.legacyPlanConflict = ambiguous && Boolean(legacy) && !specific
     if(!plan)continue
-    r.qty=Math.min(r.qty,plan.qty)
     r.priceCents=plan.priceCents
-    r.amountCents=plan.priceCents*r.qty
     r.edited=true
-    let left = r.qty
-    r.sources = r.sources.flatMap(source => {
-      const qty = Math.min(left, source.qty)
-      left -= qty
-      return qty > 0 ? [{ ...source, qty }] : []
-    })
+    r.sources=clampBuySources(r.sources,Math.min(r.qty,plan.qty))
+    r.qty=r.sources.reduce((sum,source)=>sum+source.qty,0)
+    r.amountCents=plan.priceCents*r.qty
   }
+  if(groups)capRewardCash(out,groups)
   // 用当前每份的实际贡献作为再次改单的比例，打开后原样保存不会重新挪动来源。
   for(const r of out) r.members=[{key:r.key,qty:r.qty}]
   /**
@@ -123,9 +241,15 @@ export function buildBuySuggestions(splits: readonly BuySplit[], next: readonly 
    * 计划是按 key 挂的，身份稳定才不会出现「改完一刷新又变回去」的抖动。
    */
   const byPrice = new Map<string, BuySuggestion>()
+  const originalByPrice = new Map<string, { qty: number; amountCents: number }>()
+  const bucketOf = (r: BuySuggestion) => `${r.purpose}|${r.strategyIsDefault ? '' : r.strategyMode ?? ''}|${r.stockName}|${r.priceCents}`
   for (const r of out) {
+    const bucket = bucketOf(r)
+    const original = originalByPrice.get(bucket) ?? { qty: 0, amountCents: 0 }
+    original.qty += r.originalQty ?? 0
+    original.amountCents += r.originalAmountCents ?? 0
+    originalByPrice.set(bucket, original)
     if (r.qty <= 0) continue
-    const bucket = `${r.purpose}|${r.strategyIsDefault ? '' : r.strategyMode ?? ''}|${r.stockName}|${r.priceCents}`
     const hit = byPrice.get(bucket)
     if (!hit) {
       byPrice.set(bucket, r)
@@ -143,6 +267,13 @@ export function buildBuySuggestions(splits: readonly BuySplit[], next: readonly 
     if (hit.key !== natural && r.key === natural) hit.key = natural
   }
   const list = [...byPrice.values()]
+  for(const r of list) {
+    const original = originalByPrice.get(bucketOf(r))!
+    r.originalQty = original.qty
+    r.originalAmountCents = original.amountCents
+    const rewardQty=r.sources.reduce((sum,source)=>sum+rewardOf(source),0)
+    if(rewardQty>0||r.sources.some(source=>source.rewardQty!==undefined))r.rewardQty=rewardQty
+  }
   // 改单和同价合并完成后再排序，确保使用实际显示价格。
   return list.sort(compareBuySuggestion)
 }

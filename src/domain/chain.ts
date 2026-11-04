@@ -39,6 +39,8 @@ interface Seed {
   lossCents: number
   relatedSellRows: number[]
   sells: SellExecution[]
+  /** 构成原始亏损的实际成本份额，供奖励池与原始盈利分流。 */
+  lossSells: SellExecution[]
   sellFirst?: boolean
   unlinkedQty?: number
 }
@@ -177,6 +179,7 @@ function collectSeeds(
       lossCents,
       relatedSellRows: [...new Set(related.map((s) => s.hedgedFromSellRow).filter((r): r is number => typeof r === 'number'))],
       sells: related,
+      lossSells: [...related],
     })
   }
   return seeds
@@ -409,8 +412,25 @@ function slotBranch(slot: PriceSlot, sellsByLot: Map<string, SellExecution[]>): 
   }
 }
 
+/** 与回本链使用同一次所有权分配，不能再根据 memberRows 猜整笔归属。 */
+export interface ChainProfitSlice {
+  chainId: string
+  chainAnchor: number
+  sellId: string
+  lotId: string | null
+  stockId: string
+  stockName: string
+  qty: number
+  profitCents: number
+  /** 真实批次成本，可能不同于价位槽的计划回补价。 */
+  costCents: number
+  kind: 'seed' | 'branch'
+}
+
 export interface ChainBuildResult {
   chains: RepairChain[]
+  /** 原始亏损与后续盈利的精确份额；仅派生，不进入备份。 */
+  profitSlices: ChainProfitSlice[]
   /**
    * 每笔裸卖被「同价真实买入」自动回补覆盖的股数。
    * ledger 用它算待买基数 / 敞口 / 守恒式；不含回补成交虚拟批次（那些走 execQty）。
@@ -477,7 +497,7 @@ export function buildRepairChains(opts: {
       anchorRow: root.sourceRow, stockName: root.stockName, qty: 0, costSum: 0, closeSum: 0,
       closePrices: root.priceCents === null ? [] : [root.priceCents],
       closeDatesByPrice: new Map(root.priceCents === null ? [] : [[root.priceCents, root.soldAt]]),
-      closeDate: root.soldAt, lossCents: 0, relatedSellRows: [], sells: [], sellFirst: true, unlinkedQty: 0,
+      closeDate: root.soldAt, lossCents: 0, relatedSellRows: [], sells: [], lossSells: [], sellFirst: true, unlinkedQty: 0,
     }
     seed.qty += root.qty
     seed.costSum += sum(allocated, (s) => (s.costCents ?? 0) * s.qty)
@@ -486,6 +506,7 @@ export function buildRepairChains(opts: {
     seed.unlinkedQty = (seed.unlinkedQty ?? 0) + Math.max(0, root.qty - q)
     seed.relatedSellRows.push(root.sourceRow, ...allocated.map((s) => s.sourceRow))
     seed.sells.push(root)
+    seed.lossSells.push(...allocated)
     seeds.set(seed.anchorRow, seed)
     rootOwner.set(root.sourceRow, seed.anchorRow)
   }
@@ -502,6 +523,16 @@ export function buildRepairChains(opts: {
   })
 
   const chains: RepairChain[] = []
+  const profitSlices: ChainProfitSlice[] = []
+  const addProfitSlice = (seed: Seed, sale: SellExecution, lot: Lot | undefined, qty: number, profitCents: number, kind: ChainProfitSlice['kind']) => {
+    const costCents = lot?.buyPriceCents ?? sale.costCents
+    if (!Number.isSafeInteger(qty) || qty <= 0 || !Number.isSafeInteger(profitCents) ||
+      costCents === null || !Number.isSafeInteger(costCents) || costCents <= 0) return
+    profitSlices.push({
+      chainId: `chain:${seed.anchorRow}`, chainAnchor: seed.anchorRow, sellId: sale.id, lotId: sale.lotId,
+      stockId: lot?.stockId ?? sale.stockId, stockName: seed.stockName, qty, profitCents, costCents, kind,
+    })
+  }
   // 所有权按股数区间传递：同一回补不能被两条链整笔认领。
   type Part = { anchor: number | null; qty: number }
   const slice = (parts: Part[], start: number, qty: number): Part[] => {
@@ -649,11 +680,17 @@ export function buildRepairChains(opts: {
     const branches: RepairBranch[] = []
     const closePrice = weighted(seed.closeSum, seed.qty)
     let firstBoughtQty = 0
+    for (const sale of seed.lossSells) {
+      if (sale.profitCents !== null) addProfitSlice(seed, sale, sale.lotId === null ? undefined : lotById.get(sale.lotId), sale.qty, sale.profitCents, 'seed')
+    }
     for (const row of link?.memberRows ?? []) {
       if (memberOwner.get(row) !== link) continue
       const lot = lotById.get(`lot:${row}`)
       if (!lot || lot.stockName !== seed.stockName) continue
       branches.push(branchOf(`record:${row}`, 'record', row, lot, sellsByLot))
+      for (const sale of plainSellsOf(lot.id, sellsByLot)) {
+        if (sale.profitCents !== null) addProfitSlice(seed, sale, lot, sale.qty, sale.profitCents, 'branch')
+      }
       firstBoughtQty += lot.qty
     }
     for (const [lotId, root] of legacyRealLots) {
@@ -671,7 +708,11 @@ export function buildRepairChains(opts: {
         ownSold += mine
         if (mine > 0) memberRows.push(sale.sourceRow)
         // V9.67：归属确定后，任意实际卖价的盈利或亏损均累计
-        if (isRealizedSale(sale) && sale.priceCents !== null) profit += (sale.priceCents - lot.buyPriceCents) * mine
+        if (isRealizedSale(sale) && sale.priceCents !== null) {
+          const realized = (sale.priceCents - lot.buyPriceCents) * mine
+          profit += realized
+          addProfitSlice(seed, sale, lot, mine, realized, 'branch')
+        }
         sold += sale.qty
       }
       b.qty = qty
@@ -699,7 +740,11 @@ export function buildRepairChains(opts: {
       for (const sale of sellsByLot.get(b.key.replace('exec:', 'lot:exec:')) ?? []) {
         const mine = sum(slice(parts, sold, sale.qty).filter((p) => p.anchor === seed.anchorRow), (p) => p.qty)
         ownedSold += mine
-        profit += sale.priceCents === null ? 0 : (sale.priceCents - e.priceCents) * mine
+        if (sale.priceCents !== null) {
+          const realized = (sale.priceCents - e.priceCents) * mine
+          profit += realized
+          addProfitSlice(seed, sale, lot ?? fallback, mine, realized, 'branch')
+        }
         sold += sale.qty
       }
       let remaining = 0
@@ -721,6 +766,9 @@ export function buildRepairChains(opts: {
     const slots = auto.slots.filter((s) => s.chainAnchor === seed.anchorRow)
     for (const slot of slots) {
       const b = slotBranch(slot, sellsByLot)
+      for (const lot of slot.lots) for (const sale of plainSellsOf(lot.id, sellsByLot)) {
+        if (sale.profitCents !== null) addProfitSlice(seed, sale, lot, sale.qty, sale.profitCents, 'branch')
+      }
       /**
        * V9.63：无根的 P 档（锚点自己的回补价位）没有根裸卖的空头收益可展示，
        * 节省 = 锚点清算价 − 本档买价 × 归进来的买入股数——只展示、不进进度（决策 F）。
@@ -798,6 +846,7 @@ export function buildRepairChains(opts: {
 
   return {
     chains: chains.sort((a, b) => a.anchorRow - b.anchorRow),
+    profitSlices,
     realCoverBySell: auto.realCoverBySell,
     realCoverSlicesBySell: auto.realCoverSlicesBySell,
   }

@@ -12,10 +12,10 @@
  * - 同价合并 = **复用 V9.45 的 merges 关联**：组内 ≥2 笔都是候选才合成一条，数量相加、
  *   买入日期取最早；只剩一笔自动散开，关联保留。
  *
- * **只做提醒，不碰账**：这些档位不进 `ledger.orders`、不进待买剩余金额 / 组池奖励 /
- * 守恒式，也不改任何 records。
+ * **只做提醒，不碰账**：这些档位不进 `ledger.orders`、不进待买剩余金额 /
+ * 守恒式，也不改任何 records。传入价位组池时，只领取尚未授给回补订单的盈利奖励。
  */
-import type { Lot, LotMergeLink, RebuyOrder, SellExecution } from './types'
+import type { GroupPool, Lot, LotMergeLink, RebuyOrder, SellExecution } from './types'
 
 export interface NextRoundBuyRow {
   /** 单笔 = buy:<行号>；合并 = buy:merge:<组 id> */
@@ -29,6 +29,12 @@ export interface NextRoundBuyRow {
   /** 涉及的明细行号（升序） */
   rows: number[]
   sourceQty?: Record<number, number>
+  /** 基础下一轮份额；qty 包含本次可买的盈利奖励。 */
+  baseQty?: number
+  rewardQty?: number
+  rewardGroupKey?: string
+  /** 各真实来源本次分配的奖励，基础贡献仍在 sourceQty。 */
+  sourceRewardQty?: Record<number, number>
   merged: boolean
   /** 点击跳转用：合并行取最早买入的那笔 */
   anchorRow: number
@@ -58,10 +64,12 @@ export function buildNextRoundBuyRows(opts: {
   sells: readonly SellExecution[]
   merges: readonly LotMergeLink[]
   consumed?: ReadonlyMap<number, number>
+  /** 统一盈利预算；已授给回补订单的额度不能再发给下一轮。缺省保持旧纯提醒行为。 */
+  groups?: readonly GroupPool[]
   /** 沙盒模拟行（300000 段）：只活在预览里，不给它排下一轮 */
   sandboxRows?: ReadonlySet<number>
 }): NextRoundBuyRow[] {
-  const { lots, orders, sells, merges, sandboxRows, consumed } = opts
+  const { lots, orders, sells, merges, sandboxRows, consumed, groups } = opts
 
   /** 还有没回补完的卖单 → 那张 P 列待买已经在提醒，这里不再给一档 */
   const openRows = new Set(orders.filter((o) => o.remainingQty > 0).map((o) => o.sourceRow))
@@ -91,7 +99,10 @@ export function buildNextRoundBuyRows(opts: {
     !childOrderLotIds.has(l.id) &&
     !sandboxRows?.has(l.sourceRow)
 
-  const candidates = lots.filter(isCandidate).map((l) => ({...l, qty: Math.max(0,l.qty-(consumed?.get(l.sourceRow)??0))})).filter((l)=>l.qty>0)
+  const rewardGroups = new Set(groups?.filter(group => Number.isSafeInteger(group.capacityHands) &&
+    Number.isSafeInteger(group.grantedHands) && group.capacityHands > group.grantedHands).map(group => group.groupKey) ?? [])
+  const candidates = lots.filter(isCandidate).map((l) => ({...l, qty: Math.max(0,l.qty-(consumed?.get(l.sourceRow)??0))}))
+    .filter((l)=>l.qty>0 || rewardGroups.has(`${l.stockId}|${l.buyPriceCents}`))
   const byRow = new Map(candidates.map((l) => [l.sourceRow, l]))
 
   /** 行号 → 同价合并组（组内 ≥2 笔候选才合） */
@@ -172,6 +183,47 @@ export function buildNextRoundBuyRows(opts: {
 
   for (const row of rows) row.rows.sort((a, b) => a - b)
 
+  if (groups) {
+    const pools = new Map(groups.map(group => [group.groupKey, group]))
+    const handsLeft = new Map(groups.map(group => [group.groupKey,
+      Number.isSafeInteger(group.capacityHands) && Number.isSafeInteger(group.grantedHands)
+        ? Math.max(0, group.capacityHands - group.grantedHands) : 0,
+    ]))
+    // 同价通常已经合成一行；若保留旧关联身份产生多行，也按稳定来源顺序只授一次。
+    for (const row of [...rows].sort((a, b) => a.anchorRow - b.anchorRow || a.key.localeCompare(b.key))) {
+      row.baseQty = row.qty
+      row.rewardQty = 0
+      const anchor = byRow.get(row.anchorRow)
+      if (!anchor || !Number.isSafeInteger(row.priceCents) || row.priceCents <= 0) continue
+      const groupKey = `${anchor.stockId}|${row.priceCents}`
+      const pool = pools.get(groupKey)
+      const hands = handsLeft.get(groupKey) ?? 0
+      const rewardQty = hands * 100
+      if (!pool || pool.stockId !== anchor.stockId || pool.rebuyPriceCents !== row.priceCents ||
+        !Number.isSafeInteger(rewardQty) || !Number.isSafeInteger(row.qty + rewardQty) ||
+        !Number.isSafeInteger(row.priceCents * (row.qty + rewardQty)) || rewardQty <= 0) continue
+      const lastRow = row.rows.at(-1)
+      if (lastRow === undefined) continue
+      row.rewardQty = rewardQty
+      row.rewardGroupKey = groupKey
+      row.sourceRewardQty = { [lastRow]: rewardQty }
+      row.qty += rewardQty
+      row.amountCents = row.priceCents * row.qty
+      handsLeft.set(groupKey, 0)
+    }
+    for (const row of rows) {
+      row.rows = row.rows.filter(sourceRow => (row.sourceQty?.[sourceRow] ?? 0) + (row.sourceRewardQty?.[sourceRow] ?? 0) > 0)
+      row.merged = row.rows.length > 1
+      if (row.rows.length === 1) row.key = `buy:${row.rows[0]}`
+      const contributors = row.rows.flatMap(sourceRow => byRow.has(sourceRow) ? [byRow.get(sourceRow)!] : [])
+      const anchor = [...contributors].sort((a, b) => (a.buyDate ?? '9999').localeCompare(b.buyDate ?? '9999') || a.sourceRow - b.sourceRow)[0]
+      if (anchor) row.anchorRow = anchor.sourceRow
+      row.earliestBuyDate = contributors.reduce<string | null>((date, lot) => earlier(date, lot.buyDate), null)
+      row.lastSoldAt = row.rows.reduce<string | null>((date, sourceRow) => latest(date, soldAtByRow.get(sourceRow) ?? null), null)
+      row.repaid = row.rows.some(sourceRow => repaidRows.has(sourceRow))
+    }
+  }
+
   // 买入价从低到高（跌到哪一档就提示哪一档），同价按行号
-  return rows.sort((a, b) => a.priceCents - b.priceCents || a.anchorRow - b.anchorRow)
+  return rows.filter(row=>row.qty>0).sort((a, b) => a.priceCents - b.priceCents || a.anchorRow - b.anchorRow)
 }

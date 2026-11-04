@@ -8,6 +8,8 @@
  - 明细页自己改筛选 = replaceRoute()，只替换当前历史条目，不产生一堆回退步。
  */
 
+import { normalizeRecordIds } from './recordIds'
+
 export type Tab = 'overview' | 'trades' | 'orders' | 'stats' | 'manage'
 
 const TABS: readonly Tab[] = ['overview', 'trades', 'orders', 'stats', 'manage']
@@ -27,6 +29,8 @@ export interface TradesQuery {
   to?: string
   /** 目标行的 nanoId；统计多来源跳转可用逗号分隔多个 id。 */
   id?: string
+  /** 用户可见的「第几笔」列表或范围，如 2,5,8-10；不使用 Excel 行号。 */
+  nos?: string
   sort?: string
   /** 显示已删除行 */
   del?: boolean
@@ -101,7 +105,9 @@ export function serializeTradesQuery(q: TradesQuery): string {
   if (typeof q.priceHi === 'number') p.set('priceHi', String(q.priceHi))
   if (q.from) p.set('from', q.from)
   if (q.to) p.set('to', q.to)
-  if (q.id) p.set('id', q.id)
+  const ids = normalizeRecordIds(q.id)
+  if (ids.length) p.set('id', ids.join(','))
+  if (q.nos?.trim()) p.set('nos', q.nos.trim())
   if (q.sort) p.set('sort', q.sort)
   if (q.del) p.set('del', '1')
   if (q.showDone) p.set('showDone', '1')
@@ -135,8 +141,10 @@ export function parseTradesQuery(search: string): TradesQuery {
   if (from) q.from = from
   const to = p.get('to')
   if (to) q.to = to
-  const id = p.get('id')
-  if (id) q.id = id
+  const ids = normalizeRecordIds(p.get('id'))
+  if (ids.length) q.id = ids.join(',')
+  const nos = p.get('nos')?.trim()
+  if (nos) q.nos = nos
   const sort = p.get('sort')
   if (sort) q.sort = sort
   if (p.get('del') === '1') q.del = true

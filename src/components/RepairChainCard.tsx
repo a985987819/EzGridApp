@@ -1,5 +1,6 @@
 import { Tag } from 'animal-island-ui'
-import type { RepairChain } from '../domain/types'
+import type { Ledger, RepairChain } from '../domain/types'
+import { estimateRepairRounds } from '../domain/repairEstimate'
 import { money, price, qty, signedMoney, tone } from '../ui/format'
 
 /**
@@ -12,15 +13,18 @@ import { money, price, qty, signedMoney, tone } from '../ui/format'
  */
 export function RepairChainCard({
   chain,
+  ledger,
   dense = false,
   rowLabel,
 }: {
   chain: RepairChain
+  ledger: Pick<Ledger, 'lots' | 'sells' | 'targets' | 'orders'>
   dense?: boolean
   /** 行身份（V9.43）：明细/概览传「第 N 笔」，不再露出 Excel 行号 */
   rowLabel: (row: number) => string
 }) {
   const pct = Math.round(chain.covered * 100)
+  const estimate = estimateRepairRounds(chain, ledger)
   return (
     <div className="chain-card" data-chain={chain.anchorRow}>
       <div className="chain-head">
@@ -58,11 +62,18 @@ export function RepairChainCard({
           <span className="tiny muted">链累计盈亏</span>
           <b className={`num ${tone(chain.netCents)}`}>{chain.unlinkedQty ? '待补全成本' : signedMoney(chain.netCents)}</b>
         </div>
-        <div className="chain-num">
-          <span className="tiny muted">还差多少</span>
-          <b className="num">{chain.unlinkedQty ? '待补全成本' : chain.done ? '已不亏钱' : money(chain.gapCents)}</b>
+        <div className="chain-num chain-rounds" data-testid="chain-rounds" data-rounds-status={estimate.status} data-rounds={estimate.status === 'ready' ? estimate.rounds : estimate.status === 'done' ? 0 : undefined}>
+          <span className="tiny muted">回本估算</span>
+          <b className="num">{estimate.status === 'ready' ? `剩余 ${qty(estimate.rounds)} 次可以回本`
+            : estimate.status === 'done' ? '已不亏钱' : estimate.status === 'unlinked' ? '待补全成本'
+              : chain.closedByUserAt !== null ? '已结束' : '待确定买卖价差'}</b>
         </div>
       </div>
+      {estimate.status === 'ready' && <p className="tiny muted chain-line" data-testid="chain-rounds-basis"
+        title={`剩余亏损 ${money(chain.gapCents)} ÷ 每次参考盈利 ${money(estimate.profitPerRoundCents)}，向上取整；按相同价差与股数重复估算`}>
+        按 {price(estimate.buyPriceCents)} 买 → {price(estimate.sellPriceCents)} 卖、每次 {qty(estimate.qty)} 股估算，预计每次盈利 {money(estimate.profitPerRoundCents)}。
+        {estimate.source === 'actual' ? '参考最近低位成交价差' : estimate.source === 'target' ? '参考当前低位买入及原卖出目标' : '参考未成交回补计划'}，未扣费用。
+      </p>}
 
       <div className="chain-bar" title={`后续净盈利 ${money(chain.profitCents)} / 原始亏损 ${money(-chain.lossCents)}`}>
         <i style={{ width: `${pct}%` }} />

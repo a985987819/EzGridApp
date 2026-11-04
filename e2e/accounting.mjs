@@ -134,18 +134,26 @@ try {
 
   await send('Page.navigate',{url:BASE})
   await settle()
-  await evaluate(`(async()=>{
+  const mountProbe=async()=>evaluate(`(async()=>{
     const React=(await import('/node_modules/.vite/deps/react.js')).default
     const {createRoot}=(await import('/node_modules/.vite/deps/react-dom_client.js')).default
     const source=await (await fetch('/src/pages/OrdersPage.tsx')).text()
     const storeUrl=source.match(new RegExp('from "([^"]*store.useApp[^"]*)"'))[1]
     const {AppProvider,useApp}=await import(storeUrl)
     const {OrdersPage}=await import('/src/pages/OrdersPage.tsx')
+    const {RepairChainCard}=await import('/src/components/RepairChainCard.tsx')
     document.getElementById('root').style.display='none'
     const el=document.createElement('div');el.id='accounting-root';document.body.appendChild(el)
-    function Probe(){const a=useApp();window.testApp=a;return a.ready?React.createElement(OrdersPage,{goTrades:()=>{}}):null}
+    function Probe(){
+      const a=useApp();window.testApp=a
+      const [cards,setCards]=React.useState(null)
+      window.showRepairCards=dense=>setCards({dense})
+      return a.ready?(cards?React.createElement('div',{id:'repair-cards-test',className:'stack',style:{padding:12,maxWidth:'100%',boxSizing:'border-box'}},
+        a.ledger.repairChains.map(chain=>React.createElement(RepairChainCard,{key:chain.id,chain,ledger:a.ledger,dense:cards.dense,rowLabel:row=>'第 '+a.recordNo.of(row)+' 笔'}))):React.createElement(OrdersPage,{goTrades:()=>{}})):null
+    }
     createRoot(el).render(React.createElement(AppProvider,null,React.createElement(Probe)))
   })()`)
+  await mountProbe()
   await settle()
   const state=()=>evaluate(`({records:testApp.records,totals:testApp.ledger.totals,chains:testApp.ledger.repairChains.map(c=>({row:c.anchorRow,loss:c.lossCents,profit:c.profitCents,holding:c.holdingQty})),checks:testApp.ledger.checks.filter(c=>!c.ok),targets:testApp.ledger.targets,orders:testApp.ledger.orders,executions:testApp.executions})`)
   const act=async(expr)=>{const r=await evaluate(`(async()=>{${expr}})()`);await sleep(120);return r}
@@ -349,9 +357,40 @@ try {
     check('第'+row+'行详情能看到完整回本链',await evaluate(`Boolean(document.querySelector('[data-testid="chain-section"] .chain-card'))`))
     if(row===29)check('高位第29行详情同时显示两条关联链',await evaluate(`document.querySelectorAll('[data-testid="chain-section"] .chain-card').length===2`))
   }
-  check('无浏览器运行时错误',problems.length===0,problems.join(' | '))
   const shot=await send('Page.captureScreenshot',{format:'png'})
   writeFileSync(join(OUT,'accounting-mobile.png'),Buffer.from(shot.data,'base64'))
+
+  // 回本链次数仅为展示估算；真实回补、已实现盈利与原始亏损仍按原账务计算。
+  await send('Page.reload');await settle();await mountProbe();await settle()
+  await act(`await testApp.resetAll();await testApp.addStock({id:'stock:T',name:'T',intervalCents:200,priceLimitType:'main_10'});
+    window.estimateHigh=await testApp.addManualRecord({kind:'buy',stockName:'T',date:'2026-10-20',price:'10',qty:'500',targetPrice:'12'});
+    window.estimateRoot=await testApp.addManualRecord({kind:'sell',stockName:'T',date:'2026-10-21',price:'7',qty:'500',rebuyPrice:'5'});
+    showRepairCards(false)`)
+  check('回本链第四格按未成交5买7卖计划估算剩余2次',await evaluate(`(()=>{const metric=document.querySelector('#repair-cards-test [data-testid=chain-rounds]');return metric?.dataset.roundsStatus==='ready'&&metric.dataset.rounds==='2'&&metric.textContent.includes('剩余 2 次可以回本')&&metric===document.querySelectorAll('#repair-cards-test .chain-num')[3]})()`))
+  check('次数格不重复显示还差金额，参考说明写明500股、价差和未扣费用',await evaluate(`(()=>{const metric=document.querySelector('#repair-cards-test [data-testid=chain-rounds]'),basis=document.querySelector('#repair-cards-test [data-testid=chain-rounds-basis]');return !/[¥￥]/.test(metric.textContent)&&basis.textContent.includes('5.00 买')&&basis.textContent.includes('7.00 卖')&&basis.textContent.includes('每次 500 股')&&basis.textContent.includes('1,000.00')&&basis.textContent.includes('未扣费用')})()`))
+  await act(`const order=testApp.ledger.orders.find(order=>order.sourceRow===estimateRoot);await testApp.recordBuySuggestion([{kind:'order',id:order.id,row:estimateRoot,qty:500}],500,500,'2026-10-22')`)
+  check('5元回补500股后仍估算2次，买回未卖不提前增加链盈利',await evaluate(`document.querySelector('#repair-cards-test [data-testid=chain-rounds]').dataset.rounds==='2'&&testApp.ledger.repairChains[0].profitCents===0&&testApp.ledger.totals.profitCents===-150000&&document.querySelector('#repair-cards-test [data-testid=chain-rounds-basis]').textContent.includes('当前低位买入')`))
+  await act(`window.estimateLot=testApp.ledger.lots.find(lot=>lot.id.startsWith('lot:exec:'));await testApp.recordLotSales([{lotId:estimateLot.id,qty:500}],500,700,'2026-10-23')`)
+  check('实际7元再卖后仍亏500元，剩余次数向上取整为1',await evaluate(`document.querySelector('#repair-cards-test [data-testid=chain-rounds]').dataset.rounds==='1'&&document.querySelector('#repair-cards-test [data-testid=chain-rounds]').textContent.includes('剩余 1 次可以回本')&&testApp.ledger.repairChains[0].profitCents===100000&&testApp.ledger.repairChains[0].gapCents===50000&&testApp.ledger.totals.profitCents===-50000`))
+  await act(`window.estimateAccounting=JSON.stringify({totals:testApp.ledger.totals,chains:testApp.ledger.repairChains});showRepairCards(true)`)
+  check('紧凑链卡保持相同剩余次数、500股参考与实际价差说明',await evaluate(`document.querySelector('#repair-cards-test [data-testid=chain-rounds]').dataset.rounds==='1'&&!document.querySelector('#repair-cards-test .chain-cycles')&&document.querySelector('#repair-cards-test [data-testid=chain-rounds-basis]').textContent.includes('每次 500 股')&&document.querySelector('#repair-cards-test [data-testid=chain-rounds-basis]').textContent.includes('最近低位成交价差')`))
+  await evaluate(`document.querySelector('#repair-cards-test').scrollIntoView({block:'start'})`);await sleep(300)
+  check('390px紧凑回本链次数与参考说明无横向溢出',await evaluate('document.documentElement.scrollWidth<=innerWidth'))
+  const denseShot=await send('Page.captureScreenshot',{format:'png'})
+  writeFileSync(join(OUT,'repair-estimate-dense-390.png'),Buffer.from(denseShot.data,'base64'))
+  await act('showRepairCards(false)')
+  await send('Emulation.setDeviceMetricsOverride',{width:320,height:740,deviceScaleFactor:1,mobile:true});await sleep(300)
+  check('320px完整回本链次数与参考说明无横向溢出',await evaluate('document.documentElement.scrollWidth<=innerWidth'))
+  check('切换密度及估算展示不修改总账、链盈利或库存',await evaluate(`JSON.stringify({totals:testApp.ledger.totals,chains:testApp.ledger.repairChains})===estimateAccounting&&testApp.ledger.checks.every(check=>check.ok)`))
+  const narrowShot=await send('Page.captureScreenshot',{format:'png'})
+  writeFileSync(join(OUT,'repair-estimate-320.png'),Buffer.from(narrowShot.data,'base64'))
+  await act(`window.estimateNext=await testApp.addManualRecord({kind:'buy',stockName:'T',date:'2026-10-24',price:'5',qty:'500',targetPrice:'7'});
+    await testApp.setChainMembers(estimateRoot,[estimateNext]);
+    await testApp.recordLotSales([{lotId:'lot:'+estimateNext,qty:500}],500,700,'2026-10-25')`)
+  check('后续真实盈利覆盖亏损后显示已不亏钱，次数为0而非负数',await evaluate(`(()=>{const metric=document.querySelector('#repair-cards-test [data-testid=chain-rounds]');return metric?.dataset.roundsStatus==='done'&&metric.dataset.rounds==='0'&&metric.textContent.includes('已不亏钱')&&testApp.ledger.repairChains[0].done&&testApp.ledger.repairChains[0].profitCents===200000&&testApp.ledger.totals.profitCents===50000})()`))
+  await act(`await testApp.resetAll();await testApp.addStock({id:'stock:U',name:'U',intervalCents:200,priceLimitType:'main_10'});await testApp.addManualRecord({kind:'sell',stockName:'U',date:'2026-10-21',price:'7',qty:'500',rebuyPrice:'5'})`)
+  check('没有关联高位成本时不猜回本次数，明确显示待补全成本',await evaluate(`(()=>{const metric=document.querySelector('#repair-cards-test [data-testid=chain-rounds]');return metric?.dataset.roundsStatus==='unlinked'&&!metric.hasAttribute('data-rounds')&&metric.textContent.includes('待补全成本')&&!document.querySelector('#repair-cards-test [data-testid=chain-rounds-basis]')})()`))
+  check('无浏览器运行时错误',problems.length===0,problems.join(' | '))
   socket.close()
 } finally {
   browser.kill()

@@ -1241,26 +1241,26 @@ try {
   const dayHash = await evaluate('location.hash')
   check('落在明细并带单日区间', /from=\d{4}-\d{2}-\d{2}/.test(dayHash) && /to=\d{4}-\d{2}-\d{2}/.test(dayHash) && dayHash.match(/from=([^&]+)/)?.[1] === dayHash.match(/to=([^&]+)/)?.[1], dayHash)
 
-  // 挂单 · 待卖条目（整行可点）→ nanoId 定位（V9.4 起跳转以 nanoId 为唯一依据）
+  // 挂单 · 待卖条目（整行可点）→ 全部实际来源 nanoId 列表，同价合并不能只定位锚点
   // V9.47：待买卡里的「下一轮应买」行也含「· 买入」，这里要把它排掉，点的仍是待卖行
   await nav('orders')
-  check(
-    '点待卖清单行',
-    await evaluate(`(() => {
+  const clickedSourceRows = await evaluate(`(() => {
       const line = [...document.querySelectorAll('.data-block .line')].find(
         (l) => !l.hasAttribute('data-buy-level') && l.textContent.includes('· 买入'),
       )
-      if (!line) return false
-      line.click(); return true
-    })()`),
-  )
+      if (!line) return []
+      const rows = line.querySelector('[data-action="view-sources"]')?.dataset.sourceRows.split(',').map(Number) ?? []
+      line.click(); return rows
+    })()`)
+  check('点待卖清单行', clickedSourceRows.length > 0)
   await sleep(600)
   const idHash = await evaluate('location.hash')
-  const nanoId = (idHash.match(/id=([0-9a-z-]+)/) || [])[1]
-  check('落在明细并带 nanoId', Boolean(nanoId), idHash)
-  check('nanoId 定位 1 行', (await headCount()) === 1, String(await headCount()))
+  const linkedIds = new URLSearchParams(idHash.split('?')[1]).get('id')?.split(',') ?? []
+  check('落在明细并带全部来源 nanoId', linkedIds.length === clickedSourceRows.length && linkedIds.every(Boolean), idHash)
+  const actualSourceRows = await evaluate(`[...document.querySelectorAll('.trade-item[data-row]')].map(e => Number(e.dataset.row)).sort((a,b)=>a-b)`)
+  check('nanoId 列表精确定位全部实际来源', JSON.stringify(actualSourceRows) === JSON.stringify([...clickedSourceRows].sort((a,b)=>a-b)), JSON.stringify(actualSourceRows))
   const idChip = await evaluate(`[...document.querySelectorAll('[data-testid="active-chips"] .filter-chip')].map(e => e.textContent.trim()).join('|')`)
-  check('记录序号条件 chip 显示', /第 \d+ 笔/.test(idChip), idChip)
+  check('来源条件及逐笔序号显示', (clickedSourceRows.length === 1 ? /第 \d+ 笔/.test(idChip) : idChip.includes(`来源 ${clickedSourceRows.length} 笔`)) && await evaluate(`document.querySelectorAll('[data-remove-source]').length === ${clickedSourceRows.length}`), idChip)
 
   // 收尾清掉筛选，让后面的章节拿到干净的明细页（V9.2 起导航会恢复上次筛选）
   check('清空筛选收尾', await clickByText('[data-testid="active-chips"] .filter-chip', '清空筛选'))
@@ -2111,7 +2111,7 @@ try {
         const c = document.querySelector('[data-testid="chain-section"] .chain-card')
         if (!c) return false
         const t = c.textContent
-        return (t.includes('原始亏损') || t.includes('已关联部分亏损')) && t.includes('后续净盈利') && t.includes('链累计盈亏') && t.includes('还差多少')
+        return (t.includes('原始亏损') || t.includes('已关联部分亏损')) && t.includes('后续净盈利') && t.includes('链累计盈亏') && t.includes('回本估算')
       })()`),
     )
     check(

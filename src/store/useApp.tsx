@@ -13,6 +13,7 @@ import { db, type ImportBatch } from './db'
 import { activeDependents, validateExecutionInput } from '../domain/dependencies'
 import { buildNextRoundBuyRows } from '../domain/buyBoard'
 import { consumedNextRounds, type BuySource } from '../domain/suggestions'
+import { allocateRewardPurchase, rewardBudget } from '../domain/rewardPurchase'
 import { isoToSerial } from '../domain/edit'
 import { serialToIso } from '../domain/defaults'
 import { buildLedger } from '../domain/ledger'
@@ -703,6 +704,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const restore = useCallback(
     async (sourceRow: number) => {
+      await db.transaction('rw', LEDGER_TX_TABLES(), async () => {
       const current = await db.records.get(sourceRow)
       if (!current) return
       if ((await db.bookingReceipts.toArray()).some(r => r.voidedAt && r.recordRows.includes(sourceRow))) throw new Error('这行所属整笔成交已撤销，不能单独恢复一份分配；请核对原凭据后重新登记')
@@ -713,12 +715,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       if(current.nextRoundOfRow!==undefined){
         const state=await currentLedger()
-        const next=buildNextRoundBuyRows({...state.ledger,merges:[],consumed:consumedNextRounds(state.records)})
-        if((next.find((n)=>n.rows.includes(current.nextRoundOfRow!))?.sourceQty?.[current.nextRoundOfRow]??0)<(current.buyQtyRaw??0))throw new Error('下一轮来源已被使用，不能重复恢复买入')
+        const next=buildNextRoundBuyRows({...state.ledger,merges:[],consumed:consumedNextRounds(state.records),groups:state.ledger.groups})
+        const suggestion=next.find((n)=>n.rows.includes(current.nextRoundOfRow!))
+        const reward=current.profitRewardQty??0
+        if((suggestion?.sourceQty?.[current.nextRoundOfRow]??0)<(current.buyQtyRaw??0)-reward)throw new Error('下一轮来源已被使用，不能重复恢复买入')
+        if(reward>0){
+          if(!current.profitRewardGroupKey || suggestion?.rewardGroupKey!==current.profitRewardGroupKey || (suggestion.sourceRewardQty?.[current.nextRoundOfRow]??0)<reward)throw new Error('奖励额度已变化，不能重复恢复这笔买入')
+          rewardBudget(state.ledger.groups)(current.profitRewardGroupKey,reward,current.buyPriceCents??0)
+        }
       }
       await db.transaction('rw', db.records, db.auditLogs, async () => {
         await db.records.put({ ...current, deletedAt: null })
         await db.auditLogs.add(audit(`record:${sourceRow}`, '软删除', '已删除', '有效', 'restore'))
+      })
       })
       await reloadRecords()
     },
@@ -831,7 +840,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const recordBuySuggestion = async (sources:BuySource[],qty:number,priceCents:number,date:string, options?: BookingOptions) => {
     const serial=isoToSerial(date)
-    if(!Number.isInteger(qty)||qty<=0||!Number.isInteger(priceCents)||priceCents<=0||serial===null)throw new Error('成交数量、价格或日期不合法')
+    if(!Number.isSafeInteger(qty)||qty<=0||!Number.isSafeInteger(priceCents)||priceCents<=0||serial===null)throw new Error('成交数量、价格或日期不合法')
     /**
      * V9.55 修：日期框认 `2026/1/5`、`2026.1.5`，但 `new Date('2026/1/5T12:00:00')` 是 Invalid
      * Date → `at: NaN` 落库 → 回补批次 buyDate 变 `NaN-NaN-NaN`，而且导出的备份里 NaN 经
@@ -844,31 +853,48 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const stockName = (await db.records.get(sources[0]?.row ?? -1))?.stockName ?? ''
     return saveBooking({ kind: 'buy', stockName, qty, priceCents, date: dayIso }, { sources, qty, priceCents, date }, options, async()=>{
       const {records:r,ledger:l}=await currentLedger()
-      const next=buildNextRoundBuyRows({...l,merges:[],consumed:consumedNextRounds(r)})
-      let left=qty
+      const next=buildNextRoundBuyRows({...l,merges:[],consumed:consumedNextRounds(r),groups:l.groups})
       let row=Math.max(MANUAL_ROW_BASE-1,...r.map((v)=>v.sourceRow))+1
       const seen=new Set<string>()
       const timestamp=Date.now()
       const names = new Set(sources.map(s => r.find(row => row.sourceRow === s.row)?.stockName))
       if (names.size !== 1 || names.has(undefined)) throw new Error('成交来源必须属于同一股票')
-      for(const source of sources){
-        if(left<=0)break
+      const prepared=sources.map(source=>{
         const key=source.kind==='order'&&source.splitKey?source.splitKey:source.kind+':'+source.row
         if(seen.has(key))throw new Error('重复的买入来源')
         seen.add(key)
+        if(!Number.isSafeInteger(source.qty)||source.qty<=0)throw new Error('建议来源数量不合法')
+        if(source.kind==='order'){
+          const order=l.orders.find(value=>value.id===source.id)
+          const split=source.splitKey?l.buySplits.find(value=>value.key===source.splitKey&&value.orderId===order?.id):undefined
+          if(!order || order.sourceRow!==source.row || (source.splitKey&&!split))throw new Error('待买来源已变化，请刷新后重试')
+          const cap=split?.qty??order.remainingQty
+          const base=Math.min(Math.max(0,order.baseQty-order.execQty+order.doneRewardQty),split?.baseRemainingQty??Infinity)
+          if(source.qty>cap)throw new Error('待买数量已变化，请关闭弹窗后重试')
+          const baseQty=Math.min(source.qty,base),rewardQty=source.qty-baseQty
+          if(rewardQty>Math.max(0,order.rewardQty-order.doneRewardQty))throw new Error('奖励额度已变化，请关闭弹窗后重试')
+          return {source,qty:source.qty,baseQty,rewardQty}
+        }
+        const n=next.find(value=>value.rows.includes(source.row))
+        const base=n?.sourceQty?.[source.row]??0,reward=n?.sourceRewardQty?.[source.row]??0
+        if(!n || source.qty>base+reward)throw new Error('下一轮建议数量已变化，请关闭弹窗后重试')
+        const baseQty=Math.min(source.qty,base)
+        return {source,qty:source.qty,baseQty,rewardQty:source.qty-baseQty}
+      })
+      const spendReward=rewardBudget(l.groups)
+      for(const allocation of allocateRewardPurchase(prepared,qty)){
+        const source=allocation.source,q=allocation.buyQty,reward=allocation.buyRewardQty
         if(source.kind==='order') {
           const o=l.orders.find((v)=>v.id===source.id)
-          if(!Number.isInteger(source.qty)||source.qty<=0||!o || o.remainingQty<Math.min(left,source.qty))throw new Error('待买数量已变化，请关闭弹窗后重试')
-          const q=Math.min(left,source.qty)
+          if(!o || o.remainingQty<q)throw new Error('待买数量已变化，请关闭弹窗后重试')
           const split=source.splitKey?l.buySplits.find((b)=>b.key===source.splitKey&&b.orderId===o.id):undefined
           if(source.splitKey&&(!split||split.qty<q))throw new Error('拆分档剩余已变化，请关闭弹窗后重试')
-          const baseLeft=Math.min(Math.max(0,o.baseQty-(o.execQty-o.doneRewardQty)),split?.baseRemainingQty??Infinity)
-          const reward=Math.max(0,q-baseLeft)
+          if(q-reward>Math.min(Math.max(0,o.baseQty-o.execQty+o.doneRewardQty),split?.baseRemainingQty??Infinity))throw new Error('基础回补额度已变化')
           validateExecutionInput(q,priceCents,reward,o.remainingQty,Math.max(0,o.rewardQty-o.doneRewardQty))
+          spendReward(o.groupKey,reward,priceCents)
           const e:RebuyExecution={id:`exec:${o.id}:${timestamp}:${row++}`,orderId:o.id,sellExecId:o.sellExecId,stockId:o.stockId,stockName:o.stockName,qty:q,priceCents,rewardQty:reward,groupKeyAtExecution:o.groupKey,at:atNoon,...(split?{buyTargetId:split.targetId??`default:${o.id}`}:{})}
           await db.rebuyExecutions.add(e)
           await db.auditLogs.add(audit(o.id,'记回补成交','',`${q} 股 @ ${priceCents/100}`,'rebuy','order'))
-          left-=q
           // 仅更新本事务的派生副本，后面的同订单来源必须使用剩余额度。
           o.execQty+=q
           o.doneRewardQty+=reward
@@ -876,11 +902,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
         } else {
           const n=next.find((v)=>v.rows.includes(source.row))
           const cap=n?.sourceQty?.[source.row]??0
-          if(!n||cap<source.qty)throw new Error('下一轮建议数量已变化，请关闭弹窗后重试')
-          const q=Math.min(left,source.qty)
+          if(!n||cap<q-reward || (n.sourceRewardQty?.[source.row]??0)<reward)throw new Error('下一轮建议数量已变化，请关闭弹窗后重试')
+          if(reward>0){if(!n.rewardGroupKey)throw new Error('奖励价组缺失，请刷新后重试');spendReward(n.rewardGroupKey,reward,priceCents)}
           const result=buildManualRecord({kind:'buy',stockName:n.stockName,date,price:String(priceCents/100),qty:String(q)},row++)
           if(result.errors.length)throw new Error(result.errors.join('；'))
-          await db.records.add({...result.record,nextRoundOfRow:source.row})
+          await db.records.add({...result.record,nextRoundOfRow:source.row,...(reward>0?{profitRewardQty:reward,profitRewardGroupKey:n.rewardGroupKey}:{})})
           const owner=l.repairChains.find((c)=>c.anchorRow===source.row || c.branches.some((b)=>b.row===source.row))
           if(owner && owner.closedByUserAt===null){
             const id=`chainlink:${owner.anchorRow}`
@@ -888,10 +914,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
             await db.chainLinks.put({id,anchorRow:owner.anchorRow,stockName:owner.stockName,memberRows:[...new Set([...(prev?.memberRows??[]),result.record.sourceRow])],closedAt:null,at:timestamp})
           }
           await db.auditLogs.add(audit(`record:${result.record.sourceRow}`,'下一轮买入','',`record:${source.row} · ${q} 股 @ ${priceCents/100}`,'buy'))
-          left-=q
         }
       }
-      if(left>0)throw new Error('成交数量超过建议数量')
     })
   }
 
@@ -903,6 +927,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const fresh=l.orders.find((o)=>o.id===order.id)
         if(!fresh)throw new Error('待买单已变化，请刷新后重试')
         validateExecutionInput(qty,priceCents,rewardQty,fresh.remainingQty,Math.max(0,fresh.rewardQty-fresh.doneRewardQty))
+        rewardBudget(l.groups)(fresh.groupKey,rewardQty,priceCents)
         const split=splitKey?l.buySplits.find((b)=>b.orderId===fresh.id&&b.key===splitKey):undefined
         if(splitKey&&(!split||qty>split.qty||qty-rewardQty>split.baseRemainingQty||rewardQty>split.qty-split.baseRemainingQty))throw new Error('成交数量或奖励超过此档剩余额度，请核对后重试')
         if(qty-rewardQty>Math.max(0,fresh.baseQty-fresh.execQty+fresh.doneRewardQty))throw new Error('基础回补量不足，请核对奖励股数')
@@ -1497,8 +1522,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setLastBackupAt(Number(stamp))
     return JSON.stringify(
       {
-        // 结构13新增独立拆档策略；旧程序必须拒绝，避免忽略底仓做T/低位回本模式。
-        schemaVersion: 13,
+        // 结构14保存下一轮实际奖励归属，避免旧程序忽略已用盈利而重复发放。
+        schemaVersion: 14,
         exportedAt: new Date().toISOString(),
         settings: { deriveSellPrice },
         stocks: s,
@@ -1539,7 +1564,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       if (data.settings !== undefined && (typeof data.settings !== 'object' || data.settings === null || typeof data.settings.deriveSellPrice !== 'boolean')) throw new Error('备份计算设置不合法')
       const version = data.schemaVersion ?? 1
-      if (version > 13) throw new Error('备份版本高于当前程序，拒绝导入（P11）')
+      if (version > 14) throw new Error('备份版本高于当前程序，拒绝导入（P11）')
       if (!Array.isArray(data.records)) throw new Error('这不是完整备份：缺少交易记录表，拒绝混合恢复')
       // P11 之外的第二道闸：结构坏掉的备份整包拒绝，不让半截 JSON 污染本地库
       const problem = validateBackup(data)

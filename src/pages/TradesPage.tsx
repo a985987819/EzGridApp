@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Button, Card, Drawer, Input, Modal, Switch, Tag, notificationOpen } from 'animal-island-ui'
 import { Select } from '../ui/Select'
 import { useApp } from '../store/useApp'
-import { serialToIso } from '../domain/defaults'
+import { serialToIso, stockIdOf } from '../domain/defaults'
+import { groupKeyOf } from '../domain/ledger'
+import { LevelProfit } from '../components/LevelProfit'
 import { EDITABLE, fieldText, isoToSerial, type EditableKey } from '../domain/edit'
 import { activeStocks } from '../domain/stocks'
 import { sellsByRecord } from '../domain/suggestions'
@@ -14,6 +16,8 @@ import type { RawRecord, RepairChain } from '../domain/types'
 import { isoDate, money, price, qty, signedMoney, todayIso, tone } from '../ui/format'
 import { replaceRoute, type TradesQuery } from '../ui/nav'
 import { buildNanoIdIndex } from '../ui/nanoid'
+import { normalizeRecordIds } from '../ui/recordIds'
+import { parseRecordSelection } from '../domain/recordSelection'
 import { centsToYuan, toCents } from '../domain/money'
 import { downloadBytes, downloadText, toCsv } from '../ui/csv'
 import { exportRecordsWorkbook } from '../io/parseWorkbook'
@@ -31,6 +35,7 @@ import { LotMergeBinder } from '../components/LotMergeBinder'
 import { RepairChainCard } from '../components/RepairChainCard'
 import { ChainBinder } from '../components/ChainBinder'
 import { BookingCheck, useBookingCheck } from '../components/BookingCheck'
+import { TradeFilterTools } from '../components/TradeFilterTools'
 
 /** 状态筛选可多选（V9 可叠加）：命中的行要满足每一个勾选的状态 */
 const STATUS_KEYS = ['holding', 'soldout', 'pending', 'exposure', 'buyDateMissing', 'sellDateMissing', 'needsPrice'] as const
@@ -191,6 +196,10 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   const [fromDate, setFromDate] = useState(urlQuery.from ?? '')
   const [toDate, setToDate] = useState(urlQuery.to ?? '')
   const [idFilter, setIdFilter] = useState<string | null>(urlQuery.id ?? null)
+  const [numberFilter, setNumberFilter] = useState(urlQuery.nos ?? '')
+  const selectedIds = useMemo(() => normalizeRecordIds(idFilter), [idFilter])
+  const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds])
+  const selectedNumbers = useMemo(() => parseRecordSelection(numberFilter), [numberFilter])
   const [sortBy, setSortBy] = useState<SortBy>(() =>
     SORT_KEYS.includes(urlQuery.sort ?? '') ? (urlQuery.sort as SortBy) : 'rowDesc',
   )
@@ -255,6 +264,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     setFromDate(q.from ?? '')
     setToDate(q.to ?? '')
     setIdFilter(typeof q.id === 'string' && q.id ? q.id : null)
+    setNumberFilter(q.nos ?? '')
     setSortBy(SORT_KEYS.includes(q.sort ?? '') ? (q.sort as SortBy) : 'rowDesc')
     setShowDeleted(q.del === true)
     setHideDone(q.showDone !== true)
@@ -271,11 +281,12 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       from: fromDate || undefined,
       to: toDate || undefined,
       id: idFilter ?? undefined,
+      nos: numberFilter || undefined,
       sort: sortBy === 'rowDesc' ? undefined : sortBy,
       del: showDeleted || undefined,
       showDone: !hideDone || undefined,
     })
-    }, [stockFilter, statuses, priceFilter, priceLo, priceHi, fromDate, toDate, idFilter, sortBy, showDeleted, hideDone])
+    }, [stockFilter, statuses, priceFilter, priceLo, priceHi, fromDate, toDate, idFilter, numberFilter, sortBy, showDeleted, hideDone])
 
   // nanoId 索引：展示 / 筛选 / 跳转的唯一行级 id（V9.4）
   const nano = useMemo(() => buildNanoIdIndex(records), [records])
@@ -305,11 +316,17 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       sell: sellMap.get(rec.sourceRow) ?? null,
     }))
   }, [records, ledger])
+  const profitByGroup = useMemo(() => new Map(ledger.groups.map(group => [group.groupKey, group])), [ledger.groups])
+  const levelProfitOf = (row: Row) => {
+    const priceCents = row.lot?.buyPriceCents ?? row.rec.buyPriceCents ?? row.sell?.costCents ?? row.sell?.rebuyPriceCents
+    if (priceCents === null || priceCents === undefined || !Number.isSafeInteger(priceCents) || priceCents <= 0) return undefined
+    const stockId = row.lot?.stockId ?? row.sell?.stockId ?? stocks.find(stock => stock.name === row.rec.stockName)?.id ?? stockIdOf(row.rec.stockName)
+    return { priceCents, group: profitByGroup.get(groupKeyOf(stockId, priceCents)) }
+  }
 
   // 过滤 + 顺带统计「没有日期、被日期区间条件排除」的行数（空态时提示用）
   const { filtered, noDateHidden } = useMemo(() => {
     let hidden = 0
-    const selectedIds = new Set(idFilter?.split(',') ?? [])
     /**
      * V9.46 回本链的锚点（亏着清仓的那笔）与归属成员：它们都还「欠着账」，
      * 不是真的完成——默认 hideDone 也留着，否则用户找不到那笔 10 元买入去哪了。
@@ -324,7 +341,10 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     const list = rows.filter((r) => {
       // nanoId 深链要能命中已软删的行，showDeleted 的门对目标行放行
       const rId = nano.rowToId.get(r.rec.sourceRow)
-      const deepLink = rId !== undefined && selectedIds.has(rId)
+      const idMatch = rId !== undefined && selectedIdSet.has(rId)
+      const numberMatch = selectedNumbers.numbers.has(recordNo.of(r.rec.sourceRow) ?? -1)
+      const deepLink = idMatch || (Boolean(numberFilter) && numberMatch)
+      if (numberFilter && (selectedNumbers.error || !numberMatch)) return false
       if (!showDeleted && r.rec.deletedAt && !deepLink) return false
       if (stockFilter === 'all') {
         // 停用的股票不出现在明细里
@@ -342,7 +362,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
         )
         if (!hit) return false
       }
-      if (idFilter !== null && !deepLink) return false
+      if (idFilter !== null && !idMatch) return false
       /** 深链指到的那一行要一定看得见：软删（上面已放行）和「已完成」都不能把它藏掉 */
       // 状态多选取交集：勾了几个状态，行必须全都满足
       if (statuses.length > 0 && !statuses.every((k) => statusMatch(r, k))) return false
@@ -362,7 +382,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       return true
     })
     return { filtered: list, noDateHidden: hidden }
-  }, [rows, stockFilter, priceFilter, priceLo, priceHi, statuses, showDeleted, enabledSet, fromDate, toDate, idFilter, nano, hideDone, ledger.repairChains])
+  }, [rows, stockFilter, priceFilter, priceLo, priceHi, statuses, showDeleted, enabledSet, fromDate, toDate, idFilter, selectedIdSet, selectedNumbers, numberFilter, recordNo, nano, hideDone, ledger.repairChains])
 
   /** 已生效的条件 chips：每颗都能单独点掉 */
   const activeChips = useMemo(() => {
@@ -376,7 +396,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     if (priceLo !== null || priceHi !== null)
       chips.push({
         key: 'priceRange',
-        label: `价格 ${(priceLo ?? 0) / 100}~${(priceHi ?? 0) / 100}`,
+        label: `价格 ${priceLo === null ? '不限' : price(priceLo)}~${priceHi === null ? '不限' : price(priceHi)}`,
         clear: () => {
           setPriceLo(null)
           setPriceHi(null)
@@ -392,16 +412,17 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
         },
       })
     if (idFilter !== null) {
-      const rec = nano.byId.get(idFilter)
+      const rec = nano.byId.get(selectedIds[0])
       const n = rec ? recordNo.of(rec.sourceRow) : null
       chips.push({
         key: 'id',
-        label: idFilter.includes(',') ? `已选 ${idFilter.split(',').length} 笔` : n !== null ? `第 ${n} 笔` : `#${idFilter}`,
+        label: selectedIds.length > 1 ? `来源 ${selectedIds.length} 笔` : n !== null ? `第 ${n} 笔` : '未找到的来源',
         clear: () => setIdFilter(null),
       })
     }
+    if (numberFilter) chips.push({ key: 'numbers', label: selectedNumbers.error ? '序号格式待修正' : numberFilter.length > 35 ? `序号 ${selectedNumbers.numbers.size} 笔` : `序号 ${numberFilter}`, clear: () => setNumberFilter('') })
     return chips
-  }, [stockFilter, statuses, priceFilter, priceLo, priceHi, fromDate, toDate, idFilter, nano, recordNo])
+  }, [stockFilter, statuses, priceFilter, priceLo, priceHi, fromDate, toDate, idFilter, selectedIds, numberFilter, selectedNumbers, nano, recordNo])
 
   /** 一键复位：股票 / 状态 / 日期 / 价格（含区间）/ nanoId 全清（排序与已删除开关不动），已完成恢复默认隐藏 */
   function resetFilters() {
@@ -413,6 +434,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     setFromDate('')
     setToDate('')
     setIdFilter(null)
+    setNumberFilter('')
     setHideDone(true)
   }
 
@@ -787,7 +809,27 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
           </button>
         </div>
 
-        {/* S3：日期区间筛选不设页面组件（V9.11 删）——只用年月：从「统计 · 月度成交 / 成交日历」跳转带入 from/to，条件 chip 可点掉 */}
+        <TradeFilterTools nos={numberFilter}
+          range={{ priceLo: priceLo ?? priceFilter, priceHi: priceHi ?? priceFilter, from: fromDate, to: toDate }}
+          onSelectNumbers={value => transitionView(() => { setNumberFilter(value); if (value) setIdFilter(null) })}
+          onApplyRange={value => transitionView(() => { setPriceFilter(null); setPriceLo(value.priceLo); setPriceHi(value.priceHi); setFromDate(value.from); setToDate(value.to) })}
+          onClearRange={() => transitionView(() => { setPriceFilter(null); setPriceLo(null); setPriceHi(null); setFromDate(''); setToDate('') })} />
+
+        {selectedNumbers.error && numberFilter && <p className="tiny trade-filter-error" role="alert">{selectedNumbers.error}</p>}
+
+        {selectedIds.length > 0 && <div className="trade-source-selection" data-testid="trade-source-selection">
+          <div className="row"><strong className="tiny">限定 {selectedIds.length} 笔来源</strong><div className="spacer" />
+            <Button size="small" type="text" data-action="clear-source-selection" onClick={() => transitionView(() => setIdFilter(null))}>取消来源限定</Button></div>
+          <p className="tiny muted">点 × 移除单笔；股票、状态、价格和日期仍可继续叠加筛选。</p>
+          <div className="filter-chips trade-source-chips">{selectedIds.map(id => {
+            const rec = nano.byId.get(id)
+            return <button type="button" key={id} className="filter-chip" data-remove-source={id}
+              onClick={() => transitionView(() => setIdFilter(selectedIds.filter(value => value !== id).join(',') || null))}
+              aria-label={`移除${rec ? `第 ${recordNo.of(rec.sourceRow)} 笔` : `未找到的来源 ${id}`}`}>
+              {rec ? `第 ${recordNo.of(rec.sourceRow)} 笔` : `未找到 ${id.slice(0, 16)}${id.length > 16 ? '…' : ''}`}<span className="x" aria-hidden>×</span>
+            </button>
+          })}</div>
+        </div>}
 
         {/* 已生效条件 chips + 一键复位（每颗 chip 可单独点掉） */}
         {activeChips.length > 0 && (
@@ -863,6 +905,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
         <Card>
           <div className="empty-box">
             没有匹配的行
+            {(selectedIds.length > 0 || numberFilter) && <span className="tiny" style={{ display: 'block', marginTop: 4 }}>可移除来源限定或清空筛选，检查是否与其它条件冲突。</span>}
             {noDateHidden > 0 && (
               <span className="tiny" style={{ display: 'block', marginTop: 4 }}>
                 另有 {noDateHidden} 行没有任何日期，被日期区间条件排除
@@ -946,6 +989,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
               extraTag={hedgeTag ?? chainTag}
               anim={anim}
               chain={anchorChain ? 'anchor' : memberChain ? (isBranch ? 'branch' : 'member') : undefined}
+              levelProfit={levelProfitOf(r)}
             />
           )
         })
@@ -1099,6 +1143,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                   </div>
                 </div>
 
+                {levelProfitOf(current) && !current.rec.deletedAt && <LevelProfit {...levelProfitOf(current)!} />}
                 {current.sell?.hedgedHold === true && (
                   <p className="tiny muted" style={{ margin: '0 0 4px' }}>
                     已挂钩：盈利暂缓计算——买回后由高位批次按卖出价了结，亏损进「回本链」，
@@ -1343,7 +1388,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                       .filter((c): c is RepairChain => Boolean(c))
                       .filter((c, i, arr) => arr.findIndex((x) => x.id === c.id) === i)
                       .map((c) => (
-                        <RepairChainCard key={c.id} chain={c} rowLabel={recordNoLabelOf} />
+                        <RepairChainCard key={c.id} chain={c} ledger={ledger} rowLabel={recordNoLabelOf} />
                       ))}
                     <ChainBinder
                       key={`chain-binder-${current.rec.sourceRow}`}

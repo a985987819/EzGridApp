@@ -8,6 +8,7 @@ import { deriveBuyQty } from './qty'
 import { deriveRebuyPrice } from './manual'
 import { serialToIso, stockIdOf } from './defaults'
 import { buildRepairChains } from './chain'
+import { buildRewardProfit, type RewardProfitRow } from './rewardProfit'
 import { defaultHedges, isSellFirst } from './sellFirst'
 import { coverOfSell, type SellCover } from './cover'
 import { buildActualRebuyFills } from './rebuyFills'
@@ -631,7 +632,8 @@ export function buildLedger(
   }
 
   // R4/R5 组池与奖励
-  const groups = computeGroups(sells, orders, scopedExecs)
+  const rewardPurchases = live.filter(record => reachable.has(record.sourceRow) && allLotById.has(`lot:${record.sourceRow}`))
+  const groups = computeGroups(buildRewardProfit(sells, chainBuild), orders, scopedExecs, rewardPurchases)
   for (const o of orders) {
     const g = groups.get(o.groupKey)
     if (g) {
@@ -699,15 +701,10 @@ export function buildLedger(
    * 组池因为盈利暂缓而消失时预算按 0 算，保留异常提醒。
    */
   const spentByGroup = (() => {
-    const m = new Map<string, number>()
-    for (const e of scopedExecs) {
-      if (e.rewardQty <= 0) continue
-      m.set(e.groupKeyAtExecution, (m.get(e.groupKeyAtExecution) ?? 0) + e.rewardQty * e.priceCents)
-    }
-    return [...m.entries()].map(([groupKey, usedCents]) => ({
-      groupKey,
-      usedCents,
-      budgetCents: Math.max(0, groups.get(groupKey)?.grossProfitCents ?? 0),
+    return [...groups.values()].filter(group => group.usedProfitCents > 0).map(group => ({
+      groupKey: group.groupKey,
+      usedCents: group.usedProfitCents,
+      budgetCents: Math.max(0, group.grossProfitCents),
     }))
   })()
 
@@ -831,6 +828,8 @@ function buildBuySplits(
         sourceRow: o.sourceRow,
         stockName: o.stockName,
         priceCents: o.planPriceCents ?? o.rebuyPriceCents,
+        originalPriceCents: o.rebuyPriceCents,
+        rewardGroupKey: o.groupKey,
         qty: o.remainingQty,
         baseRemainingQty: Math.max(0, o.baseQty - o.execQty + o.doneRewardQty),
         plannedQty: o.baseQty,
@@ -859,10 +858,10 @@ function buildBuySplits(
     const rows = mine.map((t) => {
       const plan = Math.min(t.qty, Math.max(0, rawCap - planned))
       planned += plan
-      return { key: `${o.id}#${t.id}`, targetId: t.id as string | null, priceCents: t.priceCents, plan, exec: 0, qty: 0 }
+      return { key: `${o.id}#${t.id}`, targetId: t.id as string | null, priceCents: t.priceCents, originalPriceCents: t.priceCents, plan, exec: 0, qty: 0 }
     })
     // 未拆基础股保持默认价；不能把它误当奖励塞进最后一个手动档。
-    if (planned < rawCap) rows.push({ key: o.id, targetId: null, priceCents: o.planPriceCents ?? o.rebuyPriceCents, plan: rawCap - planned, exec: 0, qty: 0 })
+    if (planned < rawCap) rows.push({ key: o.id, targetId: null, priceCents: o.planPriceCents ?? o.rebuyPriceCents, originalPriceCents: o.rebuyPriceCents, plan: rawCap - planned, exec: 0, qty: 0 })
     const pending = (execByOrder.get(o.id) ?? []).map((e) => ({ e, left: e.qty - e.rewardQty }))
     // 明确来源优先于旧成交的同价匹配；奖励不占基础档额度。
     for (const explicit of [true, false]) for (const p of pending) {
@@ -902,6 +901,8 @@ function buildBuySplits(
         sourceRow: o.sourceRow,
         stockName: o.stockName,
         priceCents: r.priceCents,
+        originalPriceCents: r.originalPriceCents,
+        rewardGroupKey: o.groupKey,
         qty: r.qty + (i === rows.length - 1 ? Math.max(0, o.remainingQty - openBase) : 0),
         baseRemainingQty,
         plannedQty: r.plan,
@@ -919,48 +920,60 @@ function buildBuySplits(
 
 /**
  * 组池 + FIFO 授予（R4 / R5 / 8.2）。
- * - gross：组内全部真实卖出盈利（含已回补的）
- * - used：已成交奖励股数 × 成交价，按 groupKeyAtExecution 永久归属（P4）
+ * - gross：普通价位净盈利 + 已回本链的净超额，链内份额不再重复进入
+ * - used：回补和下一轮已成交奖励 × 实际买价，均按成交时价组永久归属
  * - 剩余预算 = max(0, gross − used)，能再授几手 = floor(剩余预算 / 每手成本)
  * - 已成交的奖励股数不可撤（doneRewardQty），新额度只能在它之上叠加
  */
 function computeGroups(
-  sells: SellExecution[],
+  profits: readonly RewardProfitRow[],
   orders: RebuyOrder[],
   executions: RebuyExecution[],
+  records: readonly RawRecord[],
 ): Map<string, GroupPool> {
   const pools = new Map<string, GroupPool>()
-
-  for (const s of sells) {
-    if (!s.costComplete || s.groupKey === null || s.profitCents === null) continue
-    const priceCents = s.costCents!
-    const key = s.groupKey
-    let g = pools.get(key)
-    if (!g) {
-      g = {
-        groupKey: key,
-        stockId: s.stockId,
-        rebuyPriceCents: priceCents,
-        grossProfitCents: 0,
-        usedProfitCents: 0,
-        capacityHands: 0,
-        grantedHands: 0,
-        availableCents: 0,
-        lotCostCents: priceCents * 100,
-      }
-      pools.set(key, g)
+  const ensurePool = (key: string, stockId: string, priceCents: number): GroupPool => {
+    let group = pools.get(key)
+    if (!group) {
+      group = { groupKey: key, stockId, rebuyPriceCents: priceCents, grossProfitCents: 0, usedProfitCents: 0,
+        capacityHands: 0, grantedHands: 0, availableCents: 0, lotCostCents: priceCents * 100,
+        rawProfitCents: 0, chainLockedCents: 0, chainReleasedCents: 0 }
+      pools.set(key, group)
     }
-    g.grossProfitCents += s.profitCents
+    return group
   }
-
-  // 已成交的奖励消耗，永久留在成交时的价组
-  for (const e of executions) {
-    const g = pools.get(e.groupKeyAtExecution)
-    if (g) g.usedProfitCents += e.rewardQty * e.priceCents
+  for (const profit of profits) {
+    const group = ensurePool(profit.groupKey, profit.stockId, profit.priceCents)
+    group.grossProfitCents += profit.grossProfitCents
+    group.rawProfitCents! += profit.rawProfitCents
+    group.chainLockedCents! += profit.chainLockedCents
+    group.chainReleasedCents! += profit.chainReleasedCents
+  }
+  const spend = (originalKey: string, rewardQty: number, priceCents: number) => {
+    const key = stripAccountPrefix(originalKey)
+    const separator = key.lastIndexOf('|')
+    const stockId = key.slice(0, separator)
+    const cost = Number(key.slice(separator + 1))
+    const amount = rewardQty * priceCents
+    if (separator < 1 || !Number.isSafeInteger(cost) || cost <= 0 || !Number.isSafeInteger(rewardQty) || rewardQty <= 0 ||
+      !Number.isSafeInteger(priceCents) || priceCents <= 0 || !Number.isSafeInteger(amount) || amount <= 0) return
+    ensurePool(key, stockId, cost).usedProfitCents += amount
+  }
+  // 两条买入路径共用预算；历史已经买到的奖励不因链重新亏损而消失。
+  for (const execution of executions) {
+    if (execution.rewardQty > 0) spend(execution.groupKeyAtExecution, execution.rewardQty, execution.priceCents)
+  }
+  for (const record of records) {
+    const rewardQty = record.profitRewardQty ?? 0
+    if (rewardQty > 0 && record.profitRewardGroupKey && record.buyPriceCents !== null) {
+      spend(record.profitRewardGroupKey, rewardQty, record.buyPriceCents)
+    }
   }
 
   for (const g of pools.values()) {
-    g.capacityHands = Math.floor(Math.max(0, g.grossProfitCents - g.usedProfitCents) / g.lotCostCents)
+    const available = g.grossProfitCents - g.usedProfitCents
+    g.capacityHands = Number.isSafeInteger(available) && Number.isSafeInteger(g.lotCostCents) && g.lotCostCents > 0
+      ? Math.floor(Math.max(0, available) / g.lotCostCents) : 0
     let left = g.capacityHands
     const groupOrders = orders
       .filter((o) => o.strategyMode !== 'baseT' && o.groupKey === g.groupKey && (o.status === 'open' || o.status === 'partial'))

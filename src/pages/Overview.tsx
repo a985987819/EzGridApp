@@ -8,6 +8,7 @@ import { saleFacts } from '../domain/booking'
 import { TreeTrunk } from '../components/TreeTrunk'
 import { RepairChainCard } from '../components/RepairChainCard'
 import { ValuationSection } from '../components/ValuationBand'
+import { ChipDistributionSection } from '../components/ChipDistribution'
 import { loadValuationData, type ValuationFile } from '../domain/valuation'
 import { money, price, qty, signedMoney, tone } from '../ui/format'
 import type { TradesQuery } from '../ui/nav'
@@ -23,7 +24,7 @@ export function Overview({
   /** 沙盒横幅里回挂单页继续模拟 */
   goOrders?: () => void
 }) {
-  const { ledger, sandbox, sandboxLedger, baseline, records, recordNo, basename, stocks, lastBackupAt, ordersSession, bookingReceipts } = useApp()
+  const { ledger, sandbox, sandboxLedger, sandboxPreviewRecords, baseline, records, executions, recordNo, basename, stocks, lastBackupAt, ordersSession, bookingReceipts } = useApp()
   const [active, setActive] = useState('')
   const [openMetric, setOpenMetric] = useState<'target' | 'exposure' | 'net' | null>(null)
   /** 沙盒开着且有模拟条目：整页指标与树都改用预览账本（真实 + 模拟，纯派生） */
@@ -225,11 +226,14 @@ export function Overview({
               <div className={`v long ${tone(current.profitCents)}`}>{signedMoney(current.profitCents)}</div>
             </div>
           </div>
+          <ChipDistributionSection key={current.stockName} stockName={current.stockName} ledger={viewLedger}
+            records={previewOn ? sandboxPreviewRecords : records} realRecords={records} executions={executions} receipts={bookingReceipts}
+            intervalCents={stocks.find(stock => stock.name === current.stockName)?.intervalCents} preview={previewOn} goTrades={goTrades} />
           {/* V9.46 回本链：亏损清仓当场成链，进度只累计归属交易的已实现净盈利 */}
           {(chainsOfStock.length > 0 || closedChainCount > 0) && (
             <div className="stack tight" data-testid="overview-chains">
               {chainsOfStock.map((c) => (
-                <RepairChainCard key={c.id} chain={c} dense rowLabel={(row) => recordNoLabel(row, recordNo)} />
+                <RepairChainCard key={c.id} chain={c} ledger={viewLedger} dense rowLabel={(row) => recordNoLabel(row, recordNo)} />
               ))}
               {closedChainCount > 0 && (
                 <p className="tiny muted" style={{ margin: 0 }} data-testid="overview-chains-closed">

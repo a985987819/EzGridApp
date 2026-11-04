@@ -35,13 +35,13 @@ export function ManageUpdates({ compact = false }: { compact?: boolean }) {
       ) : null}
       <p className="release-message" aria-live="polite">{development ? '开发环境即时更新；正式发布后可检查线上版本。' : update.message || '联网检查后才能确认是否最新。'}{update.pending && !current && !busy ? ' 新版资源已就绪，等待手动启用。' : ''}</p>
       <p className="release-checked">{update.checkedAt ? `${update.verified ? '本次检查' : '上次成功检查'}：${when(update.checkedAt)}` : '尚无成功检查记录'}</p>
-      {compact && <p className="release-note">刷新前先保存编辑内容。已保存台账保留，未保存表单和沙盒会清空。</p>}
+      {compact && <p className="release-note">刷新前先保存编辑内容。已保存台账保留，未保存表单和沙盒会清空。升级后请刷新其它已打开页面，再继续记成交。</p>}
       <div className="release-actions">
         <Button disabled={busy || development} onClick={() => void checkLatestVersion()} data-action="check-version">{update.phase === 'checking' ? '检查中…' : '检查最新版本'}</Button>
         <Button type="primary" data-emphasis="true" disabled={busy || development} onClick={() => void updateToLatest()} data-action="apply-update">{update.phase === 'updating' ? '正在准备更新…' : available ? '更新并刷新' : '刷新并校验'}</Button>
       </div>
       {compact ? <button className="release-details" onClick={() => navigateManage({ section: 'updates' })}>查看版本详情与强制更新 →</button> : <>
-        <p className="release-note">请先保存正在编辑的内容。更新会刷新本页，已保存台账保留；尚未保存的表单与沙盒会清空。其他打开的页面由你自行刷新。</p>
+        <p className="release-note">请先保存正在编辑的内容。更新会刷新本页，已保存台账保留；尚未保存的表单与沙盒会清空。其它打开的页面请自行刷新后再记成交，避免不同版本同时操作台账。</p>
         <Button block disabled={busy || development} data-action="force-update" onClick={() => void updateToLatest(true)}>强制更新到最新版本</Button>
         <p className="release-note">强制更新会重新从线上核对版本、启用对应资源，并在刷新后验证结果。离线或发布尚未完成时会明确提示，不会显示更新成功。</p>
         <details className="release-technical"><summary>构建详情</summary><dl>

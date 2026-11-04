@@ -6,6 +6,18 @@
 
 ## 当前优化口径（2026-10-28，优先于历史描述）
 
+- 价位累计盈利与再买奖励（2026-11-04，用户确认）：按同股同实际买入成本价累计；未完成/待关联回本链的份额不进可奖励盈利，人工结束不等于回本。完成后只释放`max(chain.netCents,0)`，多实际成本价位按后续正净贡献用整数分比例分配，总额不能超过链净超额；回补节省不入池。`chainBuild.profitSlices`复用真实份额归属，`rewardProfit.ts`统一给`ledger.groups.grossProfitCents`，不修改总账/链盈亏。余额=累计可奖励盈利−已买奖励实际费用，每够一手加100，多手全加；原回补订单FIFO先授、下一轮只用同池未授余额，不双领。明细列表/抽屉显示价位累计、已占用、可用、回本占用；推荐标含盈利奖励。下一轮奖励保存`RawRecord.profitRewardQty/profitRewardGroupKey`，仅基础股消耗`nextRoundOfRow`，基础买完可保留奖励尾量；旧回补沿原execution奖励字段扣费，同组所有来源在统一store事务中按实际价校验现金。改单只缩奖励不放大，整手且按最终价限额；部分成交全行基础优先再奖励。JSON结构14/完整Excel新增两元数据列，旧≤13缺省0，现有Dexie表不变；撤销恢复同步预算。新成交入口拒绝超预算奖励，历史实际库存不因预算缩水而删除，亮预算检查。升级后其它已开页面需手动刷新再记账。回归`levelRewards.spec.ts`、`rewardProfit.spec.ts`、`chainProfitSlices.spec.ts`、`profitRecommendations.spec.ts`、`rewardPurchase.spec.ts`及`e2e/levelRewards.mjs`。
+
+- 概览个股筹码分布（2026-11-04）：`components/ChipDistribution.tsx`置于当前个股价格树下方，随股票Tab切换，展示「成交最高频次范围为」及「大量未完成买单范围」，来源为`domain/chipDistribution.ts`纯统计，不写DB/备份/账务。频次按全部历史实际买卖：复用`booking.tradeFacts`一次回执多分配算1笔，历史同行买卖各1笔，实际回补计买；先以当前ledger真实lot/sell及有效exec门控，排除软删断链、孤立执行、合成挂钩，缺价/混价/非法数量单列未纳入。未完成买单=实际成本下lot.remainingQty>0，含回补，按剩余股数集中度，不读targets/改单。两维分别用跨度≤股票interval的滑窗找最大频次/股数，端点为实际价位，无有效间隔按同价；并列频次按成交股数/窄跨度/低价，持仓按批次数/窄跨度/低价。显示占有效成交/剩余库存比例、可展开双列价位条形；默认挂载10档再分批20档，纯来源ID跳明细。沙盒同源传预览records/ledger并标含模拟，未落库模拟混入的来源不跳成实盘子集。回归`chipDistribution.spec.ts`及`e2e/chipDistribution.mjs`。
+
+- 显式PWA安装（2026-11-04）：管理首页顶部`ManageInstall`提供「安装应用」，不增加管理菜单section（仍8项）。`main.tsx`同步启动`ui/appInstall.ts`，全局缓存一次性`beforeinstallprompt`，仅用户点击时同步调用prompt，不能等打开管理页才监听；取消/失败回落安装指引，accepted只表示确认，appinstalled或独立窗口信号才显示已安装。新事件及已安装状态不受旧Promise回写干扰，不用localStorage猜安装状态。无原生事件时按钮展开iOS/安卓/电脑/Safari或内置浏览器指引；部分独立应用可能不共用网站数据，提示先备份、安装后核对恢复，不改账务/DB/备份格式，不清站点数据。说明和官方来源见`docs/版本检查与更新.md`；回归`appInstall.spec.ts`、`e2e/pwaInstall.mjs`（模拟浏览器安装事件，不冒充真机系统安装）。
+
+- 明细来源与筛选（2026-11-04）：挂单合并行传全部实际贡献来源，`TradesQuery.id` 继续用逗号列表（去空白、去重），点击单来源仍单笔；`ui/tradeLinks.ts` 把回补虚拟批次追到真实卖出记录，无法完整追溯时不退成全股票列表。明细可逐笔移除来源、单独取消来源限定；`nos` 按展示序号支持 `2、5、8-10`，不是Excel行号，应用序号替换来源限定，其余条件叠加，精确指定的完成/软删记录可见。非法序号不应用，非法URL序号不放大为全量；`domain/recordSelection.ts` 最多5000笔。价格/日期区间可在折叠筛选里手动设置，价格匹配原四价之一，日期仍卖出日优先、买入日兜底；多状态仍取交集。全部筛选只展示，URL可刷新/返回。回归 `recordSelection.spec.ts`、`recordIds.spec.ts`、`tradeLinks.spec.ts`、`e2e/tradeFilters.mjs`。
+
+- 挂单原推荐对照（2026-11-04）：买卖推荐行以小字显示「原推荐x股·金额」，为不应用改单的当前原派生剩余价量，不是历史成交全量。合并按原档原价量累计，拆档不重复母单，部分成交随剩余重算。只展示，当前挂单/成交/复制/CSV仍用改单后价量；不改账务、备份。
+
+- 回本次数展示（2026-11-04）：`RepairChainCard`右侧重复的「还差金额」改为「剩余x次可以回本」。`domain/repairEstimate.ts`纯展示估算，剩余次数=ceil(当前gap/每轮参考盈利)，每轮按anchorQty股；参考最近归属低位实际盈利价差，缺少时回退低位批次原目标、根先卖单回补计划，并展示价量及来源。缺成本/非正价差不造次数，已回本显示完成。禁止把branches历史qty相加或按含根卖单的cycles平均，禁止把回补节省抵亏；账务/备份不变。回归`repairEstimate.spec.ts`。
+
 - 默认方式与收益统计（2026-11-04）：先卖后买默认「低位回本」，沿既有最高成本未占用批次自动关联；显式「底仓做T」、人工指定及解除覆盖保留。`strategyIsDefault`仅派生，默认单保留旧推荐key/改单身份，不与显式策略混组。`domain/statistics.ts`单独生成日历/年/月累计/月度/趋势的网格收益：普通先买后卖只计正盈利；先卖后买基础股全部实际回补后，在最后所需回补日一次计实际卖买价差，未回补/部分回补不计，奖励不抵基础股。来源由`chain.realCoverSlicesBySell`与`rebuyFills.ts`同源展开，不用计划价或挂钩交割冒充回补。高位原亏损保留在总账及回本链，表现价差不加总账/链/奖励池；账务汇总、价格树和成交流水仍核真实账务。日历回补行标「回补完成」，跨日/月跳转按原始记录ID（多来源逗号分隔）查找。回归：`statistics.spec.ts`、`rebuyFills.spec.ts`、`node e2e/statistics.mjs http://127.0.0.1:5173`。
 
 - 策略名称（2026-11-04）：两种高位卖出后回补的方式固定称为「低位回本」（`repair`，低位循环实际盈亏归原回本链）和「底仓做T」（`baseT`，买回后恢复原高位卖出目标，策略价差单列）。界面、提示与当前指南统一使用这两个名称，展示名集中在`domain/gridStrategy.ts`的`GRID_MODE_LABEL`；不改存储标识、历史成交、计算或备份格式。

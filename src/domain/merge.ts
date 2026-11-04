@@ -15,6 +15,9 @@ export interface TargetRow {
   priceCents: number
   qty: number
   amountCents: number
+  /** 所有改单应用前、各来源当前剩余推荐量及其原目标金额。纯展示。 */
+  originalQty?: number
+  originalAmountCents?: number
   expectProfitCents: number
   /** 是否真的合并了 ≥2 笔 */
   merged: boolean
@@ -77,6 +80,7 @@ export function mergeTargetRows(opts: {
   const byId = new Map(lots.map((l)=>[l.id,l]))
   const groups = activeMergeGroupOf(merges,lots)
   const groupBudget = new Map<string, number>()
+  const originalByBucket = new Map<string, { qty: number; amountCents: number }>()
   const rows: TargetRow[]=[]
   for(const t of targets) {
     const l=byId.get(t.lotId)
@@ -102,10 +106,15 @@ export function mergeTargetRows(opts: {
     let q=Math.min(t.qty,singlePlan?.qty ?? t.planQty ?? t.qty)
     // 先限制来源组，再按有效价格归组；不能让组限量吞掉同价的其它批次。
     for(const plan of groupPlans)q=Math.min(q,groupBudget.get(plan.refId)??plan.qty)
+    const key=sandbox || t.strategyMode ? t.id : `sell:${t.stockName}:${p}`
+    // 组限量可能把后续来源压到 0，仍须保留整组改单前的推荐参考。
+    const original=originalByBucket.get(key)??{qty:0,amountCents:0}
+    original.qty+=t.qty
+    original.amountCents+=t.priceCents*t.qty
+    originalByBucket.set(key,original)
     if(q<=0)continue
     for(const plan of groupPlans)groupBudget.set(plan.refId,(groupBudget.get(plan.refId)??plan.qty)-q)
     const hasPlan=groupPlans.length>0 || Boolean(singlePlan) || t.planPriceCents!=null
-    const key=sandbox || t.strategyMode ? t.id : `sell:${t.stockName}:${p}`
     /** V9.55：这条行用到的计划身份（单个来源的计划 + 沿价格追下去的整串） */
     const rowPlanRefs=[...(singlePlan?[t.id]:[]),...groupPlans.map((x)=>x.refId)]
     const hit=rows.find((r)=>r.key===key)
@@ -124,6 +133,9 @@ export function mergeTargetRows(opts: {
       buyPriceCents:l.buyPriceCents,planPriceCents:hasPlan ? p : null,planQty:null,planRefs:rowPlanRefs,sandbox})
   }
   for(const r of rows) {
+    const original=originalByBucket.get(r.key)!
+    r.originalQty=original.qty
+    r.originalAmountCents=original.amountCents
     const legacy=groups.get(r.lotRows[0])
     const sameOriginalPrice=r.targets.every((t)=>t.priceCents===r.targets[0].priceCents)
     r.key=r.merged && sameOriginalPrice && legacy && r.lotRows.every((row)=>groups.get(row)?.id===legacy.id)

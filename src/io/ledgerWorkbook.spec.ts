@@ -22,6 +22,51 @@ async function edit(editWorkbook: (wb: import('xlsx').WorkBook, X: Awaited<Retur
 }
 
 describe('完整台账 Excel 往返', () => {
+  it('导出标识计算口径3，同时继续读取口径2的历史文件', async () => {
+    const X = await loadXlsx()
+    const workbook = X.read(await exportLedgerWorkbook(base()), { type: 'array' })
+    expect(workbook.Sheets['台账说明'].B4.v).toBe(3)
+    const old = await edit(wb => { wb.Sheets['台账说明'].B4 = { t: 'n', v: 2 } })
+    expect((await parseLedgerWorkbook(old))!.snapshot).toEqual(base())
+  })
+  it('结构14保留下一轮盈利奖励实际份额与永久价组，重新计算不重复发奖励', async () => {
+    const s = base()
+    s.schemaVersion = 14
+    s.bookingReceipts = []
+    const parent = s.records[0]
+    s.records.push({ ...parent, sourceRow: 100000, importKey: 'manual:reward:1793000000000', origin: 'manual', batchId: null,
+      buyPriceCents: 500, buyQtyRaw: 700, soldQty: null, sellDateSerial: null, targetPriceCents: 600,
+      nextRoundOfRow: parent.sourceRow, profitRewardQty: 200, profitRewardGroupKey: `stock:${parent.stockName}|500` })
+    const parsed = await parse(s)
+    expect(parsed.snapshot).toEqual(s)
+    expect(parsed.differences).toEqual([])
+    expect(parsed.snapshot.records.at(-1)).toMatchObject({ buyQtyRaw: 700, profitRewardQty: 200, profitRewardGroupKey: `stock:${parent.stockName}|500` })
+  })
+  it('旧结构可缺奖励列，结构14缺奖励列拒绝静默丢失归属', async () => {
+    const removeRewardColumns = (wb: import('xlsx').WorkBook, X: Awaited<ReturnType<typeof loadXlsx>>) => {
+      const rows = X.utils.sheet_to_json<unknown[]>(wb.Sheets['交易数据'], { header: 1, raw: true, defval: null })
+      const removed = rows[0].flatMap((value, index) => ['盈利奖励股数', '盈利奖励原价组'].includes(String(value)) ? [index] : [])
+      wb.Sheets['交易数据'] = X.utils.aoa_to_sheet(rows.map(row => row.filter((_, index) => !removed.includes(index))))
+    }
+    expect((await parseLedgerWorkbook(await edit(removeRewardColumns)))!.snapshot).toEqual(base())
+    const s = base(); s.schemaVersion = 14; s.bookingReceipts = []
+    await expect(parseLedgerWorkbook(await edit(removeRewardColumns, s))).rejects.toThrow('盈利奖励')
+  })
+  it('手改奖励为半手或跨股票价组时完整台账拒绝恢复', async () => {
+    const s = base(); s.schemaVersion = 14; s.bookingReceipts = []
+    const parent = s.records[0]
+    s.records.push({ ...parent, sourceRow: 100000, importKey: 'manual:reward:1793000000000', origin: 'manual', batchId: null,
+      buyPriceCents: 500, buyQtyRaw: 600, soldQty: null, sellDateSerial: null, targetPriceCents: 600,
+      nextRoundOfRow: parent.sourceRow, profitRewardQty: 100, profitRewardGroupKey: `stock:${parent.stockName}|500` })
+    const corrupt = (column: string, value: unknown) => edit((wb, X) => {
+      const rows = X.utils.sheet_to_json<unknown[]>(wb.Sheets['交易数据'], { header: 1, raw: true })
+      const col = rows[0].indexOf(column)
+      const row = rows.findIndex(values => values[1] === 100000)
+      wb.Sheets['交易数据'][X.utils.encode_cell({ r: row, c: col })] = { t: typeof value === 'number' ? 'n' : 's', v: value }
+    }, s)
+    await expect(parseLedgerWorkbook(await corrupt('盈利奖励股数', 50))).rejects.toThrow('奖励')
+    await expect(parseLedgerWorkbook(await corrupt('盈利奖励原价组', 'stock:其他股票|500'))).rejects.toThrow('奖励')
+  })
   it('同行已回补的做T来源保持实际记录，恢复高位目标而不重复创建成交', async () => {
     const s=base();s.schemaVersion=13;s.bookingReceipts=[]
     s.extraTargets=[{id:'grid-mode:40',lotId:'lot:29',qty:0,priceCents:2078,at:0,strategy:{mode:'baseT',groupId:'grid-mode:40',sellRow:40,rebuyPriceCents:1951,nextSellPriceCents:2198}}]

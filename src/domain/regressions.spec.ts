@@ -97,7 +97,8 @@ describe('成交边界',()=>{
   const records=[2,3,4].map((r)=>({...buy(r,500,500),soldQty:500}))
   const l=buildLedger(records,[stock])
   const next=buildNextRoundBuyRows({...l,merges:[{id:'m',stockName:'T',priceCents:500,rows:[2,3],at:1}]})
-  expect(next).toHaveLength(1);expect(next[0].qty).toBe(1500)
+  expect(next).toHaveLength(1);expect(next[0]).toMatchObject({baseQty:1500,rewardQty:600,qty:2100})
+  expect(Object.values(next[0].sourceQty??{}).reduce((sum,q)=>sum+q,0)).toBe(1500)
  })
 })
 describe('挂单建议回归',()=>{
@@ -147,8 +148,8 @@ describe('挂单建议回归',()=>{
   const anchor={...buy(2,500,500),soldQty:500}
   const partial={...buy(10,500,200),nextRoundOfRow:2}
   const records=[anchor,partial];const l=buildLedger(records,[stock])
-  expect(buildNextRoundBuyRows({...l,merges:[],consumed:consumedNextRounds(records)})[0].qty).toBe(300)
-  expect(buildNextRoundBuyRows({...l,merges:[],consumed:consumedNextRounds([anchor,{...partial,deletedAt:1}])})[0].qty).toBe(500)
+  expect(buildNextRoundBuyRows({...l,merges:[],consumed:consumedNextRounds(records)})[0]).toMatchObject({baseQty:300,rewardQty:200,qty:500,sourceQty:{2:300}})
+  expect(buildNextRoundBuyRows({...l,merges:[],consumed:consumedNextRounds([anchor,{...partial,deletedAt:1}])})[0]).toMatchObject({baseQty:500,rewardQty:200,qty:700,sourceQty:{2:500}})
  })
  it('已回补后是否继续给下一轮建议仍沿用现有规则',()=>{
   const records=[{...buy(2,1000,500),targetPriceCents:700,soldQty:500,earlyBuyPriceCents:500}]

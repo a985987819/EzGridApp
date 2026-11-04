@@ -14,11 +14,12 @@ import { isoToSerial } from '../domain/edit'
 import { serialToIso } from '../domain/defaults'
 import { sandboxRowOf, type SandboxItem, type SandboxKind } from '../domain/sandbox'
 import { mergeTargetRows, type TargetRow } from '../domain/merge'
-import { buildBuySuggestions, compareBuyPrice, consumedNextRounds, splitBuySuggestions, type BuySuggestion } from '../domain/suggestions'
+import { buildBuySuggestions, capBuySplitRewardCash, compareBuyPrice, consumedNextRounds, splitBuySuggestions, type BuySuggestion } from '../domain/suggestions'
 import { buildNextRoundBuyRows, type NextRoundBuyRow } from '../domain/buyBoard'
 import { buildBuyWindow, selectBuyWindow } from '../domain/buyWindow'
 import { GRID_MODE_LABEL } from '../domain/gridStrategy'
 import { buildNanoIdIndex } from '../ui/nanoid'
+import { buildTradeSourceIndex, tradeSourceLink, type TradeSourceLink } from '../ui/tradeLinks'
 import { downloadText, toCsv } from '../ui/csv'
 import { useFlashOnAppear } from '../ui/motion'
 import { todayIso, money, price, qty, signedMoney, tone } from '../ui/format'
@@ -33,12 +34,33 @@ import { HedgeSheet } from '../components/HedgeBinder'
 import { SplitModal } from '../components/SplitModal'
 import { GridPlanner } from '../components/GridPlanner'
 
+/** 当前推荐对应的原价原量，仅作改单前后的对照。 */
+function OriginalRecommendation({ shares, amountCents }: { shares: number; amountCents: number }) {
+  return <div className="tiny muted num" data-testid="order-original" data-original-qty={shares} data-original-amount={amountCents}>
+    原推荐 {qty(shares)} 股 · {money(amountCents)}
+  </div>
+}
+
 /** 行内按钮不让冒泡到整行的「跳明细」点击上 */
 function stopWith(fn: () => void) {
   return (e: { stopPropagation: () => void }) => {
     e.stopPropagation()
     fn()
   }
+}
+
+function SourceDetails({ link, goTrades }: { link: TradeSourceLink; goTrades: (q: TradesQuery) => void }) {
+  return <Button
+    type="text"
+    size="small"
+    data-action="view-sources"
+    data-source-count={link.rows.length}
+    data-source-rows={link.rows.join(',')}
+    disabled={!link.query}
+    onClick={stopWith(() => { if (link.query) goTrades(link.query) })}
+  >
+    {link.query ? `查看 ${link.rows.length} 笔来源` : '来源记录不可用'}
+  </Button>
 }
 
 /** 从按股票记录的表里摘掉一只（返回新表，不改原表） */
@@ -95,8 +117,6 @@ export function OrdersPage({
 
   // 跳明细以 nanoId 定位（V9.4）：行级唯一 id，与明细页筛选同源
   const nano = useMemo(() => buildNanoIdIndex(records), [records])
-  const idFor = (row: number | null | undefined): string | undefined =>
-    row === null || row === undefined ? undefined : nano.rowToId.get(row)
 
   const effectiveStock = stockNames.includes(stockName) ? stockName : stockNames[0] ?? ''
   const cfg = stocks.find((s) => s.name === effectiveStock)
@@ -126,6 +146,8 @@ export function OrdersPage({
 
   /** 沙盒开启时看预览账本（真实 + 模拟条目 + 模拟挂钩）；关掉就是真实台账 */
   const view = sandbox.active ? sandboxLedger : ledger
+  const sourceIndex = useMemo(() => buildTradeSourceIndex(nano, view.lots, executions), [nano, view.lots, executions])
+  const openSources = (link: TradeSourceLink) => { if (link.query) goTrades(link.query) }
   const previewRecords = sandbox.active ? sandboxPreviewRecords : records
   const orders = view.orders.filter((o) => o.stockName === effectiveStock)
   /** V9.37：刚记了回补成交的待买单闪一下——状态变了给个落点提示 */
@@ -183,7 +205,7 @@ export function OrdersPage({
 
   /**
    * V9.47：卖完的老批次，股价回到买入价那一档也要提醒买一次（网格一轮一轮做）。
-   * 只做提醒——不进 orders、不计待买剩余金额、不参与组池奖励与守恒式。
+   * 基础份额不进orders；奖励使用组池尚未分配余额，实际成交后才进库存。
    */
   const nextRound = useMemo(
     () =>
@@ -194,10 +216,11 @@ export function OrdersPage({
         merges,
         consumed: consumedNextRounds(records),
         sandboxRows: new Set(sandboxByRow.keys()),
+        groups: view.groups,
       }).filter((r) => r.stockName === effectiveStock).sort(compareBuyPrice),
-    [view.lots, view.orders, view.sells, merges, sandboxByRow, effectiveStock, records],
+    [view.lots, view.orders, view.sells, view.groups, merges, sandboxByRow, effectiveStock, records],
   )
-  const buySuggestions = buildBuySuggestions(buySplits, nextRound, plans)
+  const buySuggestions = buildBuySuggestions(buySplits, nextRound, plans, view.groups)
   /**
    * V9.58 挂单页三组：**应该买入** = 先卖后买（或带敞口）的档——卖出拿回来的钱就欠着这些股；
    * **锦上添花** = 已完成批次的下一轮应买 + 先买后卖行里 P 列填了价的待回补（「P 列再买」），
@@ -215,7 +238,7 @@ export function OrdersPage({
    * 沙盒预览不走 buildBuySuggestions（模拟行要保留自己的「记为成交/删除」按钮），按同一口径切两组：
    * 先卖后买单 → 应该买入；其余买单 + 下一轮档 → 锦上添花。
    */
-  const sbBuyAll = buySplits.filter((b) => b.qty > 0).sort(compareBuyPrice)
+  const sbBuyAll = capBuySplitRewardCash(buySplits, view.groups, plans).filter((b) => b.qty > 0).sort(compareBuyPrice)
   const { today: sbBuyIn, outside: sbBuyOut, excluded: sbExcluded } = selectBuyWindow(sbBuyAll, buyWindow)
   const sbMustIn = sbBuyIn.filter((b) => b.sellFirst === true)
   const sbBonusIn = sbBuyIn.filter((b) => b.sellFirst !== true)
@@ -263,29 +286,28 @@ export function OrdersPage({
     }catch(e){notificationOpen({message:'记录失败',description:e instanceof Error?e.message:String(e),type:'error'})}
     finally{setSavingTrade(false)}
   }
-  /**
-   * V9.53：记成交默认量跟随「改单」——有计划的按计划量，再夹到还没成交的量。
-   * 价格不用管，`buySplits` 的 priceCents 已经是 `计划价 > 回补价`（ledger 里定好）。
-   */
-  const execQtyOf=(b:BuySplit,o?:RebuyOrder|null)=>o?.planQty!=null?Math.min(o.planQty,b.qty):b.qty
   function editBuyPlan(r: BuySuggestion) {
     const plan = plans.find(p => p.kind === 'buy' && p.refId === r.key)
     // 撞价合并后使用整行现价现量，成员价量仍按原身份分配保存。
     const merged = (r.members?.length ?? 0) > 1
     openPlan('buy', r.key, `买 ${r.stockName}`, r.priceCents, r.qty, merged ? null : plan?.priceCents, merged ? null : plan?.qty, r.members, r.planRefs)
   }
-  const buySuggestionLine=(r:BuySuggestion)=>(
-    <div key={r.key} className="line wrap-row pending-buy clickable" data-testid="buy-suggestion" data-row={r.sources[0]?.row} data-price={r.priceCents} data-edited={r.edited ? '1' : undefined} data-sell-first={r.sellFirst ? '1' : undefined}
+  const buySuggestionLine=(r:BuySuggestion)=>{
+    const link = tradeSourceLink(r.stockName, r.sources.filter(source => source.qty > 0).map(source => source.row), sourceIndex)
+    return (
+    <div key={r.key} className={`line wrap-row pending-buy${link.query ? ' clickable' : ''}`} data-testid="buy-suggestion" data-row={r.sources[0]?.row} data-price={r.priceCents} data-reward-qty={r.rewardQty ?? 0} data-edited={r.edited ? '1' : undefined} data-sell-first={r.sellFirst ? '1' : undefined}
       // V9.58：锦上添花里全部来源都是「下一轮」的档保留深链身份（点行跳已完成那笔，不被 hideDone 挡）
       data-buy-level={r.sources.every((v) => v.kind === 'next') ? r.sources[0]?.row : undefined}
       onClick={(e) => {
         // 行上按钮（改单/记成交/来源明细跳转）各自有归宿，别整行跳走
         if ((e.target as HTMLElement).closest('button, summary, a, input, label')) return
-        goTrades({ id: idFor(r.sources[0]?.row), stock: r.stockName })
+        openSources(link)
       }}>
       <div className="left"><div className="t1 num">买 {price(r.priceCents)} × {qty(r.qty)}</div>
+        <OriginalRecommendation shares={r.originalQty ?? r.qty} amountCents={r.originalAmountCents ?? r.amountCents} />
         {/* V9.58：三组之后行上仍要能看出这笔的身份——先卖后买 / 下一轮 / P 列再买（每组必有其一） */}
         <div className="tag-row" style={{ marginTop: 4 }}>
+            {(r.rewardQty ?? 0) > 0 && <span data-testid="suggestion-profit-reward"><Tag size="small" variant="soft" color="app-green">含盈利奖励 {qty(r.rewardQty!)} 股</Tag></span>}
             {r.strategyMode && <Tag size="small" variant="soft">{GRID_MODE_LABEL[r.strategyMode]}</Tag>}
             {r.sellFirst && <Tag size="small" variant="soft" color="app-teal" data-testid="suggestion-sell-first">先卖后买</Tag>}
             {!r.sellFirst && r.sources.every((v) => v.kind === 'next') && (
@@ -302,15 +324,19 @@ export function OrdersPage({
             )}
         </div>
         {/* V9.54：推荐挂单默认展开来源——点开才知道这档是从哪几笔欠出来的 */}
-        <details open><summary className="tiny muted">{r.sources.length} 笔来源 · 查看明细</summary>
+        <details open><summary className="tiny muted">{link.query ? link.rows.length : r.sources.length} 笔来源{link.query && r.sources.length > link.rows.length ? ` · ${r.sources.length} 个档位` : ''} · 查看明细</summary>
           {/* V9.55 修：同一张卖单拆出的两档共用 sourceRow，撞价合并后会并进同一条建议 →
               key 只用「类型+行号」会重复；带上拆分段身份/股数才唯一 */}
-          {r.sources.map((v)=><div key={`${v.kind}:${v.row}:${v.kind==='order'?(v.splitKey??''):''}:${v.qty}`} className="tiny"><Button type="text" size="small" onClick={()=>goTrades({id:idFor(v.row),stock:r.stockName})}>{recordNoLabel(v.row,recordNo)}</Button> · {v.kind==='next'?'下一轮':(v.sellFirst?'先卖后买':'待回补')}{v.kind==='order' && v.splitKey?.includes('#') ? ` 第 ${buySplits.filter(b=>b.orderId===v.id&&b.split).findIndex(b=>b.key===v.splitKey)+1} 档` : ''} {qty(v.qty)} 股</div>)}
+          {r.sources.map((v)=>{
+            const single = tradeSourceLink(r.stockName, [v.row], sourceIndex)
+            return <div key={`${v.kind}:${v.row}:${v.kind==='order'?(v.splitKey??''):''}:${v.qty}`} className="tiny"><Button type="text" size="small" disabled={!single.query} onClick={stopWith(()=>openSources(single))}>{recordNoLabel(v.row,recordNo)}</Button> · {v.kind==='next'?'下一轮':(v.sellFirst?'先卖后买':'待回补')}{v.kind==='order' && v.splitKey?.includes('#') ? ` 第 ${buySplits.filter(b=>b.orderId===v.id&&b.split).findIndex(b=>b.key===v.splitKey)+1} 档` : ''} {qty(v.qty)} 股</div>
+          })}
         </details>
       </div>
       <div className="right num">{money(r.amountCents)}</div>
       {r.legacyPlanConflict && <Tag size="small" color="app-orange">旧改单身份有歧义，请分别重设</Tag>}
       <div className="acts">
+        <SourceDetails link={link} goTrades={goTrades} />
         {/* V9.53：改这一条推荐挂单（价格/数量），保存后行与记成交默认值都按改后的走，但不成交 */}
         <Button
           size="small"
@@ -324,7 +350,7 @@ export function OrdersPage({
           const order=source?.kind==='order'?orders.find((o)=>o.id===source.id):null
           if(r.sources.length!==1||!order)return openTrade('buy',r)
           const split=buySplits.find((b)=>b.orderId===order.id&&(source.kind!=='order'||b.key===source.splitKey))??buySplits.find((b)=>b.orderId===order.id)
-          openExec(order,{qty:Math.min(r.qty,split?execQtyOf(split,order):r.qty),priceCents:r.priceCents,splitKey:split?.key})
+          openExec(order,{qty:r.qty,priceCents:r.priceCents,splitKey:split?.key})
         }}>记成交</Button>
         {(() => {
           // V9.66：单一张订单的档可以直接行内拆分（撞价合并的行来源不唯一，去明细拆）
@@ -338,25 +364,27 @@ export function OrdersPage({
         })()}
       </div>
     </div>
-  )
+  )}
   /** 下一轮应买的一行：沙盒/区间外展开区里用；正常的锦上添花档走 buySuggestionLine（V9.58） */
   const levelLine = (r: NextRoundBuyRow, inToday: boolean) => {
     const z = zone(r.priceCents)
+    const link = tradeSourceLink(r.stockName, r.rows.filter(row => (r.sourceQty?.[row] ?? r.baseQty ?? r.qty) + (r.sourceRewardQty?.[row] ?? 0) > 0), sourceIndex)
     return (
       <div
         key={r.key}
-        className="line wrap-row pending-buy clickable"
+        className={`line wrap-row pending-buy${link.query ? ' clickable' : ''}`}
         data-buy-level={r.anchorRow}
         data-price={r.priceCents}
         data-merge-group={r.merged ? r.key : undefined}
         data-testid={inToday ? undefined : 'next-round-row'}
-        onClick={() => goTrades({ id: idFor(r.anchorRow), stock: r.stockName })}
+        onClick={() => openSources(link)}
       >
         <div className="left">
           <div className="t1 num">
             {r.merged && <span className="merge-mark">合并 · </span>}
             买 {price(r.priceCents)} × {qty(r.qty)}
           </div>
+          <OriginalRecommendation shares={r.qty} amountCents={r.amountCents} />
           <div className="t2">
             {r.merged
               ? `合并 ${r.rows.length} 笔 · 最早 ${r.earliestBuyDate ?? '—'}`
@@ -366,6 +394,7 @@ export function OrdersPage({
           </div>
           <div className="tag-row" style={{ marginTop: 4 }}>
             <Tag size="small" variant="soft" color="app-blue">下一轮</Tag>
+            {(r.rewardQty ?? 0) > 0 && <Tag size="small" variant="soft" color="app-green">含盈利奖励 {qty(r.rewardQty!)} 股</Tag>}
             <Tag
               size="small"
               variant="soft"
@@ -375,6 +404,7 @@ export function OrdersPage({
             </Tag>
             {r.merged && <Tag size="small" variant="soft" color="purple">同价 {r.rows.length} 笔</Tag>}
           </div>
+          <SourceDetails link={link} goTrades={goTrades} />
         </div>
         <div className="right num" style={{ fontWeight: 600 }}>
           {money(r.amountCents)}
@@ -408,16 +438,17 @@ export function OrdersPage({
   const sbBuyLine = (b: BuySplit) => {
     const sim = sandboxByRow.get(b.sourceRow)
     const o = orderById.get(b.orderId)
+    const link = tradeSourceLink(b.stockName, [b.sourceRow], sourceIndex)
     return (
       <div
         key={`t-${b.key}`}
         // V9.29.1：左侧状态边框（蓝=买 / 红=卖），与明细页 trade-item 同一套语义
-        className={`line wrap-row pending-buy ${sim ? 'sandbox-row' : 'clickable'}`}
+        className={`line wrap-row pending-buy ${sim ? 'sandbox-row' : link.query ? 'clickable' : ''}`}
         data-row={b.sourceRow}
         data-price={b.priceCents}
         data-split-key={b.split ? b.key : undefined}
         data-sandbox-row={sim ? b.sourceRow : undefined}
-        onClick={sim ? undefined : () => goTrades({ id: idFor(b.sourceRow), stock: b.stockName })}
+        onClick={sim ? undefined : () => openSources(link)}
       >
         <div className="left">
           <div className="t1 num">
@@ -425,6 +456,7 @@ export function OrdersPage({
             买 {price(b.priceCents)} × {qty(b.qty)}
             {b.split && <span className="merge-mark"> · 拆档</span>}
           </div>
+          <OriginalRecommendation shares={b.qty} amountCents={(b.originalPriceCents ?? b.priceCents) * b.qty} />
           <div className="t2">
             {sim ? `沙盒模拟单 · 计划 ${b.plannedQty} 股` : `${recordNoLabel(b.sourceRow, recordNo)} · 计划 ${b.plannedQty}`}
             {!b.split && (o?.rewardQty ?? 0) > 0 && ` · 含奖励 ${o!.rewardQty}`}
@@ -471,6 +503,7 @@ export function OrdersPage({
             </>
           ) : (
             <>
+              <SourceDetails link={link} goTrades={goTrades} />
               {!b.split && o && (
                 <Button
                   size="small"
@@ -483,7 +516,7 @@ export function OrdersPage({
               <Button data-emphasis="true"
                 size="small"
                 disabled={!o}
-                onClick={stopWith(() => o && openExec(o, { qty: execQtyOf(b, o), priceCents: b.priceCents, splitKey: b.key }))}
+                onClick={stopWith(() => o && openExec(o, { qty: b.qty, priceCents: b.priceCents, splitKey: b.key }))}
               >
                 记成交
               </Button>
@@ -497,22 +530,15 @@ export function OrdersPage({
   /** V9.58：卖出行渲染（原「今日挂单·可挂卖」内联渲染抽出），真实/模拟共用 */
   const sellLine = (r: TargetRow) => {
     const sim = sandboxByRow.get(r.anchorRow)
+    const link = tradeSourceLink(r.targets[0].stockName, r.targets.filter(target => target.qty > 0).map(target => ({ sourceRow: r.anchorRow, lotId: target.lotId })), sourceIndex)
     return (
       <div
         key={`s-${r.key}`}
-        className={`line wrap-row pending-sell ${sim ? 'sandbox-row' : 'clickable'}`}
+        className={`line wrap-row pending-sell ${sim ? 'sandbox-row' : link.query ? 'clickable' : ''}`}
         data-row={r.anchorRow}
         data-merge-group={r.merged ? r.key : undefined}
         data-sandbox-row={sim ? r.anchorRow : undefined}
-        onClick={
-          sim
-            ? undefined
-            : () =>
-                goTrades({
-                  id: idFor(r.anchorRow),
-                  stock: r.targets[0].stockName,
-                })
-        }
+        onClick={sim ? undefined : () => openSources(link)}
       >
         <div className="left">
           <div className="t1 num">
@@ -520,6 +546,7 @@ export function OrdersPage({
             {r.merged && <span className="merge-mark">合并 · </span>}
             卖 {price(r.priceCents)} × {qty(r.qty)}
           </div>
+          <OriginalRecommendation shares={r.originalQty ?? r.qty} amountCents={r.originalAmountCents ?? r.amountCents} />
           <div className="t2">
             {r.merged
               ? `${sellRowLabel(r)} · 预期 ${signedMoney(r.expectProfitCents)}`
@@ -552,7 +579,7 @@ export function OrdersPage({
               <Button size="small" onClick={stopWith(() => removeSandbox(sim))}>删除</Button>
             </>
           ) : (
-            <><Button data-emphasis="true" size="small" data-action="sell-execution" onClick={stopWith(()=>openTrade('sell',r))}>记卖出</Button><Button
+            <><SourceDetails link={link} goTrades={goTrades} /><Button data-emphasis="true" size="small" data-action="sell-execution" onClick={stopWith(()=>openTrade('sell',r))}>记卖出</Button><Button
               size="small"
               data-action="sell-plan"
               onClick={stopWith(() =>
@@ -919,7 +946,7 @@ export function OrdersPage({
     )
   }
 
-  if (!sandbox.active && ledger.targets.length === 0 && ledger.orders.length === 0) {
+  if (!sandbox.active && ledger.targets.length === 0 && ledger.orders.length === 0 && nextRound.length === 0) {
     return (
       <Card>
         <div className="empty-box">
@@ -1284,7 +1311,7 @@ export function OrdersPage({
           </details>
         )}
         <p className="tiny muted" style={{ margin: '8px 0 0' }}>
-          已完成批次回到买入价那一档再买一轮；先买后卖行里 P 列填了价的待回补也归这里。下一轮档不参与组池奖励。
+          已完成批次回到买入价那一档再买一轮；P列再买也归这里。下一轮与回补共用价位盈利奖励，已用金额不会重复授予。
         </p>
       </Card>
 
@@ -1341,14 +1368,15 @@ export function OrdersPage({
                 const z = zone(o.rebuyPriceCents)
                 const sim = sandboxByRow.get(o.sourceRow)
                 const link = view.effectiveHedges.find((h) => h.sellRow === o.sourceRow && h.items.length > 0)
+                const source = tradeSourceLink(o.stockName, [o.sourceRow], sourceIndex)
                 return (
                   <div
                     key={o.id}
-                    className={`line ${sim ? 'sandbox-row' : 'clickable'}`}
+                    className={`line ${sim ? 'sandbox-row' : source.query ? 'clickable' : ''}`}
                     data-row={o.sourceRow}
                     data-sandbox-row={sim ? o.sourceRow : undefined}
                     data-anim={justRebought.has(o.sourceRow) ? 'done' : undefined}
-                    onClick={sim ? undefined : () => goTrades({ id: idFor(o.sourceRow), stock: o.stockName })}
+                    onClick={sim ? undefined : () => openSources(source)}
                   >
                     <div className="left">
                       <div className="t1 num">
@@ -1370,6 +1398,7 @@ export function OrdersPage({
                         {sim ? ' · 只用于沙盒预览' : ` · 组池 ${money(o.grossProfitCents)} / ${o.hands} 手`}
                       </div>
                       <div className="tag-row" style={{ marginTop: 4 }}>
+                        {!sim && <SourceDetails link={source} goTrades={goTrades} />}
                         {/* V9.54：先卖后买的待买单独标出来（明细页/明细卡同一个标签），敞口照旧提醒 */}
                         {o.sellFirst ? (
                           <Tag size="small" variant="soft" color="app-teal" data-testid="rebuys-sell-first">先卖后买</Tag>

@@ -32,6 +32,10 @@ export interface RawRecord {
   soldTargetId?: string
   /** 本次买入消耗的下一轮建议来源。 */
   nextRoundOfRow?: number
+  /** 下一轮实际买入中由价位盈利支付的奖励股数；缺省0，不能重复占用基础来源。 */
+  profitRewardQty?: number
+  /** 奖励实际买入时的永久价组，实际花费按本笔买入价扣减。 */
+  profitRewardGroupKey?: string
   stockName: string
   buyDateSerial: number | null
   buyPriceCents: number | null
@@ -224,6 +228,10 @@ export interface BuySplit {
   sourceRow: number
   stockName: string
   priceCents: number
+  /** 应用整单计划价前的推荐价；手动拆分档保留各自的拆分价。纯展示、不落库。 */
+  originalPriceCents?: number
+  /** 奖励股实际费用归属，纯派生自订单价组。 */
+  rewardGroupKey?: string
   /** 这一档还没买回来的量 */
   qty: number
   /** 未成交基础股，奖励股另计；用于按档成交及继续拆分的额度校验。 */
@@ -456,6 +464,12 @@ export interface GroupPool {
   grantedHands: number
   availableCents: number
   lotCostCents: number
+  /** 原始价位净盈利（含归链份额），仅用于解释。grossProfitCents才是可奖励累计。 */
+  rawProfitCents?: number
+  /** 回本分流的有符号净贡献；界面仅将正值解释为回本占用。 */
+  chainLockedCents?: number
+  /** 完成回本后分配到该价位的超额净盈利。 */
+  chainReleasedCents?: number
 }
 
 export interface StockSummary {

@@ -7,6 +7,7 @@ import { ManageChecks } from './manage/ManageChecks'
 import { ManageActivity } from './manage/ManageActivity'
 import { ManageUpdates } from './manage/ManageUpdates'
 import { ManageMoney } from './manage/ManageMoney'
+import { ManageInstall } from './manage/ManageInstall'
 import { IconBook, IconChart, IconChevron, IconDownload, IconGrid, IconUpload, IconRefresh } from '../ui/icons'
 import { navigateManage, type ManageQuery, type ManageSection, type TradesQuery } from '../ui/nav'
 
@@ -33,6 +34,7 @@ export function ManagePage({ goTrades, query }: { goTrades: (q: TradesQuery) => 
           <h2>管理</h2>
           <p>指南 · 股票 · 导入 · 校验 · 备份</p>
         </div>
+        <ManageInstall />
         <Card>
           <div className="manage-menu" data-testid="manage-menu">
             {SECTIONS.map(({ key, label, desc, Icon }) => (
