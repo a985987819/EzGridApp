@@ -149,7 +149,7 @@ export function OrdersPage({
   const sourceIndex = useMemo(() => buildTradeSourceIndex(nano, view.lots, executions), [nano, view.lots, executions])
   const openSources = (link: TradeSourceLink) => { if (link.query) goTrades(link.query) }
   const previewRecords = sandbox.active ? sandboxPreviewRecords : records
-  const orders = view.orders.filter((o) => o.stockName === effectiveStock)
+  const orders = useMemo(() => view.orders.filter((o) => o.stockName === effectiveStock), [view.orders, effectiveStock])
   /** V9.37：刚记了回补成交的待买单闪一下——状态变了给个落点提示 */
   const justRebought = useFlashOnAppear(
     useMemo(() => orders.filter((o) => o.execQty > 0).map((o) => o.sourceRow), [orders]),
@@ -220,7 +220,7 @@ export function OrdersPage({
       }).filter((r) => r.stockName === effectiveStock).sort(compareBuyPrice),
     [view.lots, view.orders, view.sells, view.groups, merges, sandboxByRow, effectiveStock, records],
   )
-  const buySuggestions = buildBuySuggestions(buySplits, nextRound, plans, view.groups)
+  const buySuggestions = useMemo(() => buildBuySuggestions(buySplits, nextRound, plans, view.groups), [buySplits, nextRound, plans, view.groups])
   /**
    * V9.58 挂单页三组：**应该买入** = 先卖后买（或带敞口）的档——卖出拿回来的钱就欠着这些股；
    * **锦上添花** = 已完成批次的下一轮应买 + 先买后卖行里 P 列填了价的待回补（「P 列再买」），

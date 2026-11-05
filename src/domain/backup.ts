@@ -11,9 +11,15 @@
 
 import { isSellFirst } from './sellFirst'
 import type { RawRecord } from './types'
+import type { LedgerSnapshot } from './ledgerSnapshot'
+import { DEFAULT_STOCKS } from './defaults'
+import { validateSnapshotRelations } from './snapshotRelations'
+import { validateFinancialTotals } from './financialSafety'
 
 export interface BackupShape {
   schemaVersion?: number
+  exportedAt?: unknown
+  settings?: unknown
   stocks?: unknown
   records?: unknown
   batches?: unknown
@@ -33,23 +39,34 @@ type Obj = Record<string, unknown>
 
 const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v)
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
-const isRow = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v)
+const isRow = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v > 0
+const isNonNegative = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0
+const isTime = (v: unknown): v is number => isNonNegative(v) && v <= 8640000000000000
+const NULLABLE_RECORD_FIELDS = ['buyDateSerial', 'buyPriceCents', 'buyQtyRaw', 'targetPriceCents', 'soldQty', 'sellDateSerial', 'earlyBuyPriceCents', 'rawProfitCents'] as const
 
 function checkRecords(records: unknown[]): string | null {
   for (let i = 0; i < records.length; i += 1) {
     const rec = records[i] as Obj | null
     if (!isObj(rec)) return `records[${i}] 不是对象`
-    if (typeof rec.sourceRow !== 'number' || !Number.isInteger(rec.sourceRow)) return `records[${i}] 缺 sourceRow（行号）`
+    if (!isRow(rec.sourceRow)) return `records[${i}] sourceRow（行号）必须是正的安全整数`
     if(rec.excelRow!==undefined && !isRow(rec.excelRow))return `records[${i}] Excel 行号不合法`
     if(rec.soldLotId!==undefined && (typeof rec.soldLotId!=='string'||!rec.soldLotId.startsWith('lot:')))return `records[${i}] 关联批次不合法`
     if(rec.soldTargetId!==undefined && (typeof rec.soldTargetId!=='string'||!rec.soldTargetId.startsWith('target:')||!rec.soldLotId))return `records[${i}] 卖出来源档不合法`
     if(rec.nextRoundOfRow!==undefined && !isRow(rec.nextRoundOfRow))return `records[${i}] 下一轮来源不合法`
-    if (typeof rec.importKey !== 'string' || rec.importKey === '') return `records[${i}] 缺 importKey`
-    if (typeof rec.stockName !== 'string' || rec.stockName === '') return `records[${i}] 缺 stockName`
+    if (typeof rec.importKey !== 'string' || !rec.importKey.trim()) return `records[${i}] 缺 importKey`
+    if (typeof rec.stockName !== 'string' || !rec.stockName.trim()) return `records[${i}] 缺 stockName`
     for (const key of ['buyPriceCents', 'buyQtyRaw', 'soldQty', 'targetPriceCents', 'earlyBuyPriceCents', 'rawProfitCents'] as const) {
       if (rec[key] !== undefined && rec[key] !== null && (!Number.isSafeInteger(rec[key]) || (key !== 'rawProfitCents' && (rec[key] as number) < 0))) return `records[${i}] ${key} 必须是有限安全整数`
     }
-    for (const key of ['buyDateSerial', 'sellDateSerial', 'deletedAt', 'editedAt']) if (rec[key] !== undefined && rec[key] !== null && !isNum(rec[key])) return `records[${i}] ${key} 不合法`
+    for (const key of ['buyDateSerial', 'sellDateSerial']) if (rec[key] !== undefined && rec[key] !== null && (!isNum(rec[key]) || rec[key] <= 0 || rec[key] > 2958465)) return `records[${i}] ${key} 不合法`
+    for (const key of ['deletedAt', 'editedAt']) if (rec[key] !== undefined && rec[key] !== null && !isTime(rec[key])) return `records[${i}] ${key} 不合法`
+    for (const key of ['qtyNeedsDerive', 'targetNeedsDerive', 'buyDateNeedsToday', 'sellDateNeedsToday']) if (rec[key] !== undefined && typeof rec[key] !== 'boolean') return `records[${i}] ${key} 必须是布尔值`
+    if (rec.origin !== undefined && !['excel', 'manual'].includes(String(rec.origin))) return `records[${i}] origin 不合法`
+    if (rec.rebuyPriceSource !== undefined && !['custom', 'lot', 'p', 'sellMinusInterval', 'repaid'].includes(String(rec.rebuyPriceSource))) return `records[${i}] rebuyPriceSource 不合法`
+    if (rec.batchId !== undefined && rec.batchId !== null && (typeof rec.batchId !== 'string' || !rec.batchId)) return `records[${i}] batchId 不合法`
+    for (const [price, qty] of [['buyPriceCents', 'buyQtyRaw'], ['targetPriceCents', 'soldQty']] as const) {
+      if (isNum(rec[price]) && isNum(rec[qty]) && !Number.isSafeInteger(rec[price] * rec[qty])) return `records[${i}] ${price} × ${qty} 金额超出安全整数范围`
+    }
     if (rec.profitRewardQty !== undefined) {
       const reward = rec.profitRewardQty
       if (!Number.isSafeInteger(reward) || (reward as number) < 0 || (reward as number) % 100 !== 0 || !Number.isSafeInteger(rec.buyQtyRaw) || (reward as number) > (rec.buyQtyRaw as number)) return `records[${i}] 盈利奖励股数须为买入量内的非负整手`
@@ -65,9 +82,14 @@ function checkStocks(stocks: unknown[]): string | null {
   for (let i = 0; i < stocks.length; i += 1) {
     const s = stocks[i] as Obj | null
     if (!isObj(s)) return `stocks[${i}] 不是对象`
-    if (typeof s.id !== 'string' || s.id === '') return `stocks[${i}] 缺 id`
-    if (typeof s.name !== 'string' || s.name === '') return `stocks[${i}] 缺 name`
-    if (!isNum(s.intervalCents)) return `stocks[${i}] 缺 intervalCents（绝对间隔）`
+    if (typeof s.id !== 'string' || !s.id.trim()) return `stocks[${i}] 缺 id`
+    if (typeof s.name !== 'string' || !s.name.trim()) return `stocks[${i}] 缺 name`
+    if (['code', 'note'].some(key => s[key] !== undefined && typeof s[key] !== 'string')) return `stocks[${i}] 代码或备注不合法`
+    if (!isNonNegative(s.intervalCents)) return `stocks[${i}] intervalCents（绝对间隔）必须是非负安全整数`
+    if (s.priceLimitType !== undefined && !['main_10', 'gem_20', 'star_20', 'bse_30', 'st_5', 'custom', 'unknown'].includes(String(s.priceLimitType))) return `stocks[${i}] priceLimitType 不合法`
+    if (s.order !== undefined && !isNonNegative(s.order)) return `stocks[${i}] order 不合法`
+    if (s.enabled !== undefined && typeof s.enabled !== 'boolean') return `stocks[${i}] enabled 不合法`
+    if (s.customLimitPct !== undefined && s.customLimitPct !== null && (!isNum(s.customLimitPct) || s.customLimitPct <= 0)) return `stocks[${i}] customLimitPct 不合法`
   }
   return null
 }
@@ -86,6 +108,8 @@ function checkExecutions(list: unknown[]): string | null {
     if (typeof e.groupKeyAtExecution !== 'string') return `rebuyExecutions[${i}] 缺 groupKeyAtExecution`
     if (e.buyTargetId !== undefined && (typeof e.buyTargetId !== 'string' || e.buyTargetId === '')) return `rebuyExecutions[${i}] 买入来源档不合法`
     if (!Number.isSafeInteger(e.qty) || (e.qty as number) <= 0 || !Number.isSafeInteger(e.priceCents) || (e.priceCents as number) <= 0 || !Number.isSafeInteger(e.rewardQty) || (e.rewardQty as number) < 0 || (e.rewardQty as number) > (e.qty as number) || (e.rewardQty as number) % 100 !== 0) return `rebuyExecutions[${i}] 股数、价格或奖励不合法`
+    if (!isTime(e.at) || typeof e.stockName !== 'string' || !e.stockName.trim() || typeof e.stockId !== 'string' || !e.stockId || typeof e.groupKeyAtExecution !== 'string' || !Number.isSafeInteger((e.qty as number) * (e.priceCents as number))) return `rebuyExecutions[${i}] 股票、时间或成交金额不合法`
+    if ((e.note !== undefined && typeof e.note !== 'string') || (e.buyTargetId !== undefined && (typeof e.buyTargetId !== 'string' || !e.buyTargetId.trim()))) return `rebuyExecutions[${i}] 备注或买入来源档不合法`
   }
   return null
 }
@@ -98,6 +122,7 @@ function checkPlans(list: unknown[]): string | null {
     if (typeof p.refId !== 'string' || p.refId === '') return `plans[${i}] 缺 refId`
     if (!isNum(p.priceCents)) return `plans[${i}] 缺 priceCents`
     if (!isNum(p.qty)) return `plans[${i}] 缺 qty`
+    if (!isRow(p.priceCents) || !isRow(p.qty) || (p.kind !== undefined && !['buy', 'sell'].includes(String(p.kind))) || (p.at !== undefined && !isTime(p.at))) return `plans[${i}] 价量、方向或时间不合法`
   }
   return null
 }
@@ -110,6 +135,7 @@ function checkExtraTargets(list: unknown[]): string | null {
     if (typeof t.lotId !== 'string' || t.lotId === '') return `extraTargets[${i}] 缺 lotId`
     if (!isNum(t.priceCents)) return `extraTargets[${i}] 缺 priceCents`
     if (!isNum(t.qty)) return `extraTargets[${i}] 缺 qty`
+    if (!isRow(t.priceCents) || !isNonNegative(t.qty) || (t.qty === 0 && t.strategy === undefined) || (t.at !== undefined && !isTime(t.at))) return `extraTargets[${i}] 价量或时间不合法`
     if (t.strategy !== undefined) {
       const s = t.strategy
       if (!isObj(s) || !['repair','baseT'].includes(String(s.mode)) || typeof s.groupId !== 'string' || !s.groupId
@@ -136,8 +162,10 @@ function checkHedges(list: unknown[]): string | null {
       const it = h.items[j] as Obj | null
       if (!isObj(it)) return `hedges[${i}].items[${j}] 不是对象`
       if (!isRow(it.row)) return `hedges[${i}].items[${j}] 缺 row（买入所在行号）`
-      if (!isNum(it.qty)) return `hedges[${i}].items[${j}] 缺 qty`
+      if (!isRow(it.qty)) return `hedges[${i}].items[${j}] qty 必须是正的安全整数`
     }
+    if (h.at !== undefined && !isTime(h.at)) return `hedges[${i}] at 不合法`
+    if (new Set((h.items as Obj[]).map(item => item.row)).size !== h.items.length) return `hedges[${i}] 分配来源重复`
   }
   return null
 }
@@ -150,10 +178,12 @@ function checkMerges(list: unknown[]): string | null {
     if (typeof m.id !== 'string' || m.id === '') return `merges[${i}] 缺 id`
     if (typeof m.stockName !== 'string' || m.stockName === '') return `merges[${i}] 缺 stockName`
     if (!isNum(m.priceCents)) return `merges[${i}] 缺 priceCents`
+    if (!isRow(m.priceCents) || (m.at !== undefined && !isTime(m.at))) return `merges[${i}] 价格或时间不合法`
     if (!Array.isArray(m.rows) || m.rows.length < 2) return `merges[${i}].rows 至少要有两笔行号`
     for (let j = 0; j < m.rows.length; j += 1) {
       if (!isRow(m.rows[j])) return `merges[${i}].rows[${j}] 不是整数行号`
     }
+    if (new Set(m.rows).size !== m.rows.length) return `merges[${i}].rows 成员重复`
   }
   return null
 }
@@ -170,7 +200,9 @@ function checkChainLinks(list: unknown[]): string | null {
     for (let j = 0; j < c.memberRows.length; j += 1) {
       if (!isRow(c.memberRows[j])) return `chainLinks[${i}].memberRows[${j}] 不是整数行号`
     }
-    if (c.closedAt !== null && !isNum(c.closedAt)) return `chainLinks[${i}] 的 closedAt 只能是数字或 null`
+    if (c.closedAt !== null && !isTime(c.closedAt)) return `chainLinks[${i}] 的 closedAt 只能是有效时间戳或 null`
+    if (c.at !== undefined && !isTime(c.at)) return `chainLinks[${i}] at 不合法`
+    if (new Set(c.memberRows).size !== c.memberRows.length) return `chainLinks[${i}].memberRows 成员重复`
   }
   return null
 }
@@ -184,6 +216,21 @@ function checkBuyTargets(list: unknown[]): string | null {
     if (!isRow(t.sellRow)) return `buyTargets[${i}] 缺 sellRow（卖单所在行号）`
     if (!isNum(t.priceCents)) return `buyTargets[${i}] 缺 priceCents`
     if (!isNum(t.qty)) return `buyTargets[${i}] 缺 qty`
+    if (!isRow(t.qty) || !isRow(t.priceCents) || (t.at !== undefined && !isTime(t.at))) return `buyTargets[${i}] 价量或时间不合法`
+  }
+  return null
+}
+
+function checkBatches(list: unknown[]): string | null {
+  for (const [i, batch] of list.entries()) {
+    if (!isObj(batch) || typeof batch.id !== 'string' || !batch.id || typeof batch.fileName !== 'string' || !batch.fileName.trim() || typeof batch.sheetName !== 'string' || !batch.sheetName.trim() || !isTime(batch.importedAt) || !isNonNegative(batch.recordCount) || !isNonNegative(batch.addedCount) || (batch.updatedCount !== undefined && !isNonNegative(batch.updatedCount))) return `batches[${i}] 批次结构、时间或数量不合法`
+  }
+  return null
+}
+
+function checkAudits(list: unknown[]): string | null {
+  for (const [i, audit] of list.entries()) {
+    if (!isObj(audit) || (audit.id !== undefined && !isRow(audit.id)) || !['record', 'stock', 'order', 'merge', 'chain'].includes(String(audit.entity)) || !isTime(audit.at) || ['entityId', 'field', 'oldValue', 'newValue', 'source'].some(key => typeof audit[key] !== 'string')) return `auditLogs[${i}] 审计结构或时间不合法`
   }
   return null
 }
@@ -199,6 +246,8 @@ const TABLES: { key: keyof BackupShape; label: string; check: (list: unknown[]) 
   { key: 'hedges', label: '挂钩分配', check: checkHedges },
   { key: 'merges', label: '合并买单', check: checkMerges },
   { key: 'chainLinks', label: '回本链归属', check: checkChainLinks },
+  { key: 'batches', label: '导入批次', check: checkBatches },
+  { key: 'auditLogs', label: '审计记录', check: checkAudits },
 ]
 
 /**
@@ -338,6 +387,23 @@ function checkReferences(data: BackupShape): string | null {
 /** 通过返回 null；不通过返回中文原因，恢复方直接抛错 */
 export function validateBackup(data: BackupShape): string | null {
   if (!isObj(data)) return '备份必须是对象'
+  if (data.schemaVersion === 14) {
+    for (const key of [...TABLES.map(table => table.key), 'batches', 'auditLogs', 'bookingReceipts'] as const) {
+      if (!Array.isArray(data[key])) return `当前结构14缺少完整的 ${key} 表`
+    }
+    if (!isObj(data.settings) || typeof data.settings.deriveSellPrice !== 'boolean') return '当前结构14缺少有效的计算设置 settings'
+    if (typeof data.exportedAt !== 'string' || !Number.isFinite(Date.parse(data.exportedAt))) return '当前结构14缺少有效的导出时间 exportedAt'
+    for (const [i, record] of (data.records as unknown[]).entries()) {
+      if (!isObj(record)) return `records[${i}] 不是对象`
+      for (const key of NULLABLE_RECORD_FIELDS) if (!(key in record) || record[key] === undefined) return `records[${i}] 缺少必需字段 ${key}（未知值须显式为 null）`
+      for (const key of ['qtyNeedsDerive', 'targetNeedsDerive']) if (typeof record[key] !== 'boolean') return `records[${i}] ${key} 必须是布尔值`
+    }
+    for (const [i, stock] of (data.stocks as unknown[]).entries()) if (isObj(stock) && typeof stock.priceLimitType !== 'string') return `stocks[${i}] 缺少必需字段 priceLimitType`
+    for (const key of ['plans', 'extraTargets', 'buyTargets', 'hedges', 'merges', 'chainLinks'] as const) {
+      for (const [i, item] of (data[key] as unknown[]).entries()) if (!isObj(item) || !isTime(item.at)) return `${key}[${i}] 缺少有效的 at 时间戳`
+    }
+    for (const [i, plan] of (data.plans as unknown[]).entries()) if (!isObj(plan) || !['buy', 'sell'].includes(String(plan.kind))) return `plans[${i}] 缺少有效的买卖方向 kind`
+  }
   for (const t of TABLES) {
     const value = data[t.key]
     if (value === undefined) continue
@@ -347,6 +413,7 @@ export function validateBackup(data: BackupShape): string | null {
     const keys = new Set<unknown>()
     for (const row of value as Obj[]) {
       const key = row.sourceRow ?? row.id
+      if (key === undefined && t.key === 'auditLogs') continue
       if (keys.has(key)) return `${t.key} 主键重复：${String(key)}`
       keys.add(key)
     }
@@ -389,5 +456,47 @@ export function validateBackup(data: BackupShape): string | null {
     }
     for (const id of rows.keys()) if (!walk(id)) return `records 记录 ${String(id)} 来源形成循环引用`
   }
-  return checkReferences(data)
+  const references = checkReferences(data)
+  if (references) return references
+  if (Array.isArray(data.records)) {
+    const totals = validateFinancialTotals(data.records as RawRecord[], Array.isArray(data.rebuyExecutions) ? data.rebuyExecutions : [])
+    if (totals) return totals
+  }
+  if ([...TABLES.map(table => table.key), 'batches', 'auditLogs'].every(key => Array.isArray(data[key as keyof BackupShape]))) {
+    try { validateSnapshotRelations(data as unknown as LedgerSnapshot) }
+    catch (error) { return error instanceof Error ? error.message : String(error) }
+  }
+  return null
+}
+
+/** 旧格式只补明确缺省值；当前格式缺字段不得借迁移掩盖。整个过程无写库副作用。 */
+export function prepareBackup(value: unknown): LedgerSnapshot {
+  if (!isObj(value)) throw new Error('备份必须是对象')
+  const version = value.schemaVersion ?? 1
+  if (!Number.isSafeInteger(version) || (version as number) < 1) throw new Error('备份结构版本不合法')
+  if ((version as number) > 14) throw new Error('备份版本高于当前程序，拒绝导入（P11）')
+  if (!Array.isArray(value.records)) throw new Error('这不是完整备份：缺少交易记录表，拒绝混合恢复')
+  let data: Obj = value
+  if ((version as number) < 14) {
+    data = { ...value, schemaVersion: 14,
+      exportedAt: value.exportedAt === undefined ? '1970-01-01T00:00:00.000Z' : value.exportedAt,
+      settings: value.settings === undefined ? { deriveSellPrice: false } : value.settings,
+      stocks: value.stocks === undefined ? DEFAULT_STOCKS.map(stock => ({ ...stock })) : Array.isArray(value.stocks)
+        ? value.stocks.map(stock => isObj(stock) ? { ...stock, priceLimitType: stock.priceLimitType === undefined ? 'unknown' : stock.priceLimitType } : stock) : value.stocks,
+      records: value.records.map(record => {
+        if (!isObj(record)) return record
+        const migrated = { ...record }
+        for (const key of NULLABLE_RECORD_FIELDS) if (migrated[key] === undefined) migrated[key] = null
+        for (const key of ['qtyNeedsDerive', 'targetNeedsDerive']) if (migrated[key] === undefined) migrated[key] = false
+        return migrated
+      }),
+    }
+    for (const key of [...TABLES.map(table => table.key), 'batches', 'auditLogs', 'bookingReceipts']) if (data[key] === undefined) data[key] = []
+    for (const key of ['plans', 'extraTargets', 'buyTargets', 'hedges', 'merges', 'chainLinks']) if (Array.isArray(data[key])) {
+      data[key] = data[key].map(item => isObj(item) ? { ...item, at: item.at === undefined ? 0 : item.at, ...(key === 'chainLinks' && item.closedAt === undefined ? { closedAt: null } : {}) } : item)
+    }
+  }
+  const problem = validateBackup(data)
+  if (problem) throw new Error(`备份内容校验失败：${problem}`)
+  return data as unknown as LedgerSnapshot
 }

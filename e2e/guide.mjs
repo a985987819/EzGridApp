@@ -146,7 +146,7 @@ try {
   check('注意事项有26项并明确本次修复状态', await run(`document.querySelectorAll('[data-guide-issue]').length===26 && document.querySelector('[data-guide-issue="O01"]').textContent.includes('本次已修复')`))
   await click('[data-guide-issue="C01"]')
   await until(`!!document.querySelector('#c01')`)
-  check('问题深链直达对应段落，保留待修复结论', await run(`location.hash.includes('anchor=c01') && document.querySelector('#c01').getBoundingClientRect().top>=0 && document.querySelector('#c01').getBoundingClientRect().top<160`) && (await text()).includes('本次仍可复现，待修复'))
+  check('问题深链直达对应段落并显示当前修复状态', await run(`location.hash.includes('anchor=c01') && document.querySelector('#c01').getBoundingClientRect().top>=0 && document.querySelector('#c01').getBoundingClientRect().top<160`) && (await text()).includes('2026-11-05已修复并补反例'))
   await click('[data-testid="guide-back"]')
   await click('[data-guide-mode="documents"]')
   check('完整文档收录全部20篇本地指南、规划与审计资料', await run(`document.querySelectorAll('[data-guide-doc]').length===20`))

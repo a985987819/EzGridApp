@@ -5,6 +5,8 @@ import { IconChart, IconGear, IconGrid, IconList, IconTag } from './ui/icons'
 import { navigate, parseHash, type Tab, type TradesQuery } from './ui/nav'
 import { transitionView } from './ui/transitions'
 import { usePageMotion } from './ui/pageMotion'
+import { downloadText } from './ui/csv'
+import { PageErrorBoundary } from './components/PageErrorBoundary'
 import './styles.css'
 
 /**
@@ -12,11 +14,15 @@ import './styles.css'
  * 共享组件留在 index），首访解析执行减半，发版只重下被改页面的 chunk。
  * PWA 预缓存仍收全部 chunk——离线切页无等待；Suspense 兜底只在未缓存首次进入时闪现。
  */
-const Overview = lazy(() => import('./pages/Overview').then((m) => ({ default: m.Overview })))
-const TradesPage = lazy(() => import('./pages/TradesPage').then((m) => ({ default: m.TradesPage })))
-const OrdersPage = lazy(() => import('./pages/OrdersPage').then((m) => ({ default: m.OrdersPage })))
-const StatsPage = lazy(() => import('./pages/StatsPage').then((m) => ({ default: m.StatsPage })))
-const ManagePage = lazy(() => import('./pages/ManagePage').then((m) => ({ default: m.ManagePage })))
+function createPages() {
+  return {
+    Overview: lazy(() => import('./pages/Overview').then((m) => ({ default: m.Overview }))),
+    TradesPage: lazy(() => import('./pages/TradesPage').then((m) => ({ default: m.TradesPage }))),
+    OrdersPage: lazy(() => import('./pages/OrdersPage').then((m) => ({ default: m.OrdersPage }))),
+    StatsPage: lazy(() => import('./pages/StatsPage').then((m) => ({ default: m.StatsPage }))),
+    ManagePage: lazy(() => import('./pages/ManagePage').then((m) => ({ default: m.ManagePage }))),
+  }
+}
 
 function PageSuspense({ children }: { children: ReactNode }) {
   return <Suspense fallback={<div className="empty-box">正在打开…</div>}>{children}</Suspense>
@@ -31,6 +37,10 @@ const TABS: { key: 'overview' | 'trades' | 'orders' | 'stats' | 'manage'; label:
 ]
 
 function Shell() {
+  // React.lazy caches a rejected import. A user retry must create fresh lazy objects.
+  const [pages, setPages] = useState(createPages)
+  const [pageAttempt, setPageAttempt] = useState(0)
+  const { Overview, TradesPage, OrdersPage, StatsPage, ManagePage } = pages
   // tab 与明细筛选都由 hash 承载（S7）：#/trades?stock=… 可以直达
   const [route, setRoute] = useState(parseHash)
   const [dir, setDir] = useState<'forward' | 'back'>('forward')
@@ -61,7 +71,15 @@ function Shell() {
     window.addEventListener('hashchange', onHash)
     return () => window.removeEventListener('hashchange', onHash)
   }, [])
-  const { ready, ledger } = useApp()
+  const { ready, ledger, exportBackup } = useApp()
+  const retryPage = () => {
+    setPages(createPages())
+    setPageAttempt(attempt => attempt + 1)
+  }
+  const backupAfterError = async () => {
+    const json = await exportBackup()
+    downloadText(`grid-backup-${new Date().toISOString().replaceAll(':', '-')}.json`, json, 'application/json;charset=utf-8')
+  }
 
   // V9.66：跨页深链（树/统计/挂单跳明细）落在页面顶部——筛选区是展开状态、不用再滚回去找；
   // 明细页内部的筛选点击不走这里，不会把人顶上去
@@ -86,6 +104,7 @@ function Shell() {
   return (
     <div className="app">
       <main ref={mainRef} className="app-main" data-dir={dir}>
+        <PageErrorBoundary resetKey={`${JSON.stringify(route)}:${pageAttempt}`} onRetry={retryPage} onBackup={backupAfterError}>
         {!ready ? (
           <div className="empty-box">初始化本地库…</div>
         ) : route.tab === 'overview' ? (
@@ -99,6 +118,7 @@ function Shell() {
         ) : (
           <PageSuspense><ManagePage goTrades={goTrades} query={route.manage} /></PageSuspense>
         )}
+        </PageErrorBoundary>
       </main>
 
       <nav className="app-nav" aria-label="主导航">

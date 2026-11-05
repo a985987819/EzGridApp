@@ -6,6 +6,8 @@
 
 import { toCents } from '../domain/money'
 import { makeImportKey } from '../domain/defaults'
+import { importIssue, importQuantityIssue, parseImportQuantity, type ImportQuantityField, type ImportIssue } from '../domain/importValidation'
+import { isoToSerial } from '../domain/edit'
 import type { RawRecord } from '../domain/types'
 
 type XlsxModule = typeof import('xlsx')
@@ -33,6 +35,8 @@ export interface ParseResult {
   missingColumns: string[]
   /** 含可选列，仅用于增量更新保护，不落库。 */
   absentFields?: string[]
+  /** 非法数量只进入阻断报告，不参与账本预演或写库。 */
+  validationIssues?: ImportIssue[]
 }
 
 /**
@@ -79,14 +83,13 @@ function cellFormula(sheet: WorkSheet, r: number, c: number): string | null {
   return f
 }
 
-function numOrNull(sheet: WorkSheet, r: number, c: number): number | null {
+function quantityOrNull(sheet: WorkSheet, r: number, c: number, field: ImportQuantityField, issues: ImportIssue[]): number | null {
   const cell = rawCell(sheet, r, c)
   if (isBlank(cell)) return null
-  if (typeof cell!.v === 'number') return Number.isFinite(cell!.v) ? cell!.v : null
-  const s = String(cell!.v).trim().replace(/,/g, '')
-  if (s === '') return null
-  const n = Number(s)
-  return Number.isFinite(n) ? n : null
+  if (typeof cell!.v === 'string' && !cell!.v.trim()) return null
+  const value = cell!.t === 'e' ? null : parseImportQuantity(cell!.v)
+  if (value === null) issues.push(importQuantityIssue(r + 1, field, cell!.t === 'e' ? cell!.w ?? '#ERROR!' : cell!.v))
+  return value
 }
 
 /**
@@ -95,13 +98,18 @@ function numOrNull(sheet: WorkSheet, r: number, c: number): number | null {
  */
 const DATE_RE = /^(\d{4})[/\-年.](\d{1,2})[/\-月.](\d{1,2})日?$/
 
-function dateOrNull(sheet: WorkSheet, r: number, c: number): number | null {
+function dateOrNull(sheet: WorkSheet, r: number, c: number, field: 'buyDateSerial' | 'sellDateSerial', issues: ImportIssue[], date1904: boolean): number | null {
   const cell = rawCell(sheet, r, c)
   if (isBlank(cell)) return null
   if (typeof cell!.v === 'number') {
     // 序列号阈值：Excel 1954-07 起才算日期（~20000）。列错位时价格（如 8.58）
     // 会被当成 1900 年的怪日期，这里直接拒收按缺失处理
-    return Number.isFinite(cell!.v) && cell!.v >= 20000 ? cell!.v : null
+    const serial = cell!.v + (date1904 ? 1462 : 0)
+    if (!Number.isFinite(serial) || serial > 2958465) {
+      issues.push(importIssue(r + 1, field, cell!.v, '日期序列值超出有效范围'))
+      return null
+    }
+    return serial >= 20000 ? serial : null
   }
   const s = String(cell!.v).trim().replace(/,/g, '')
   if (s === '') return null
@@ -110,18 +118,23 @@ function dateOrNull(sheet: WorkSheet, r: number, c: number): number | null {
     const y = Number(m[1])
     const mo = Number(m[2])
     const d = Number(m[3])
-    if (mo < 1 || mo > 12 || d < 1 || d > 31) return null
-    // 与 defaults.serialToIso 互逆的 1900 系统（1900-03-01 起的虚闰年误差不影响 2000 年后的日期）
-    return Math.round((Date.UTC(y, mo - 1, d) - Date.UTC(1899, 11, 30)) / 86400000)
+    const serial = isoToSerial(`${y}-${mo}-${d}`)
+    if (serial === null) issues.push(importIssue(r + 1, field, s, '不是有效日期，请核对年月日'))
+    return serial
   }
   const n = Number(s)
   return Number.isFinite(n) && n >= 20000 ? n : null
 }
 
-function centsOrNull(sheet: WorkSheet, r: number, c: number): number | null {
+function centsOrNull(sheet: WorkSheet, r: number, c: number, field?: 'buyPriceCents' | 'targetPriceCents' | 'earlyBuyPriceCents' | 'rawProfitCents', issues?: ImportIssue[]): number | null {
   const cell = rawCell(sheet, r, c)
-  if (isBlank(cell)) return null
-  return toCents(typeof cell!.v === 'number' ? cell!.v : String(cell!.v))
+  if (isBlank(cell) || cell!.t === 'e' || !String(cell!.v).trim()) return null
+  const value = toCents(typeof cell!.v === 'number' ? cell!.v : String(cell!.v))
+  // 旧表的 Excel 错误值继续按缺失留痕；有限文本金额不能溢出成 Infinity。
+  if (field && issues && value === null && (typeof cell!.v === 'number' || /^[+\-\d.,eE¥￥\s]+$/.test(String(cell!.v)))) {
+    issues.push(importIssue(r + 1, field, cell!.v, '金额超出有效范围或格式不合法'))
+  }
+  return value
 }
 
 function resolveHeader(sheet: WorkSheet, aliases: readonly string[]): number | null {
@@ -133,7 +146,7 @@ function resolveHeader(sheet: WorkSheet, aliases: readonly string[]): number | n
 }
 
 /** 单表解析核心：xlsx 的第 1 个表和 CSV 的唯一表都走这里 */
-function parseSheet(sheet: WorkSheet, sheetName: string): ParseResult {
+function parseSheet(sheet: WorkSheet, sheetName: string, date1904 = false): ParseResult {
   if (resolveHeader(sheet, ['导出用途（仅供查看，不可导入）']) !== null) {
     throw new Error('这是查看用明细，未保存完整关联。请导入完整台账 Excel 恢复，或使用空白交易模板新增数据')
   }
@@ -147,6 +160,7 @@ function parseSheet(sheet: WorkSheet, sheetName: string): ParseResult {
   const range = XLSX.utils.decode_range(sheet['!ref'] as string)
   const records: RawRecord[] = []
   const skippedRows: number[] = []
+  const validationIssues: ImportIssue[] = []
   // 完全相同的两行（例如 R60/R61 都是「柳工 卖500 @8.58」）字段会撞 key，
   // 这里按出现次序加 #n，既保证行级唯一，又保证同一文件重复导入仍然幂等
   const keyCount = new Map<string, number>()
@@ -160,12 +174,12 @@ function parseSheet(sheet: WorkSheet, sheetName: string): ParseResult {
       continue
     }
 
-    const buyPrice = idx.buyPrice === null ? null : centsOrNull(sheet, r, idx.buyPrice)
-    const buyQtyRaw = idx.buyQty === null ? null : numOrNull(sheet, r, idx.buyQty)
-    const soldQty = idx.soldQty === null ? null : numOrNull(sheet, r, idx.soldQty)
+    const buyPrice = idx.buyPrice === null ? null : centsOrNull(sheet, r, idx.buyPrice, 'buyPriceCents', validationIssues)
+    const buyQtyRaw = idx.buyQty === null ? null : quantityOrNull(sheet, r, idx.buyQty, 'buyQtyRaw', validationIssues)
+    const soldQty = idx.soldQty === null ? null : quantityOrNull(sheet, r, idx.soldQty, 'soldQty', validationIssues)
     const targetRaw = (soldQty ?? 0) > 0 && tradePriceCol !== null
-      ? centsOrNull(sheet, r, tradePriceCol) ?? (idx.target === null ? null : centsOrNull(sheet, r, idx.target))
-      : idx.target === null ? null : centsOrNull(sheet, r, idx.target)
+      ? centsOrNull(sheet, r, tradePriceCol, 'targetPriceCents', validationIssues) ?? (idx.target === null ? null : centsOrNull(sheet, r, idx.target, 'targetPriceCents', validationIssues))
+      : idx.target === null ? null : centsOrNull(sheet, r, idx.target, 'targetPriceCents', validationIssues)
 
     const qtyFormula = idx.buyQty === null ? null : cellFormula(sheet, r, idx.buyQty)
     const targetFormula = idx.target === null ? null : cellFormula(sheet, r, idx.target)
@@ -180,16 +194,16 @@ function parseSheet(sheet: WorkSheet, sheetName: string): ParseResult {
       continue
     }
 
-    const buyDateSerial = idx.buyDate === null ? null : dateOrNull(sheet, r, idx.buyDate)
-    const sellDateSerial = idx.sellDate === null ? null : dateOrNull(sheet, r, idx.sellDate)
+    const buyDateSerial = idx.buyDate === null ? null : dateOrNull(sheet, r, idx.buyDate, 'buyDateSerial', validationIssues, date1904)
+    const sellDateSerial = idx.sellDate === null ? null : dateOrNull(sheet, r, idx.sellDate, 'sellDateSerial', validationIssues, date1904)
     // 日期格是 =TODAY() 公式、且文件里没存计算结果 → 标记出来，
     // 这类格子打开 Excel 会显示「当天」，不是真实成交日，不能拿来当数据
     const buyDateFormula = idx.buyDate === null ? null : cellFormula(sheet, r, idx.buyDate)
     const sellDateFormula = idx.sellDate === null ? null : cellFormula(sheet, r, idx.sellDate)
     const buyDateNeedsToday = buyDateSerial === null && buyDateFormula !== null && /TODAY\s*\(/i.test(buyDateFormula)
     const sellDateNeedsToday = sellDateSerial === null && sellDateFormula !== null && /TODAY\s*\(/i.test(sellDateFormula)
-    const earlyBuyPriceCents = idx.earlyBuy === null ? null : centsOrNull(sheet, r, idx.earlyBuy)
-    const rawProfitCents = idx.profit === null ? null : centsOrNull(sheet, r, idx.profit)
+    const earlyBuyPriceCents = idx.earlyBuy === null ? null : centsOrNull(sheet, r, idx.earlyBuy, 'earlyBuyPriceCents', validationIssues)
+    const rawProfitCents = idx.profit === null ? null : centsOrNull(sheet, r, idx.profit, 'rawProfitCents', validationIssues)
 
     const rec: RawRecord = {
       sourceRow: sheetRow,
@@ -215,7 +229,7 @@ function parseSheet(sheet: WorkSheet, sheetName: string): ParseResult {
     records.push(rec)
   }
 
-  return { sheetName, records, skippedRows, missingColumns, absentFields: (Object.keys(COL) as ColKey[]).filter((k) => idx[k] === null && !(k === 'target' && tradePriceCol !== null)) }
+  return { sheetName, records, skippedRows, missingColumns, validationIssues, absentFields: (Object.keys(COL) as ColKey[]).filter((k) => idx[k] === null && !(k === 'target' && tradePriceCol !== null)) }
 }
 
 export async function parseWorkbook(buffer: ArrayBuffer | Uint8Array): Promise<ParseResult> {
@@ -235,13 +249,12 @@ export async function parseWorkbook(buffer: ArrayBuffer | Uint8Array): Promise<P
   if (!sheetName) throw new Error('工作簿里没有任何工作表')
   const sheet = wb.Sheets[sheetName]
   if (!sheet || !sheet['!ref']) throw new Error('第 1 个工作表是空的')
-  return parseSheet(sheet, sheetName)
+  return parseSheet(sheet, sheetName, wb.Workbook?.WBProps?.date1904 === true)
 }
 
 /**
  * CSV 文本 → 单表解析。SheetJS 读 CSV 全按字符串（含日期），数值/日期列的
- * 字符串转换由 numOrNull / dateOrNull / centsOrNull 负责；#VALUE! 等 Excel
- * 错误串在这三个入口都自然落到 null。
+ * 数量列非法值进入阻断报告；非数量列的旧错误留痕行为保持。
  */
 export async function parseCsvText(text: string): Promise<ParseResult> {
   await loadXlsx()

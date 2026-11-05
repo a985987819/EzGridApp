@@ -1,6 +1,4 @@
-# 部署到 GitHub Pages：push 到 main 自动构建发布
-# enablement: true —— Pages 未开启时由 configure-pages 自动创建站点（不传只会
-# GET 已有配置，404 直接挂掉整个工作流）
+# Only deploy the exact artifact that passed the reusable quality gate.
 name: Deploy to GitHub Pages
 
 on:
@@ -18,22 +16,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  quality:
+    uses: ./.github/workflows/quality.yml
+    permissions:
+      contents: read
+
   build:
+    needs: quality
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/download-artifact@v4
         with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run build
-        env:
-          # 项目站点挂在 /EzGridApp/ 子路径下
-          GITHUB_PAGES: 'true'
+          name: checked-dist
+          path: dist
       - uses: actions/configure-pages@v5
-        with:
-          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

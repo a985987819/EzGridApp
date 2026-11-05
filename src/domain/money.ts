@@ -24,13 +24,15 @@ export function toCents(input: string | number | null | undefined): number | nul
   const fracRaw = m[3] ?? ''
   if (fracRaw.length <= 2) {
     const frac = Number(fracRaw.padEnd(2, '0'))
-    return sign * (intPart * CENTS_PER_YUAN + frac)
+    const cents = sign * (intPart * CENTS_PER_YUAN + frac)
+    return Number.isSafeInteger(cents) ? cents : null
   }
   // 超过两位小数：按 ROUND_HALF_UP 舍到分
   const keep = Number(fracRaw.slice(0, 2))
   const next = Number(fracRaw[2])
   const up = next >= 5 ? 1 : 0
-  return sign * (intPart * CENTS_PER_YUAN + keep + up)
+  const cents = sign * (intPart * CENTS_PER_YUAN + keep + up)
+  return Number.isSafeInteger(cents) ? cents : null
 }
 
 /** 整数分 → 「7.81」字符串 */

@@ -3,12 +3,14 @@ import { validateBackup, type BackupShape } from './backup'
 
 const goodRecord = { sourceRow: 1, importKey: 'k1', stockName: '柳工' }
 const goodStock = { id: 'stock:柳工', name: '柳工', intervalCents: 57 }
+const current = (records: unknown[]): BackupShape => ({ schemaVersion: 14, exportedAt: '2026-11-05T00:00:00.000Z', settings: { deriveSellPrice: false },
+  records, stocks: [{ ...goodStock, priceLimitType: 'main_10' }], batches: [], auditLogs: [], rebuyExecutions: [], plans: [], extraTargets: [], buyTargets: [], hedges: [], merges: [], chainLinks: [], bookingReceipts: [] })
 
 describe('恢复前的备份内容校验', () => {
   it('结构14下一轮盈利奖励保留归属，旧13缺省仍兼容', () => {
-    const parent = { ...goodRecord, buyPriceCents: 500, buyQtyRaw: 500 }
+    const parent = { ...goodRecord, buyPriceCents: 500, buyQtyRaw: 500, buyDateSerial: null, sellDateSerial: null, soldQty: null, earlyBuyPriceCents: null, targetPriceCents: null, rawProfitCents: null, qtyNeedsDerive: false, targetNeedsDerive: false }
     const reward = { ...parent, sourceRow: 2, importKey: 'reward', buyQtyRaw: 700, nextRoundOfRow: 1, profitRewardQty: 200, profitRewardGroupKey: 'stock:柳工|500' }
-    expect(validateBackup({ schemaVersion: 14, records: [parent, reward], stocks: [goodStock] })).toBeNull()
+    expect(validateBackup(current([parent, reward]))).toBeNull()
     expect(validateBackup({ schemaVersion: 13, records: [parent], stocks: [goodStock] })).toBeNull()
     for (const fields of [
       { profitRewardQty: 50 }, { profitRewardQty: -100 }, { profitRewardQty: 800 },
@@ -16,7 +18,7 @@ describe('恢复前的备份内容校验', () => {
       { profitRewardGroupKey: 'stock:柳工|0' }, { profitRewardGroupKey: 'stock:柳工|5.5' },
       { profitRewardQty: 200, buyPriceCents: Number.MAX_SAFE_INTEGER },
       { nextRoundOfRow: 2 },
-    ]) expect(validateBackup({ schemaVersion: 14, records: [parent, { ...reward, ...fields }], stocks: [goodStock] })).not.toBeNull()
+    ]) expect(validateBackup(current([parent, { ...reward, ...fields }]))).not.toBeNull()
     expect(validateBackup({ records: [parent, { ...reward, profitRewardQty: undefined }], stocks: [goodStock] })).toContain('奖励价组')
   })
   it('合法备份通过', () => {

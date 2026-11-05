@@ -1,0 +1,184 @@
+{
+  "capturedAt": "2026-11-05T04:37:18.374Z",
+  "baselineRef": "a819016",
+  "node": "v22.22.2",
+  "cpu": "12th Gen Intel(R) Core(TM) i9-12900KF",
+  "candidate": "working tree",
+  "warmup": 2,
+  "sampleCount": 5,
+  "limit": "Node合成关系集，小样本median；股票数与行数同时变化，不代表手机性能或p95。链展示/代际归属修复造成的差异单列。",
+  "samples": [
+    {
+      "kind": "mixed",
+      "rows": 1000,
+      "stocks": 50,
+      "warmup": 2,
+      "samples": 5,
+      "alternatingOrder": true,
+      "before": {
+        "medianMs": 18.54290000000003,
+        "minMs": 18.014899999999898,
+        "maxMs": 20.74279999999999,
+        "rawMs": [
+          20.220899999999915,
+          20.74279999999999,
+          18.303999999999974,
+          18.014899999999898,
+          18.54290000000003
+        ]
+      },
+      "after": {
+        "medianMs": 9.663599999999974,
+        "minMs": 8.755800000000022,
+        "maxMs": 11.905399999999986,
+        "rawMs": [
+          11.905399999999986,
+          11.06740000000002,
+          8.755800000000022,
+          9.663599999999974,
+          9.345299999999952
+        ]
+      },
+      "changedFields": [
+        "repairChains"
+      ],
+      "profitSlicesEqual": true,
+      "realCoverEqual": true,
+      "realCoverSlicesEqual": true,
+      "ledgerHashes": {
+        "before": "5365410cc9ff4cb66b671532abeb5017b2a9efcaf95f126883492e7451b14a9b",
+        "after": "67434e4dd3706ad4abc71f6ddb4ebfb2b813c5fd27692c475d444bd5003bf407"
+      },
+      "unchangedInput": true,
+      "stableOutput": true
+    },
+    {
+      "kind": "mixed",
+      "rows": 4000,
+      "stocks": 200,
+      "warmup": 2,
+      "samples": 5,
+      "alternatingOrder": true,
+      "before": {
+        "medianMs": 548.9027000000001,
+        "minMs": 534.9588000000003,
+        "maxMs": 566.2636999999995,
+        "rawMs": [
+          543.0661999999998,
+          548.9027000000001,
+          534.9588000000003,
+          566.2636999999995,
+          557.8579999999993
+        ]
+      },
+      "after": {
+        "medianMs": 56.14959999999974,
+        "minMs": 52.21640000000025,
+        "maxMs": 60.87039999999979,
+        "rawMs": [
+          59.24299999999994,
+          56.14959999999974,
+          52.68139999999994,
+          52.21640000000025,
+          60.87039999999979
+        ]
+      },
+      "changedFields": [
+        "repairChains"
+      ],
+      "profitSlicesEqual": true,
+      "realCoverEqual": true,
+      "realCoverSlicesEqual": true,
+      "ledgerHashes": {
+        "before": "f816ac347f4d294a4f8cb4cc73b236e1cadac783ba76785bfb6b38145348dda3",
+        "after": "092c14d686f4cfd16d545bc8a13cdb568761f5521dfc6f0c47e334f7715f8a44"
+      },
+      "unchangedInput": true,
+      "stableOutput": true
+    },
+    {
+      "kind": "mixed-four-stocks",
+      "rows": 1000,
+      "stocks": 4,
+      "warmup": 2,
+      "samples": 5,
+      "alternatingOrder": true,
+      "before": {
+        "medianMs": 10.291900000000169,
+        "minMs": 8.366699999999582,
+        "maxMs": 11.861599999999271,
+        "rawMs": [
+          10.486100000000079,
+          9.065700000000106,
+          11.861599999999271,
+          8.366699999999582,
+          10.291900000000169
+        ]
+      },
+      "after": {
+        "medianMs": 7.268100000000231,
+        "minMs": 6.387500000000728,
+        "maxMs": 10.420000000000073,
+        "rawMs": [
+          10.420000000000073,
+          8.221300000000156,
+          6.387500000000728,
+          7.268100000000231,
+          6.586099999999533
+        ]
+      },
+      "changedFields": [
+        "repairChains"
+      ],
+      "profitSlicesEqual": true,
+      "realCoverEqual": true,
+      "realCoverSlicesEqual": true,
+      "ledgerHashes": {
+        "before": "8d7e4350530c9ce6792a74fbf4f6362486cdb3dd8c5fa5f906f99c5cd769a54d",
+        "after": "ee91d6dbefa6f6e7fb4143c92f9f5f44db58e5b440ef2d5fb432ca4ed53fe95c"
+      },
+      "unchangedInput": true,
+      "stableOutput": true
+    }
+  ],
+  "fixtures": [
+    {
+      "file": "26年网格记录-交易记录.csv",
+      "rows": 62,
+      "changedFields": [
+        "repairChains"
+      ],
+      "profitSlicesEqual": true,
+      "realCoverEqual": true,
+      "realCoverSlicesEqual": true,
+      "ledgerHashes": {
+        "before": "70416cbf8e0fecf61db2a74622999481b5d357b959c215f2af114372b17a96ed",
+        "after": "07abdfe9865e400699cd01cdac43f4f832bd2df2ff850206221fee50ee5c1e77"
+      }
+    },
+    {
+      "file": "26年网格记录-工作表3.csv",
+      "rows": 62,
+      "changedFields": [],
+      "profitSlicesEqual": true,
+      "realCoverEqual": true,
+      "realCoverSlicesEqual": true,
+      "ledgerHashes": {
+        "before": "97abab10c1326eacfc569cc27f90cb8d3c58087d3d294664a4c227c92f09ad46",
+        "after": "97abab10c1326eacfc569cc27f90cb8d3c58087d3d294664a4c227c92f09ad46"
+      }
+    },
+    {
+      "file": "26年网格记录.xlsx",
+      "rows": 62,
+      "changedFields": [],
+      "profitSlicesEqual": true,
+      "realCoverEqual": true,
+      "realCoverSlicesEqual": true,
+      "ledgerHashes": {
+        "before": "d67ec78eab93d5b4d8e6a05faf522e61726993f181b7404883060bacd2875ce4",
+        "after": "d67ec78eab93d5b4d8e6a05faf522e61726993f181b7404883060bacd2875ce4"
+      }
+    }
+  ]
+}

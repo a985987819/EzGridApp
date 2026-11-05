@@ -33,7 +33,7 @@ export function ManageBackup() {
       <Card>
         <div className="stack tight">
           <strong>完整台账 Excel</strong>
-          <p className="hint-block">导出全部交易、成交、配置、人工关联与操作历史，以及自动关联和回本链的核对快照。可编辑数据后整库恢复；明细页的 Excel 仅为当前列表。</p>
+          <p className="hint-block">导出全部交易、成交、配置、人工关联与操作历史，以及自动关联和回本链的核对快照。可编辑数据后整库恢复；明细页也可导出完整台账，另有仅供查看的明细 Excel/CSV。</p>
           <Button block type="primary" disabled={excelBusy} data-action="export-ledger" onClick={() => {
             setExcelBusy(true)
             void (async () => {
@@ -161,7 +161,9 @@ export function ManageBackup() {
             danger
             onClick={() => {
               if (!window.confirm('清空本地交易记录与审计？股票配置保留。建议先导出备份。')) return
-              void resetAll().then(() => notificationOpen({ message: '已清空', type: 'info' }))
+              void resetAll()
+                .then(() => notificationOpen({ message: '已清空', type: 'info' }))
+                .catch(() => notificationOpen({ message: '清空未完成', description: '当前台账已保留，请重试。', type: 'error' }))
             }}
           >
             清空交易记录
@@ -187,8 +189,8 @@ export function ManageBackup() {
           <div style={{ flex: 1 }}>
             <strong style={{ fontSize: 14 }}>已成交行的成交价推定</strong>
             <p className="hint-block" style={{ margin: '4px 0 0' }}>
-              关（默认）：R44 目标售价留空 → 待补价格，全表盈利 <b>¥9,830</b>。
-              开：R44 按 18.81 + 1.07 计入 → <b>¥10,152</b>。
+              关闭时，缺实际售价的已成交记录显示「待补价格」。开启后，按买入价＋股票间隔推定。
+              推定价用于核算参考，请优先补录实际成交价。
             </p>
           </div>
           <Switch checked={deriveSellPrice} onChange={setDeriveSellPrice} aria-label="成交价推定" />
@@ -200,8 +202,8 @@ export function ManageBackup() {
           <div style={{ flex: 1 }}>
             <strong style={{ fontSize: 14 }}>使用系统字体</strong>
             <p className="hint-block" style={{ margin: '4px 0 0' }}>
-              组件库自带三档中文字体（各约 1.1MB）。打开后改用系统字体，浏览器不再下载这些字体文件，
-              手机上首屏更轻；代价是少一点岛民手写感。
+              应用使用按界面和指南用字裁剪的中文字体。打开后改用本机系统字体，文字风格随设备变化。
+              离线资源仍会缓存应用字体，此开关用于选择阅读效果。
             </p>
           </div>
           <Switch checked={systemFont} onChange={(v) => void setSystemFont(v)} aria-label="使用系统字体" />

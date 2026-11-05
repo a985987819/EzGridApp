@@ -1,4 +1,4 @@
-import { lazy, Suspense } from 'react'
+import { lazy, Suspense, useState } from 'react'
 import { Card } from 'animal-island-ui'
 import { ManageImport } from './manage/ManageImport'
 import { ManageStocks } from './manage/ManageStocks'
@@ -10,8 +10,6 @@ import { ManageMoney } from './manage/ManageMoney'
 import { ManageInstall } from './manage/ManageInstall'
 import { IconBook, IconChart, IconChevron, IconDownload, IconGrid, IconUpload, IconRefresh } from '../ui/icons'
 import { navigateManage, type ManageQuery, type ManageSection, type TradesQuery } from '../ui/nav'
-
-const ManageGuide = lazy(() => import('./manage/ManageGuide'))
 
 const SECTIONS: { key: ManageSection; label: string; desc: string; Icon: typeof IconGrid }[] = [
   { key: 'money', label: '规划用钱', desc: '可用资金 · 温度带 · 可买股数 · 值博率', Icon: IconChart },
@@ -25,6 +23,8 @@ const SECTIONS: { key: ManageSection; label: string; desc: string; Icon: typeof 
 ]
 
 export function ManagePage({ goTrades, query }: { goTrades: (q: TradesQuery) => void; query?: ManageQuery }) {
+  // A page retry remounts ManagePage and must also retry a rejected guide import.
+  const [ManageGuide] = useState(() => lazy(() => import('./manage/ManageGuide')))
   const current = SECTIONS.find((s) => s.key === query?.section)
 
   if (!current) {

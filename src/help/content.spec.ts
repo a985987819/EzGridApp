@@ -9,7 +9,7 @@ describe('管理页操作指南索引', () => {
     for (const rows of [topics, scenarioRows, issues]) expect(new Set(rows.map(row => row.id)).size).toBe(rows.length)
     expect(topics.find(t => t.id === '20')?.body).toContain('链仍亏 500')
     expect(scenarioRows.find(t => t.id === '058')?.expected).toContain('分别存在')
-    expect(issues.find(t => t.id === 'C01')?.body).toContain('待修复')
+    expect(issues.find(t => t.id === 'C01')?.body).toContain('原链')
   })
 
   it('问题正文不会跨二级分类串到下一条，场景支持转义分隔符', () => {

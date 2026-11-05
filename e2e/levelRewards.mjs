@@ -80,8 +80,9 @@ try {
   const installProbe = async () => {
     await run(`(async()=>{
       if(window.rewardApp?.ready)return
-      const React=(await import('/node_modules/.vite/deps/react.js')).default
-      const {createRoot}=(await import('/node_modules/.vite/deps/react-dom_client.js')).default
+      const main=await(await fetch('/src/main.tsx')).text()
+      const React=(await import(main.match(new RegExp('from "([^"]*deps.react[.]js[^"]*)"'))[1])).default
+      const {createRoot}=(await import(main.match(new RegExp('from "([^"]*deps.react-dom_client[.]js[^"]*)"'))[1])).default
       const source=await(await fetch('/src/pages/OrdersPage.tsx')).text(),storeUrl=source.match(/from "([^"]*store.useApp[^"]*)"/)[1]
       const {AppProvider,useApp}=await import(storeUrl)
       const mount=document.createElement('div');mount.hidden=true;document.body.appendChild(mount)

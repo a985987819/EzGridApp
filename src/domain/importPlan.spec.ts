@@ -80,6 +80,13 @@ describe('导入按行身份匹配更新（v9.20 决策 C）', () => {
     expect(plan.fresh).toHaveLength(0)
   })
 
+  it('原始实际股数优先于旧推定标记，与账本及现金校验使用同一份额', () => {
+    const original = rec({ stockName: '柳工', buyQtyRaw: 500, qtyNeedsDerive: true })
+    const incoming = { ...original, qtyNeedsDerive: false }
+    expect(identityKeyOf(original)).toBe(identityKeyOf(incoming))
+    expect(planImport([original], [incoming]).unchanged).toBe(1)
+  })
+
   it('回补价差异（同 key 检测场景）也会更新', () => {
     const local = rec({ stockName: '柳工', importKey: 'same', earlyBuyPriceCents: null })
     const file = rec({ stockName: '柳工', importKey: 'same', earlyBuyPriceCents: 781 })

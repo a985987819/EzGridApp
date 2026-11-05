@@ -1,0 +1,60 @@
+name: Quality checks
+
+on:
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # GitHub's Ubuntu runner has Chrome; fail explicitly if its location changes.
+      CHROME_PATH: /usr/bin/google-chrome
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run lint
+      - run: npm run build
+        env:
+          GITHUB_PAGES: 'true'
+      - name: Core browser accounting and page recovery
+        shell: bash
+        run: |
+          test -x "$CHROME_PATH"
+          mkdir -p e2e/out
+          npm run dev -- --host 127.0.0.1 --port 5173 --strictPort > e2e/out/ci-vite.log 2>&1 &
+          vite_pid=$!
+          trap 'kill "$vite_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:5173/ > /dev/null; then break; fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:5173/ > /dev/null
+          node e2e/accounting.mjs http://127.0.0.1:5173
+          node e2e/importValidation.mjs http://127.0.0.1:5173
+          node e2e/dataConsistency.mjs http://127.0.0.1:5173
+          node e2e/errorRecovery.mjs http://127.0.0.1:5173
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-diagnostics
+          path: e2e/out
+          if-no-files-found: ignore
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        with:
+          name: checked-dist
+          path: dist
+          retention-days: 7

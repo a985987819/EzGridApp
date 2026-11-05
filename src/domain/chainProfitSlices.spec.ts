@@ -50,7 +50,7 @@ describe('链盈利份额复用实际所有权分配', () => {
     const executions = [execution(2, 500, 550)]
     const ledger = buildLedger(records, [stock], { executions })
     const result = buildRepairChains({ ...ledger, executions })
-    expect(result.chains[0].branches[0].buyPriceCents).toBe(500)
+    expect(result.chains[0].branches[0]).toMatchObject({ key: 'branch:2:500', buyPriceCents: 550 })
     expect(result.profitSlices.filter(slice => slice.kind === 'branch')).toEqual([
       expect.objectContaining({ sellId: 'sell:3', lotId: 'lot:exec:e', qty: 300, costCents: 550, profitCents: 60000 }),
     ])

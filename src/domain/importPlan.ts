@@ -34,7 +34,7 @@ export function identityKeyOf(
   r: Pick<RawRecord, 'stockName' | 'buyDateSerial' | 'buyPriceCents' | 'buyQtyRaw' | 'qtyNeedsDerive'>,
 ): string {
   // D 列公式无缓存值的行，按派生份额参与身份，和缓存了同一结果的文件相等
-  const qty = r.qtyNeedsDerive && r.buyPriceCents ? deriveBuyQty(r.buyPriceCents) : r.buyQtyRaw
+  const qty = r.buyQtyRaw ?? (r.qtyNeedsDerive && r.buyPriceCents ? deriveBuyQty(r.buyPriceCents) : null)
   return [r.stockName, r.buyDateSerial ?? '', r.buyPriceCents ?? '', qty ?? ''].join('|')
 }
 

@@ -135,8 +135,9 @@ try {
   await send('Page.navigate',{url:BASE})
   await settle()
   await evaluate(`(async()=>{
-    const React=(await import('/node_modules/.vite/deps/react.js')).default
-    const {createRoot}=(await import('/node_modules/.vite/deps/react-dom_client.js')).default
+    const main=await(await fetch('/src/main.tsx')).text()
+    const React=(await import(main.match(new RegExp('from "([^"]*deps.react[.]js[^"]*)"'))[1])).default
+    const {createRoot}=(await import(main.match(new RegExp('from "([^"]*deps.react-dom_client[.]js[^"]*)"'))[1])).default
     const source=await (await fetch('/src/pages/OrdersPage.tsx')).text()
     const storeUrl=source.match(new RegExp('from "([^"]*store.useApp[^"]*)"'))[1]
     const {AppProvider,useApp}=await import(storeUrl)
@@ -205,7 +206,7 @@ try {
   check('回本回补恢复本档7.30低位目标，不提前盈利',v.chains[0].profit===0&&v.targets.some(t=>t.priceCents===730&&t.lotId.startsWith('lot:exec:')))
   check('全过程所有守恒检查通过',v.checks.length===0,JSON.stringify(v.checks))
   const restored=await act(`const {exportLedgerWorkbook,parseLedgerWorkbook}=await import('/src/io/ledgerWorkbook.ts');const {snapshotViews}=await import('/src/domain/ledgerSnapshot.ts');window.backup=JSON.parse(await testApp.exportBackup());const before=JSON.stringify(snapshotViews(backup));const parsed=await parseLedgerWorkbook(await exportLedgerWorkbook(backup));await testApp.resetAll();await testApp.restoreBackup(JSON.stringify(parsed.snapshot));return {differences:parsed.differences,same:JSON.stringify(snapshotViews(JSON.parse(await testApp.exportBackup())))===before,version:parsed.snapshot.schemaVersion}`)
-  check('JSON与完整Excel保留模式/来源/再拆历史，重复恢复账务一致',restored.same&&restored.version===13&&restored.differences.length===0,JSON.stringify(restored))
+  check('JSON与完整Excel保留模式/来源/再拆历史，重复恢复账务一致',restored.same&&restored.version===14&&restored.differences.length===0,JSON.stringify(restored))
   await act(`await testApp.restoreBackup(JSON.stringify(backup))`)
   check('恢复后仍保留原始两笔记录',await evaluate('JSON.stringify(testApp.records.filter(r=>r.sourceRow===h1||r.sourceRow===h2))===original'))
   // 保存最终12元卖出时只按真实5元成本计算，不重复加策略收益。

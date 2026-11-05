@@ -15,6 +15,7 @@ import type { TradesQuery } from '../../ui/nav'
 import { IconDownload, IconUpload } from '../../ui/icons'
 import { planImport, type ImportChoices } from '../../domain/importPlan'
 import { tradeFacts } from '../../domain/booking'
+import { formatImportIssue, validateImportRecords } from '../../domain/importValidation'
 
 const ANOMALY_LABEL: Record<string, string> = {
   needsPrice: '待补价格',
@@ -57,12 +58,14 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
   const [lastFile, setLastFile] = useState('导入文件.xlsx')
   const [choices, setChoices] = useState<ImportChoices>({})
   const facts = useMemo(() => tradeFacts(records, executions, bookingReceipts), [records, executions, bookingReceipts])
-  const importPlan = useMemo(() => preview ? planImport(records, preview.records, preview.absentFields ?? preview.missingColumns, choices, facts) : null, [records, preview, choices, facts])
-  const initialConflicts = useMemo(() => preview ? planImport(records, preview.records, preview.absentFields ?? preview.missingColumns, {}, facts).conflicts : [], [records, preview, facts])
+  const validationIssues = useMemo(() => preview ? [...(preview.validationIssues ?? []), ...validateImportRecords(preview.records)] : [], [preview])
+  const validPreview = validationIssues.length === 0 ? preview : null
+  const importPlan = useMemo(() => validPreview ? planImport(records, validPreview.records, validPreview.absentFields ?? validPreview.missingColumns, choices, facts) : null, [records, validPreview, choices, facts])
+  const initialConflicts = useMemo(() => validPreview ? planImport(records, validPreview.records, validPreview.absentFields ?? validPreview.missingColumns, {}, facts).conflicts : [], [records, validPreview, facts])
 
   const previewLedger = useMemo(
-    () => (preview ? buildLedger(preview.records, stocks, { deriveSellPrice }) : null),
-    [preview, stocks, deriveSellPrice],
+    () => (validPreview ? buildLedger(validPreview.records, stocks, { deriveSellPrice }) : null),
+    [validPreview, stocks, deriveSellPrice],
   )
   // 异常行跳明细用 nanoId 定位（V9.4），与明细页筛选同源
   const nano = useMemo(() => buildNanoIdIndex(records), [records])
@@ -97,7 +100,10 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
       const p = isCsv ? await parseCsvFile(file) : await parseWorkbookFile(file)
       setPreview(p)
       setLastFile(file.name)
-      notificationOpen({ message: '解析完成', description: `有效 ${p.records.length} 行`, type: 'success' })
+      const issues = [...(p.validationIssues ?? []), ...validateImportRecords(p.records)]
+      notificationOpen(issues.length
+        ? { message: '导入校验未通过', description: `发现 ${issues.length} 处问题，整批不能写入；请查看下方具体行与字段`, type: 'error' }
+        : { message: '解析完成', description: `有效 ${p.records.length} 行`, type: 'success' })
     } catch (e) {
       setPreview(null)
       notificationOpen({ message: '解析失败', description: e instanceof Error ? e.message : String(e), type: 'error' })
@@ -237,11 +243,19 @@ export function ManageImport({ goTrades }: { goTrades: (q: TradesQuery) => void 
           <span className="muted">已成交行也按「买入价+间隔」推定成交价</span>
         </label>
         <p className="hint-block" style={{ margin: '6px 0 0' }}>
-          默认不推定，对齐文档 §03：R44 留「待补价格」，全表盈利 ¥9,830。勾上则 R44 按 19.88 计入，变 ¥10,152。
+          关闭时，缺实际售价的已成交记录显示待补价格；开启后，按买入价＋股票间隔推定。推定价仅用于核算参考，请优先补录实际成交价。
         </p>
       </Card>
 
       {ledgerPreview && <LedgerRestorePreview preview={ledgerPreview} onClose={() => setLedgerPreview(null)} />}
+      {preview && validationIssues.length > 0 && <Card>
+        <div className="stack tight" data-testid="import-quantity-errors" role="alert">
+          <strong>导入校验未通过 · 整批未写入</strong>
+          <p className="hint-block">请按行号、字段和原因修正原文件后重新选择。股数允许空值、0和非负安全整数，日期须有效，金额须在支持范围内；不会自动取整或跳过错误行。</p>
+          {validationIssues.map((issue, i) => <p className="tiny" key={`${issue.sourceRow}-${issue.field}-${i}`}>{formatImportIssue(issue)}</p>)}
+          <Button onClick={() => setPreview(null)}>关闭报告</Button>
+        </div>
+      </Card>}
       {preview && previewLedger && (
         <>
           <Card>
