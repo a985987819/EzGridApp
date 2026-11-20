@@ -77,13 +77,13 @@ export function TradeItem({
   // —— 左滑删除：只在给出 onSwipeDelete 时启用；手指/鼠标都走同一套指针事件 ——
   const REVEAL = 76
   const [dx, setDx] = useState(0)
-  const drag = useRef<{ x: number; y: number; axis: 'x' | 'y' | '?' } | null>(null)
+  const drag = useRef<{ x: number; y: number; axis: 'x' | 'y' | '?'; baseDx: number } | null>(null)
   /** V9.73：滑动后浏览器可能补一个 click，别让它把刚露出的按钮又收回去 */
   const movedRef = useRef(false)
   const suppressClick = useRef(false)
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (!onSwipeDelete || (e.pointerType === 'mouse' && e.button !== 0)) return
-    drag.current = { x: e.clientX, y: e.clientY, axis: '?' }
+    drag.current = { x: e.clientX, y: e.clientY, axis: '?', baseDx: dx }
     movedRef.current = false
   }
   const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -97,8 +97,10 @@ export function TradeItem({
     }
     if (d.axis !== 'x') return
     if (Math.abs(mx) >= 8) movedRef.current = true
+    // V9.74：从当前露出量继续拖——按钮露出后向右滑是连续收回，而不是第一下就弹回去
+    const raw = d.baseDx + mx
     // 已删除行只允许右滑露出「恢复」，未删除行只允许左滑露出「删除」
-    const next = deleted ? Math.min(REVEAL, Math.max(0, mx)) : Math.max(-REVEAL, Math.min(0, mx))
+    const next = deleted ? Math.min(REVEAL, Math.max(0, raw)) : Math.max(-REVEAL, Math.min(0, raw))
     setDx(next)
   }
   const onPointerUp = () => {
