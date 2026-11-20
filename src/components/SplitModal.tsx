@@ -6,6 +6,7 @@ import { inputOrDefault } from '../domain/formDefaults'
 import { enterSubmit } from '../ui/enterSave'
 import { money, price, qty } from '../ui/format'
 import type { BuySplit, SellTarget } from '../domain/types'
+import { SplitExecModal } from './SplitExecModal'
 
 /**
  * V9.66：挂单页行内拆分——不用再跳明细抽屉。
@@ -19,6 +20,8 @@ export function SplitModal(props: { kind: 'buy' | 'sell'; sellRow?: number; lotI
   const { ledger, stocks, addBuyTarget, removeBuyTarget, addExtraTarget, removeExtraTarget } = useApp()
   const [pText, setPText] = useState('')
   const [qText, setQText] = useState('')
+  /** 当前正在记成交的买入档；关掉后本弹窗继续开着，方便把几档逐笔记完 */
+  const [execSplit, setExecSplit] = useState<BuySplit | null>(null)
 
   const order = kind === 'buy' ? ledger.orders.find((o) => o.sourceRow === sellRow) : undefined
   const sell = kind === 'buy' ? ledger.sells.find((s) => s.sourceRow === sellRow) : undefined
@@ -81,6 +84,7 @@ export function SplitModal(props: { kind: 'buy' | 'sell'; sellRow?: number; lotI
   }
 
   return (
+    <>
     <Modal
       open
       title={kind === 'buy' ? '拆分买入' : '拆分卖出'}
@@ -115,6 +119,11 @@ export function SplitModal(props: { kind: 'buy' | 'sell'; sellRow?: number; lotI
                 {b.targetId && (
                   <Button size="small" danger onClick={() => void removeBuyTarget(b.targetId!)}>
                     删除
+                  </Button>
+                )}
+                {b.qty > 0 && (
+                  <Button size="small" data-action="split-exec" onClick={() => setExecSplit(b)}>
+                    记成交
                   </Button>
                 )}
               </div>
@@ -158,5 +167,7 @@ export function SplitModal(props: { kind: 'buy' | 'sell'; sellRow?: number; lotI
         </p>
       </div>
     </Modal>
+    {execSplit && <SplitExecModal split={execSplit} onClose={() => setExecSplit(null)} />}
+    </>
   )
 }

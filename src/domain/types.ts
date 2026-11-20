@@ -175,6 +175,11 @@ export interface SellExecution {
    * 由回本链继续用低位循环的价差去补。hedgedFromSellRow 同时置位（不算卖出量）。
    */
   hedgeClosed?: boolean
+  /**
+   * V9.68：先卖后买已按真实成交全部买回，按单纯做T展示（多笔买入价差），不进回本链。
+   * 纯派生标记，不落库、不改 profitCents。
+   */
+  simpleT?: boolean
 }
 
 /** 计划价（P8）：只挂在页面上与导出里，不动真实成交与任何计算 */

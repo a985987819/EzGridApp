@@ -25,17 +25,24 @@ export function useBookingCheck(scope: string, fact: { side: 'buy' | 'sell'; sto
   }
 }
 
-export function BookingCheck({ check }: { check: ReturnType<typeof useBookingCheck> }) {
+/**
+ * 成交前校验。compact（明细「新增一笔」等弹窗）：上方只留一行回执摘要，
+ * 取消「来源凭据号 / 成交编号」「Excel 行号」相关填写与长提示，把上方区域压到最矮；
+ * 真正必须人工确认的「疑似重复成交」仍完整保留（去重是账务安全闸，不能省）。
+ */
+export function BookingCheck({ check, compact = false }: { check: ReturnType<typeof useBookingCheck>; compact?: boolean }) {
   const { fact } = check
-  return <div className="stack tight booking-check" data-testid="booking-check">
-    <p className="hint-block">本次实际{fact.side === 'buy' ? '买入' : '卖出'} {qty(fact.qty)} 股 × {price(fact.priceCents)}，金额 {money(fact.priceCents === null ? null : fact.priceCents * fact.qty)}。{fact.side === 'buy' && '买回形成库存只算一次，尚未卖出不增加后续回本盈利。'}</p>
-    <label><span>来源凭据号（可选）</span><Input value={check.externalRef} onChange={e => check.setExternalRef(e.target.value)} placeholder="例如：券商名称/成交日期/成交编号" data-field="booking-ref" /></label>
-    <p className="tiny muted">每笔实际成交使用独立成交号；同一委托下的多笔成交需分别填写。</p>
+  return <div className={`stack tight booking-check${compact ? ' compact' : ''}`} data-testid="booking-check">
+    <p className={compact ? 'tiny muted' : 'hint-block'}>本次实际{fact.side === 'buy' ? '买入' : '卖出'} {qty(fact.qty)} 股 × {price(fact.priceCents)}，金额 {money(fact.priceCents === null ? null : fact.priceCents * fact.qty)}。{!compact && fact.side === 'buy' && '买回形成库存只算一次，尚未卖出不增加后续回本盈利。'}</p>
+    {!compact && <>
+      <label><span>来源凭据号（可选）</span><Input value={check.externalRef} onChange={e => check.setExternalRef(e.target.value)} placeholder="例如：券商名称/成交日期/成交编号" data-field="booking-ref" /></label>
+      <p className="tiny muted">每笔实际成交使用独立成交号；同一委托下的多笔成交需分别填写。</p>
+    </>}
     {check.candidates.length > 0 && <div className="hint-block" role="status" data-testid="booking-duplicates">
       <strong>已有同股同日同价同量成交，请先核对</strong>
       {check.candidates.map(c => <div key={c.id} className="tiny" style={{ overflowWrap: 'anywhere' }}>{c.source} · {c.id} · {c.date ?? '日期待补'} · {qty(c.qty)} 股</div>)}
       <label className="row"><input type="checkbox" checked={check.allowed} onChange={e => check.allow(e.target.checked)} data-field="booking-allow-similar" />已核对，确认本次是另一笔真实成交</label>
     </div>}
-    <Button size="small" onClick={() => navigateManage({ section: 'activity' })}>已经记过？查看成交流水，不再新增</Button>
+    {!compact && <Button size="small" onClick={() => navigateManage({ section: 'activity' })}>已经记过？查看成交流水，不再新增</Button>}
   </div>
 }

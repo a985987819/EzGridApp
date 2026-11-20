@@ -543,11 +543,27 @@ export function buildLedger(
    */
   const baseTLots = new Set(allLots.filter(l => l.strategyOrigin?.mode === 'baseT').map(l => l.id))
   const baseTRows = new Set([...gridSales].filter(([, t]) => t.strategy?.mode === 'baseT').map(([row]) => row))
+  /**
+   * V9.68 单纯做T：先卖后买已经按真实成交把卖出份额全部买回（奖励股不算），
+   * 又没挂高位批次——这一笔不再进回本链，只在网格表现里按每笔买价记价差。
+   * 与 baseT 不同，不改写目标价、不生成剩余待卖，只把建链输入里这笔排除。
+   */
+  const execBaseForPureT = new Map<string, number>()
+  for (const e of scopedExecs) execBaseForPureT.set(e.sellExecId, (execBaseForPureT.get(e.sellExecId) ?? 0) + e.qty - e.rewardQty)
+  const pureTRows = new Set<number>()
+  for (const s of sells) {
+    if (s.hedgedFromSellRow !== undefined || !s.sellBeforeBuy || s.qty <= 0) continue
+    // 显式策略档（低位回本 / 底仓做T）本来就归它自己的链，不能按单纯做T摘掉
+    if (gridSales.has(s.sourceRow)) continue
+    if (hedgeLinks.some((h) => h.sellRow === s.sourceRow)) continue
+    if ((s.ownLotCoverQty ?? 0) + (execBaseForPureT.get(s.id) ?? 0) >= s.qty) pureTRows.add(s.sourceRow)
+  }
+  for (const s of sells) if (pureTRows.has(s.sourceRow)) s.simpleT = true
   const chainBuild = buildRepairChains({
     lots: allLots.filter(l => !baseTLots.has(l.id)),
-    sells: sells.filter(s => !baseTRows.has(s.sourceRow) && !baseTRows.has(s.hedgedFromSellRow ?? -1) && (!s.lotId || !baseTLots.has(s.lotId))),
-    executions: scopedExecs.filter(e => !baseTRows.has(Number(e.sellExecId.replace('sell:', '')))),
-    links: opts.chainLinks ?? [],
+    sells: sells.filter(s => !baseTRows.has(s.sourceRow) && !baseTRows.has(s.hedgedFromSellRow ?? -1) && !pureTRows.has(s.sourceRow) && !pureTRows.has(s.hedgedFromSellRow ?? -1) && (!s.lotId || !baseTLots.has(s.lotId))),
+    executions: scopedExecs.filter(e => !baseTRows.has(Number(e.sellExecId.replace('sell:', ''))) && !pureTRows.has(Number(e.sellExecId.replace('sell:', '')))),
+    links: (opts.chainLinks ?? []).filter(l => !pureTRows.has(l.anchorRow) && !l.memberRows.some((r) => pureTRows.has(r))),
     legacyHedgeRows: (opts.hedges ?? []).map((h) => h.sellRow),
   })
   const repairChains = chainBuild.chains

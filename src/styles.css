@@ -372,6 +372,26 @@ button { font-family: inherit; }
 }
 .side-chip.sell { color: var(--up, #d0453f); background: rgba(208, 69, 63, 0.06); }
 
+/* 明细行左滑删除：动作按钮藏在卡片右侧，卡片本体平移露出（竖向手势不拦，仍可滚动） */
+.trade-swipe { position: relative; overflow: hidden; border-radius: 12px; touch-action: pan-y; }
+.trade-swipe[data-swipe='off'] { display: contents; }
+.trade-swipe-action {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 76px;
+  border: 0;
+  border-radius: 0 12px 12px 0;
+  background: var(--up, #d0453f);
+  color: #fff;
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: 1px;
+}
+.trade-swipe-action.restore { background: var(--app-teal, #19c8b9); }
+.trade-swipe-front { position: relative; transition: transform 0.2s ease; will-change: transform; }
+
 .trade-item { display: flex; flex-direction: column; gap: 6px; }
 .trade-item .head { display: flex; align-items: center; gap: 8px; }
 .trade-item .head .name { font-weight: 700; font-size: 15px; }
@@ -593,6 +613,23 @@ button { font-family: inherit; }
 }
 .type-toggle { display: flex; gap: 6px; }
 .type-toggle > * { flex: 1; justify-content: center; }
+/* 新增明细的买入 / 卖出方向标：低饱和红买 / 蓝卖边框，选中态给明显底色（一眼看出） */
+.type-toggle .kind-buy { border-color: rgba(208, 69, 63, 0.45); color: var(--up, #d0453f); }
+.type-toggle .kind-sell { border-color: rgba(47, 111, 214, 0.45); color: var(--buy, #2f6fd6); }
+.type-toggle .kind-buy.on {
+  background: rgba(208, 69, 63, 0.14);
+  border-color: var(--up, #d0453f);
+  box-shadow: inset 0 0 0 1px var(--up, #d0453f);
+  font-weight: 700;
+}
+.type-toggle .kind-sell.on {
+  background: rgba(47, 111, 214, 0.14);
+  border-color: var(--buy, #2f6fd6);
+  box-shadow: inset 0 0 0 1px var(--buy, #2f6fd6);
+  font-weight: 700;
+}
+/* 紧凑回执摘要：新增弹窗上方只占一行 */
+.booking-check.compact > p { margin: 0; line-height: 1.5; }
 
 .grow { flex: 1; min-width: 0; }
 

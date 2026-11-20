@@ -12,7 +12,7 @@ import { isSoldOut } from '../domain/tradeState'
 import { isHedgeable } from '../domain/hedge'
 import type { ManualInput } from '../domain/manual'
 import { inputOrDefault, manualFormDefaults, resolveManualForm } from '../domain/formDefaults'
-import type { RawRecord, RepairChain } from '../domain/types'
+import type { BuySplit, RawRecord, RepairChain } from '../domain/types'
 import { isoDate, money, price, qty, signedMoney, todayIso, tone } from '../ui/format'
 import { replaceRoute, type TradesQuery } from '../ui/nav'
 import { buildNanoIdIndex } from '../ui/nanoid'
@@ -36,6 +36,8 @@ import { RepairChainCard } from '../components/RepairChainCard'
 import { ChainBinder } from '../components/ChainBinder'
 import { BookingCheck, useBookingCheck } from '../components/BookingCheck'
 import { TradeFilterTools } from '../components/TradeFilterTools'
+import { SplitExecModal } from '../components/SplitExecModal'
+import { isSimpleT, simpleTProfitCents } from '../domain/simpleT'
 
 /** 状态筛选可多选（V9 可叠加）：命中的行要满足每一个勾选的状态 */
 const STATUS_KEYS = ['holding', 'soldout', 'pending', 'exposure', 'buyDateMissing', 'sellDateMissing', 'needsPrice'] as const
@@ -223,6 +225,8 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   /** V9.50 卖单拆买的输入（先卖后买 → 多笔买入） */
   const [bpPrice, setBpPrice] = useState('')
   const [bpQty, setBpQty] = useState('')
+  /** 买入拆分档「记成交」：关掉只关成交弹窗，详情抽屉继续开着，方便逐档记完 */
+  const [execSplit, setExecSplit] = useState<BuySplit | null>(null)
 
   /**
    * V9.51 用户拍板：拆分默认量 = **还能拆的量**（剩余 − 已经拆出去的档），
@@ -466,6 +470,9 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   const current = visible.find((r) => r.rec.sourceRow === openRow) ?? null
   const editCheck = useBookingCheck('backfill', { side: 'buy', stockName: current?.rec.stockName ?? '', date: serialToIso(isoToSerial(draft.buyDate)), priceCents: toCents(draft.buyPrice), qty: Number(draft.buyQty) }, [openRow, draft])
   const drawerOpen = current !== null
+  /** V9.68：这一行是否已按多笔真实买入买回全部卖出份额——只做展示口径，不改总账 */
+  const currentPureT = current !== null && current.sell !== null && isSimpleT(current.rec.sourceRow, ledger)
+  const currentPureTProfit = current !== null && current.sell !== null && currentPureT ? simpleTProfitCents(current.sell) : null
 
   /**
    * V9.62 拆分价缺省推导：**能推出来的价都当 placeholder + 留空默认值**，理想情况拆一档只需要点确认。
@@ -915,11 +922,14 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
         </Card>
       ) : (
         visible.map((r) => {
+          // V9.68：先卖后买已按真实成交买回全部份额 → 单纯做T，不再挂回本链/挂钩标签
+          const pureT = r.sell !== null && isSimpleT(r.rec.sourceRow, ledger)
+          const pureTProfit = pureT && r.sell ? simpleTProfitCents(r.sell) : null
           // V9.30 挂钩状态标签（可点）：先卖后买 → 「裸卖待挂钩」/「已挂钩 · 改挂」，
           // 点一下直接弹绑定面板（不用先开抽屉）；被挂的高位批次 → 「挂钩暂记 · 原目标 x」
           // V9.33：这条挂钩有异常（失效 / 超挂 / 挂不满）→ 标签变红，点进去看红条
           let hedgeTag: ReactNode = null
-          if (hedgeableRows.has(r.rec.sourceRow)) {
+          if (!pureT && hedgeableRows.has(r.rec.sourceRow)) {
             const linked = hedgeOf.has(r.rec.sourceRow)
             const broken = hedgeIssues.has(r.rec.sourceRow)
             hedgeTag = (
@@ -957,9 +967,15 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
           const anchorChain = repairByAnchor.get(r.rec.sourceRow)
           const memberChain = repairByMember.get(r.rec.sourceRow)
           const isBranch = branchRows.has(r.rec.sourceRow)
-          const chainTag: ReactNode = hedgeTag
-            ? null
-            : anchorChain
+          const chainTag: ReactNode = pureT
+            ? (
+              <Tag size="small" variant="soft" color="app-teal">
+                单纯做T{pureTProfit !== null ? ` · ${signedMoney(pureTProfit)}` : ''}
+              </Tag>
+            )
+            : hedgeTag
+              ? null
+              : anchorChain
               ? (
                 <Tag size="small" variant="soft" color={anchorChain.done ? 'app-green' : 'app-red'}>
                   {anchorChain.unlinkedQty ? '回本链 · 待关联高位买单' : anchorChain.done ? '回本链 · 已不亏钱' : `回本链 · 还差 ${money(anchorChain.gapCents)}`}
@@ -988,8 +1004,13 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
               // 自动归链后仍保留改挂入口；其它成员显示回本链标签。
               extraTag={hedgeTag ?? chainTag}
               anim={anim}
-              chain={anchorChain ? 'anchor' : memberChain ? (isBranch ? 'branch' : 'member') : undefined}
+              chain={pureT ? undefined : anchorChain ? 'anchor' : memberChain ? (isBranch ? 'branch' : 'member') : undefined}
               levelProfit={levelProfitOf(r)}
+              onSwipeDelete={() => {
+                // 行上左滑直接删/恢复：不必先打开详情抽屉。已删除行露出的是「恢复」。
+                if (r.rec.deletedAt) void onRestore(r.rec.sourceRow)
+                else void onDelete(r.rec.sourceRow)
+              }}
             />
           )
         })
@@ -1102,49 +1123,17 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
               </>
             ) : (
               <>
-                <div className="detail-kv">
-                  <div className="item">
-                    <div className="k">买入日期</div>
-                    <div className="v">{isoDate(current.lot?.buyDate ?? serialToIso(current.rec.buyDateSerial))}</div>
+                {currentPureT && (
+                  <div className="hint-block" data-testid="simple-t-profit">
+                    <strong>单纯做T · {signedMoney(currentPureTProfit)}</strong>
+                    <p className="tiny muted" style={{ margin: '4px 0 0' }}>
+                      卖出份额已由多笔真实买入全部买回，这一笔按每笔实际买入价分别算价差；
+                      不再计入回本链、挂钩或奖励池。
+                    </p>
                   </div>
-                  <div className="item">
-                    <div className="k">买入价 / 份额</div>
-                    <div className="v">
-                      {price(current.rec.buyPriceCents)} / {qty(current.lot?.qty ?? current.rec.buyQtyRaw)}
-                    </div>
-                  </div>
-                  <div className="item">
-                    <div className="k">目标售价</div>
-                    <div className="v">{price(current.lot?.targetPriceCents ?? current.rec.targetPriceCents)}</div>
-                  </div>
-                  <div className="item">
-                    <div className="k">回补价 P</div>
-                    <div className="v">{price(current.rec.earlyBuyPriceCents)}</div>
-                  </div>
-                  <div className="item">
-                    <div className="k">已卖 / 剩余</div>
-                    <div className="v">
-                      {qty(current.rec.soldQty)} / {current.lot ? qty(current.lot.remainingQty) : '—'}
-                    </div>
-                  </div>
-                  <div className="item">
-                    <div className="k">成交价</div>
-                    <div className="v">{price(current.sell?.priceCents)}</div>
-                  </div>
-                  <div className="item">
-                    <div className="k">卖出日期</div>
-                    <div className="v">{current.sell ? isoDate(current.sell.soldAt) : '—'}</div>
-                  </div>
-                  <div className="item">
-                    <div className="k">实现盈利</div>
-                    <div className={`v ${tone(current.sell?.profitCents ?? null)}`}>
-                      {signedMoney(current.sell?.profitCents)}
-                    </div>
-                  </div>
-                </div>
-
-                {levelProfitOf(current) && !current.rec.deletedAt && <LevelProfit {...levelProfitOf(current)!} />}
-                {current.sell?.hedgedHold === true && (
+                )}
+                {!currentPureT && levelProfitOf(current) && !current.rec.deletedAt && <LevelProfit {...levelProfitOf(current)!} />}
+                {!currentPureT && current.sell?.hedgedHold === true && (
                   <p className="tiny muted" style={{ margin: '0 0 4px' }}>
                     已挂钩：盈利暂缓计算——买回后由高位批次按卖出价了结，亏损进「回本链」，
                     靠低位继续做T的价差冲平；一直不买回则挂钩暂记就是真实亏损。
@@ -1303,6 +1292,11 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                                 删除
                               </Button>
                             )}
+                            {b.qty > 0 && (
+                              <Button size="small" data-action="split-exec" onClick={() => setExecSplit(b)}>
+                                记成交
+                              </Button>
+                            )}
                           </div>
                         ))
                       })()}
@@ -1364,7 +1358,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                 <LotMergeBinder key={`merge-${current.rec.sourceRow}`} row={current.rec.sourceRow} />
 
                 {/* V9.26 先卖后买挂钩：裸卖未回补时人工指定未完成买单（V9.30 面板抽成 HedgeBinder） */}
-                {isHedgeable(current.rec, 0) && (
+                {!currentPureT && isHedgeable(current.rec, 0) && (
                   <div className="divider-top" data-testid="hedge-section">
                     <div className="sec-head sm">
                       <strong>裸卖待挂钩</strong>
@@ -1376,7 +1370,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                 )}
 
                 {/* V9.46 回本链：亏损清仓当场成链，进度只累计归属交易的已实现净盈利 */}
-                {(repairByAnchor.has(current.rec.sourceRow) ||
+                {!currentPureT && (repairByAnchor.has(current.rec.sourceRow) ||
                   repairBySell.has(current.rec.sourceRow) ||
                   repairByMember.has(current.rec.sourceRow)) && (
                   <div className="divider-top" data-testid="chain-section">
@@ -1432,6 +1426,53 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                     </ul>
                   )}
                 </div>
+
+                {/* 买入日期→实现盈利两列是回溯数据，用户口径：挪到弹窗最下方，上方先给可操作/关键信息 */}
+                <div className="divider-top detail-kv-wrap">
+                  <div className="sec-head sm">
+                    <strong>成交数据</strong>
+                  </div>
+                  <div className="detail-kv">
+                    <div className="item">
+                      <div className="k">买入日期</div>
+                      <div className="v">{isoDate(current.lot?.buyDate ?? serialToIso(current.rec.buyDateSerial))}</div>
+                    </div>
+                    <div className="item">
+                      <div className="k">买入价 / 份额</div>
+                      <div className="v">
+                        {price(current.rec.buyPriceCents)} / {qty(current.lot?.qty ?? current.rec.buyQtyRaw)}
+                      </div>
+                    </div>
+                    <div className="item">
+                      <div className="k">目标售价</div>
+                      <div className="v">{price(current.lot?.targetPriceCents ?? current.rec.targetPriceCents)}</div>
+                    </div>
+                    <div className="item">
+                      <div className="k">回补价 P</div>
+                      <div className="v">{price(current.rec.earlyBuyPriceCents)}</div>
+                    </div>
+                    <div className="item">
+                      <div className="k">已卖 / 剩余</div>
+                      <div className="v">
+                        {qty(current.rec.soldQty)} / {current.lot ? qty(current.lot.remainingQty) : '—'}
+                      </div>
+                    </div>
+                    <div className="item">
+                      <div className="k">成交价</div>
+                      <div className="v">{price(current.sell?.priceCents)}</div>
+                    </div>
+                    <div className="item">
+                      <div className="k">卖出日期</div>
+                      <div className="v">{current.sell ? isoDate(current.sell.soldAt) : '—'}</div>
+                    </div>
+                    <div className="item">
+                      <div className="k">{currentPureT ? '做T盈利' : '实现盈利'}</div>
+                      <div className={`v ${tone(currentPureT ? currentPureTProfit : current.sell?.profitCents ?? null)}`}>
+                        {signedMoney(currentPureT ? currentPureTProfit : current.sell?.profitCents)}
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </>
             )}
           </div>
@@ -1455,16 +1496,20 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
         }
       >
         <div className="stack tight" onKeyDown={enterSubmit(() => void onAdd())}>
-          <BookingCheck check={addCheck} />
-          <div className="type-toggle">
+          {/* 上方只留一行回执摘要：取消编号/行号填写，把位置让给真正要填的字段 */}
+          <BookingCheck check={addCheck} compact />
+          {/* 红买蓝卖：低饱和边框 + 选中态明显背景，一眼看出当前方向 */}
+          <div className="type-toggle" role="group" aria-label="成交方向">
             <Button
-              type={form.kind === 'buy' ? 'primary' : 'default'}
+              className={`kind-buy${form.kind === 'buy' ? ' on' : ''}`}
+              aria-pressed={form.kind === 'buy'}
               onClick={() => setForm({ ...form, kind: 'buy' })}
             >
               买入
             </Button>
             <Button
-              type={form.kind === 'sell' ? 'primary' : 'default'}
+              className={`kind-sell${form.kind === 'sell' ? ' on' : ''}`}
+              aria-pressed={form.kind === 'sell'}
               onClick={() => setForm({ ...form, kind: 'sell' })}
             >
               卖出
@@ -1586,11 +1631,14 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
             )}
             <p className="tiny muted" style={{ margin: 0 }}>
               留空采用框内默认值；选填买入信息全部留空时不新增买入，开始填写后其余项采用默认值。
-              新增后和导入的数据完全同构，按录入顺序编号；Excel 行号只在抽屉里做追溯。
+              股票已按当前标签页预选，可下拉更改。
             </p>
           </div>
         </div>
       </Modal>
+
+      {/* V9.68：买入拆分的「记成交」——档位身份交给 split.key，成功后只关本弹窗，方便逐档记完 */}
+      {execSplit && <SplitExecModal split={execSplit} onClose={() => setExecSplit(null)} />}
     </div>
   )
 }

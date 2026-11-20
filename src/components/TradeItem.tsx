@@ -5,7 +5,7 @@
  * 红 = 待卖（目标价 / 剩余量），蓝 = 待回补买（买入 / 回补价 + 量），已完成不标色。
  */
 import { Card, Tag } from 'animal-island-ui'
-import type { ReactNode } from 'react'
+import { useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import type { GroupPool } from '../domain/types'
 import { LevelProfit } from './LevelProfit'
 import { serialToIso } from '../domain/defaults'
@@ -33,6 +33,7 @@ export function TradeItem({
   anim,
   chain,
   levelProfit,
+  onSwipeDelete,
 }: {
   row: TradeRow
   /** 第几笔（V9.43 统一身份：导入与应用内新增一样） */
@@ -51,6 +52,11 @@ export function TradeItem({
    */
   chain?: 'anchor' | 'member' | 'branch'
   levelProfit?: { priceCents: number; group?: GroupPool }
+  /**
+   * 左滑露出的删除动作（明细页传；价格树 hover 浮层不传，保持只读）。
+   * 不需要先打开详情抽屉就能删；原生拖拽/触摸都支持，竖向滚动不受影响。
+   */
+  onSwipeDelete?: () => void
 }) {
   const { rec, lot, sell } = row
   const deleted = Boolean(rec.deletedAt)
@@ -61,7 +67,70 @@ export function TradeItem({
   // V9.26.1 状态区分：文字一律默认色；待卖（红）/待买（蓝）用左边框 + 右下角挂单角标表达
   const stateCls = holding ? ' pending-sell' : awaitingBuy ? ' pending-buy' : ''
   const targetP = lot?.targetPriceCents ?? rec.targetPriceCents
+
+  // —— 左滑删除：只在给出 onSwipeDelete 时启用；手指/鼠标都走同一套指针事件 ——
+  const REVEAL = 76
+  const [dx, setDx] = useState(0)
+  const drag = useRef<{ x: number; y: number; axis: 'x' | 'y' | '?' } | null>(null)
+  const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!onSwipeDelete || (e.pointerType === 'mouse' && e.button !== 0)) return
+    drag.current = { x: e.clientX, y: e.clientY, axis: '?' }
+  }
+  const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const d = drag.current
+    if (!d) return
+    const mx = e.clientX - d.x
+    const my = e.clientY - d.y
+    if (d.axis === '?') {
+      if (Math.abs(mx) < 8 && Math.abs(my) < 8) return
+      d.axis = Math.abs(mx) > Math.abs(my) ? 'x' : 'y'
+    }
+    if (d.axis !== 'x') return
+    // 已删除行只允许右滑露出「恢复」，未删除行只允许左滑露出「删除」
+    const next = deleted ? Math.min(REVEAL, Math.max(0, mx)) : Math.max(-REVEAL, Math.min(0, mx))
+    setDx(next)
+  }
+  const onPointerUp = () => {
+    if (!drag.current) return
+    drag.current = null
+    setDx((cur) => (Math.abs(cur) >= REVEAL / 2 ? (deleted ? REVEAL : -REVEAL) : 0))
+  }
+  const revealed = Math.abs(dx) >= REVEAL / 2
+
   return (
+    <div
+      className="trade-swipe"
+      data-swipe={onSwipeDelete ? 'enabled' : 'off'}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
+    >
+      {onSwipeDelete && revealed && (
+        <button
+          type="button"
+          className={`trade-swipe-action${deleted ? ' restore' : ''}`}
+          onClick={(e) => {
+            e.stopPropagation()
+            setDx(0)
+            onSwipeDelete()
+          }}
+        >
+          {deleted ? '恢复' : '删除'}
+        </button>
+      )}
+      <div
+        className="trade-swipe-front"
+        style={{ transform: `translateX(${dx}px)`, transition: drag.current ? 'none' : undefined }}
+        onClickCapture={(e) => {
+          // 捕获阶段拦截：露出动作时先收起、不误开详情；滑过也不把这次点击当「打开」。
+          // 必须 capture——冒泡阶段 Card 的 onClick 已经先把抽屉打开了。
+          if (dx !== 0) {
+            e.stopPropagation()
+            setDx(0)
+          }
+        }}
+      >
     <Card
       hoverable={Boolean(onClick)}
       onClick={onClick}
@@ -133,5 +202,7 @@ export function TradeItem({
         )}
       </div>
     </Card>
+      </div>
+    </div>
   )
 }
