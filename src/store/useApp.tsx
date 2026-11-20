@@ -18,6 +18,7 @@ import { buildNextRoundBuyRows } from '../domain/buyBoard'
 import { consumedNextRounds, type BuySource } from '../domain/suggestions'
 import { allocateRewardPurchase, rewardBudget } from '../domain/rewardPurchase'
 import { isoToSerial } from '../domain/edit'
+import { centsToYuan } from '../domain/money'
 import { serialToIso } from '../domain/defaults'
 import { buildLedger } from '../domain/ledger'
 import { buildLadder, strategySales, type GridMode, type LadderInput } from '../domain/gridStrategy'
@@ -1051,16 +1052,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const records = await db.records.toArray(), targets = await db.extraTargets.toArray()
       const rec = records.find(r=>r.sourceRow===row&&!r.deletedAt)
       if (!rec || rec.soldLotId) throw new Error('只支持先卖后买的行；来源批次的子卖出请在拆档时选择模式')
-      // 已发生的回补成交不改写归属；本行自己的买入（先卖后买的回补侧）不算外部成交。
-      if ((await db.rebuyExecutions.where('sellExecId').equals(`sell:${row}`).count())>0) throw new Error('已有回补成交，不能改写模式；请先核对并撤销后续依赖')
       const id=`grid-mode:${row}`
       if (mode==='repair') {
         // 回本链是默认模式：删掉标记档，后续按最高成本高位批次自动关联。
+        // V9.70：允许从底仓做T切回（即使已经记过回补），份额与成交记录都不改。
         await db.extraTargets.delete(id)
       } else {
         const {ledger:l}=await currentLedger()
         const sell=l.sells.find(s=>s.sourceRow===row&&s.hedgedFromSellRow===undefined)
-        if ((sell?.actualRebuyQty??0) - (sell?.ownLotCoverQty??0) > 0) throw new Error('已有真实买入覆盖该先卖单，不能改写已发生的策略归属')
         // 只有回本链需要关联高位买单；底仓做T默认不关联。
         // 若原来人工挂过唯一一个高位批次，就把那份底仓卖出关系保留下来（仅用于库存扣减），
         // 但不参与回本链；多批次无法用一个模式档表达，要求先合并或解除。
@@ -1071,9 +1070,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const lotId=hedgeLot && hedgeLot.sourceRow!==row ? hedgeLot.id : ownLot ? ownLot.id : `lot:${row}`
         const order=l.orders.find(o=>o.sourceRow===row)
         const sellPrice=rec.targetPriceCents ?? sell?.priceCents ?? null
-        const rebuyPrice=order?.rebuyPriceCents ?? sell?.rebuyPriceCents ?? null
         if (sellPrice===null || !Number.isSafeInteger(sellPrice) || sellPrice<=0) throw new Error('缺少原卖出价，无法计算底仓做T')
-        if (rebuyPrice===null || !Number.isSafeInteger(rebuyPrice) || rebuyPrice<=0) throw new Error('缺少回补价，无法生成待买')
+        /**
+         * V9.70：切到底仓做T时，把还没回补的份额直接落到待买清单。
+         * 买入价默认 = 这笔先卖后买的卖出价 − 该股默认间隔；写进 P 列后可在明细编辑里改。
+         * 已有 P 列则尊重原值；已经全部买回的没有待买，不需要生成。
+         */
+        const remaining=await (async () => {
+          // 底仓做T不认回本链的「同价真实买入覆盖」，待买量 = 卖出量 − 本行买入 − 已成交基础股
+          const execs=await db.rebuyExecutions.where('sellExecId').equals(`sell:${row}`).toArray()
+          const execBase=execs.reduce((a,e)=>a+e.qty-e.rewardQty,0)
+          return Math.max(0,(sell?.qty??rec.soldQty??0)-(sell?.ownLotCoverQty??0)-execBase)
+        })()
+        const stocks=await db.stocks.toArray()
+        const interval=stocks.find(s=>s.name===rec.stockName)?.intervalCents??0
+        const defaultRebuy=sellPrice-interval
+        let p=rec.earlyBuyPriceCents
+        if (p===null && remaining>0 && interval>0 && defaultRebuy>0) {
+          p=defaultRebuy
+          await db.records.put({...rec,earlyBuyPriceCents:p,rebuyPriceSource:'custom'})
+          await db.auditLogs.add(audit(`record:${row}`,'回补价 P','（空）',centsToYuan(p),'grid'))
+        }
+        const rebuyPrice=p ?? order?.rebuyPriceCents ?? sell?.rebuyPriceCents ?? null
+        if (rebuyPrice===null || !Number.isSafeInteger(rebuyPrice) || rebuyPrice<=0) throw new Error('缺少回补价，无法生成待买；请先填 P 列或设置该股间隔')
         // 买回后恢复目标：有关联/同行底仓时用它自己的原目标价，没有底仓才回到这次卖价。
         const nextSellPrice=hedgeLot?.targetPriceCents ?? ownLot?.targetPriceCents ?? sellPrice
         // 模式档只做身份标记（qty 0）：买回后按原目标价恢复底仓，不写回本链。

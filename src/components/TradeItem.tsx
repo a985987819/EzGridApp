@@ -33,6 +33,7 @@ export function TradeItem({
   anim,
   chain,
   levelProfit,
+  profitCents,
   onSwipeDelete,
 }: {
   row: TradeRow
@@ -52,6 +53,8 @@ export function TradeItem({
    */
   chain?: 'anchor' | 'member' | 'branch'
   levelProfit?: { priceCents: number; group?: GroupPool }
+  /** V9.70：底仓做T 的已实现价差；传 null/数字时覆盖右上角盈利显示（undefined = 用原 sell 盈利） */
+  profitCents?: number | null
   /**
    * 左滑露出的删除动作（明细页传；价格树 hover 浮层不传，保持只读）。
    * 不需要先打开详情抽屉就能删；原生拖拽/触摸都支持，竖向滚动不受影响。
@@ -143,9 +146,12 @@ export function TradeItem({
         <Tag size="small" variant="soft">{no == null ? '记录' : `第 ${no} 笔`}</Tag>
         <span className="name">{rec.stockName}</span>
         <div className="spacer" />
-        <span className={`profit ${tone(sell?.profitCents ?? null)}`}>
-          {/* V9.33：被全额挂住的裸卖盈利暂缓——写「暂缓」比写「—」更像回事 */}
-          {sell ? (sell.hedgedHold ? '暂缓' : signedMoney(sell.profitCents)) : '—'}
+        <span className={`profit ${tone(profitCents !== undefined ? profitCents : sell?.profitCents ?? null)}`}>
+          {/* V9.33：被全额挂住的裸卖盈利暂缓——写「暂缓」比写「—」更像回事
+              V9.70：底仓做T 用已实现价差覆盖（没有成交时显示 —） */}
+          {profitCents !== undefined
+            ? signedMoney(profitCents)
+            : sell ? (sell.hedgedHold ? '暂缓' : signedMoney(sell.profitCents)) : '—'}
         </span>
       </div>
       {/* 中部信息一律默认色（V9.26.1）：方向语义交给左边框与右下角挂单角标 */}

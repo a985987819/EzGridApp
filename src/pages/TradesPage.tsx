@@ -1006,11 +1006,11 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
             : isBaseT
               ? (
                 <Tag size="small" variant="soft" color="app-red">
-                  {baseTSummary && baseTSummary.remainingQty > 0
-                    ? `底仓做T · 剩 ${qty(baseTSummary.remainingQty)} 股待买`
-                    : baseTSummary?.profitCents != null
-                      ? `底仓做T · 已实现 ${signedMoney(baseTSummary.profitCents)}`
-                      : '底仓做T'}
+                  {[
+                    '底仓做T',
+                    baseTSummary?.profitCents != null ? `已实现 ${signedMoney(baseTSummary.profitCents)}` : '',
+                    baseTSummary && baseTSummary.remainingQty > 0 ? `剩 ${qty(baseTSummary.remainingQty)} 待买` : '',
+                  ].filter(Boolean).join(' · ')}
                 </Tag>
               )
               : hedgeTag
@@ -1045,6 +1045,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
               extraTag={hedgeTag ?? chainTag}
               anim={anim}
               chain={pureT || isBaseT ? undefined : anchorChain ? 'anchor' : memberChain ? (isBranch ? 'branch' : 'member') : undefined}
+              profitCents={isBaseT ? baseTSummary?.profitCents ?? null : undefined}
               levelProfit={levelProfitOf(r)}
               onSwipeDelete={() => {
                 // 行上左滑直接删/恢复：不必先打开详情抽屉。已删除行露出的是「恢复」。
@@ -1210,13 +1211,16 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                 {currentBaseT && currentBaseTSummary && (
                   <div className="hint-block" data-testid="base-t-summary">
                     <strong>
-                      {currentBaseTSummary.remainingQty > 0
-                        ? `底仓做T · 剩余 ${qty(currentBaseTSummary.remainingQty)} 股待买`
-                        : `底仓做T · 已实现 ${signedMoney(currentBaseTSummary.profitCents)}`}
+                      {currentBaseTSummary.profitCents != null
+                        ? `底仓做T · 已实现 ${signedMoney(currentBaseTSummary.profitCents)}`
+                        : '底仓做T · 还没买回'}
                     </strong>
                     <p className="tiny muted" style={{ margin: '4px 0 0' }}>
                       不关联高位买入，也不计入回本链：卖出后按实际买回价结算价差；
-                      买回后按原卖出价恢复目标。{currentBaseTSummary.boughtQty > 0 ? `已买回 ${qty(currentBaseTSummary.boughtQty)} 股。` : '还没买回。'}
+                      买回后按原卖出价恢复目标。
+                      {currentBaseTSummary.remainingQty > 0
+                        ? `剩余 ${qty(currentBaseTSummary.remainingQty)} 股已放入待买清单，可到挂单页改单或在这里编辑回补价 P。`
+                        : `已全部买回 ${qty(currentBaseTSummary.boughtQty)} 股。`}
                     </p>
                   </div>
                 )}
@@ -1553,9 +1557,9 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                       <div className="v">{current.sell ? isoDate(current.sell.soldAt) : '—'}</div>
                     </div>
                     <div className="item">
-                      <div className="k">{currentPureT ? '做T盈利' : '实现盈利'}</div>
-                      <div className={`v ${tone(currentPureT ? currentPureTProfit : current.sell?.profitCents ?? null)}`}>
-                        {signedMoney(currentPureT ? currentPureTProfit : current.sell?.profitCents)}
+                      <div className="k">{currentPureT || currentBaseT ? '做T盈利' : '实现盈利'}</div>
+                      <div className={`v ${tone(currentPureT ? currentPureTProfit : currentBaseT ? currentBaseTSummary?.profitCents ?? null : current.sell?.profitCents ?? null)}`}>
+                        {signedMoney(currentPureT ? currentPureTProfit : currentBaseT ? currentBaseTSummary?.profitCents ?? null : current.sell?.profitCents)}
                       </div>
                     </div>
                   </div>
