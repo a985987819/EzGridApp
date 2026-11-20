@@ -344,26 +344,20 @@ function price2(cents: number | null): string {
   return cents === null ? '—' : (cents / 100).toFixed(2)
 }
 
-/** 网格收益日历：普通盈利按卖出日，先卖后买价差按全回补完成日。 */
+/** 东八区（Asia/Shanghai）的今天：设备时区不是北京时间时也能精准定位日历。 */
+function shanghaiTodayIso(): string {
+  return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10)
+}
+
+/** 网格收益日历：普通盈利按卖出日，先卖后买价差按全回补完成日；底仓做T按卖出日、逐笔显示。 */
 function CalendarCard({ goTrades, statistics, rowToId }: { goTrades: (q: TradesQuery) => void; statistics: TradingStatistics; rowToId: ReadonlyMap<number, string> }) {
   const { recordNo } = useApp()
-  const today = new Date()
-  // 本地时区的今天：toISOString 是 UTC，东八区早上 8 点前会落到昨天
-  const localIso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
-  // V9.65：翻过的年月记在 localStorage——切页回来不重置（数据保持稳定，少一次重新翻）
-  const CAL_KEY = 'ezgrid.statsCal'
-  const [panel, setPanelState] = useState(
-    () => localStorage.getItem(CAL_KEY) ?? `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`,
-  )
-  const setPanel = (m: string) => {
-    setPanelState(m)
-    try {
-      localStorage.setItem(CAL_KEY, m)
-    } catch {
-      /* 隐私模式写不进就算了 */
-    }
-  }
-  const [selected, setSelected] = useState(localIso)
+  // V9.72：按东八区定位「今天」；每次打开统计页都回到今天所在月份，
+  // 不再沿用上一次翻到的月份（原 localStorage 记忆会让日历停在旧月份）。
+  const todayIso = shanghaiTodayIso()
+  const todayMonth = todayIso.slice(0, 7)
+  const [panel, setPanel] = useState(todayMonth)
+  const [selected, setSelected] = useState(todayIso)
 
   // 年 / 月累计盈利跟随日历面板（V9.10）：翻月 / 翻年就重算，不再钉死今天。
   // 与日历和月度列表共用同一收益视图，未知确认日期不进累计。
@@ -410,7 +404,7 @@ function CalendarCard({ goTrades, statistics, rowToId }: { goTrades: (q: TradesQ
         )}
       </div>
       <p className="tiny muted" data-testid="stats-basis" style={{ margin: '0 0 8px' }}>
-        先买后卖仅计盈利；先卖后买全部回补后，在完成日计实际价差。此处网格收益不等于总账盈亏，高位亏损保留在总账和回本链。
+        先买后卖仅计盈利；底仓做T的先卖后买按卖出日、以已买回部分计实际价差（每笔卖出单独显示）；其余先卖后买全部回补后，在完成日计实际价差。此处网格收益不等于总账盈亏，高位亏损保留在总账和回本链。
         {statistics.pendingRebuyCount > 0 && <> 另有 {statistics.pendingRebuyCount} 笔尚未全部回补，暂不统计。</>}
         {statistics.unpricedCount > 0 && <> {statistics.unpricedCount} 笔待核对实际成交价，暂不统计。</>}
       </p>
@@ -440,7 +434,7 @@ function CalendarCard({ goTrades, statistics, rowToId }: { goTrades: (q: TradesQ
           <span className="tiny muted">{selected}</span>
           <div className="spacer" />
           <span className="tiny muted">{daySells.length} 笔确认</span>
-          <Button size="small" type="text" disabled={daySells.length === 0} onClick={() => goTrades(daySells.some(event => event.kind === 'rebuy')
+          <Button size="small" type="text" disabled={daySells.length === 0} onClick={() => goTrades(daySells.some(event => event.kind === 'rebuy' || event.kind === 'baseT')
             ? eventQuery(daySells, rowToId) : { from: selected, to: selected, showDone: true })}>
             看这天明细
           </Button>
@@ -459,11 +453,12 @@ function CalendarCard({ goTrades, statistics, rowToId }: { goTrades: (q: TradesQ
               >
                 <div className="left">
                   <div className="t1" style={{ fontSize: 13 }}>
-                    <span className={`side-chip ${s.kind === 'rebuy' ? 'buy' : 'sell'}`}>{s.kind === 'rebuy' ? '回补完成' : '卖出'}</span>
+                    <span className={`side-chip ${s.kind === 'rebuy' ? 'buy' : 'sell'}`}>{s.kind === 'rebuy' ? '回补完成' : s.kind === 'baseT' ? '底仓做T' : '卖出'}</span>
                     {s.stockName} · {price2(s.sellPriceCents)} × {s.qty}
                   </div>
-                  <div className="t2">{s.sourceRows.map(row => recordNoLabel(row, recordNo)).join('、')} · {s.kind === 'rebuy' ? '实际买回均价' : '买入成本'} {price2(s.buyPriceCents)}</div>
+                  <div className="t2">{s.sourceRows.map(row => recordNoLabel(row, recordNo)).join('、')} · {s.kind === 'rebuy' ? '实际买回均价' : s.kind === 'baseT' ? '做T买回均价' : '买入成本'} {price2(s.buyPriceCents)}</div>
                   {s.kind === 'rebuy' && <div className="tiny muted">原卖出日 {s.originalSoldAt ?? '待补日期'} · 本日全部回补</div>}
+                  {s.kind === 'baseT' && <div className="tiny muted">按卖出日 {s.date ?? '待补日期'} 计入 · 已买回 {s.qty} 股</div>}
                 </div>
                 <div className={`right num ${tone(s.profitCents)}`} style={{ fontWeight: 700 }}>
                   {signedMoney(s.profitCents)}

@@ -1,10 +1,12 @@
 import type { BookingReceipt } from './booking'
+import { baseTRowSummary } from './gridStrategy'
 import { isSellFirst } from './sellFirst'
 import type { DayBucket, Ledger, MonthlyBucket, RawRecord } from './types'
 
 export interface StatisticsEvent {
   id: string
-  kind: 'sale' | 'rebuy'
+  /** sale = 正常盈利卖出；rebuy = 先卖后买全部回补；baseT = 底仓做T的已实现价差 */
+  kind: 'sale' | 'rebuy' | 'baseT'
   stockName: string
   sourceRows: number[]
   date: string | null
@@ -49,10 +51,33 @@ export function buildTradingStatistics(
     const record = recordByRow.get(sell.sourceRow)!
     // repair 的低位后续卖出也继承 sellBeforeBuy 标记，但已完成的是正常买入后卖出。
     const lowRepairSale = sell.lotId !== null && lotById.get(sell.lotId)?.strategyOrigin?.mode === 'repair'
-    const rebuy = isSellFirst(record) || (sell.sellBeforeBuy && !lowRepairSale)
+    const sellFirst = isSellFirst(record) || (sell.sellBeforeBuy && !lowRepairSale)
+    /**
+     * V9.72：显式「底仓做T」的先卖后买按**卖出日期**记录已实现做T价差。
+     * 与普通先卖后买不同，这里不要求全部回补：买回多少就结算多少，每笔卖出单独一条；
+     * 点击日历明细直接定位到这笔卖出（sourceRows 只放本行）。
+     */
+    if (isSellFirst(record) && sell.strategyMode === 'baseT') {
+      const fills = sell.actualRebuyFills ?? []
+      const summary = baseTRowSummary(sell)
+      if (summary.boughtQty <= 0) continue
+      if (sell.priceCents === null || fills.some((fill) => fill.priceCents === null)) { unpricedCount++; continue }
+      const qty = summary.boughtQty
+      const buyAmountCents = fills.reduce((sum, fill) => sum + fill.qty * fill.priceCents!, 0)
+      const sellAmountCents = sell.priceCents * qty
+      if (![buyAmountCents, sellAmountCents].every(Number.isSafeInteger) || qty <= 0) { unpricedCount++; continue }
+      const date = sell.soldAt
+      const id = `${sell.id}:baseT:${date ?? 'missing'}`
+      grouped.set(id, {
+        id, kind: 'baseT', stockName: sell.stockName, sourceRows: [sell.sourceRow], date, originalSoldAt: sell.soldAt,
+        qty, sellPriceCents: sell.priceCents, buyPriceCents: Math.round(buyAmountCents / qty),
+        sellAmountCents, buyAmountCents, profitCents: sellAmountCents - buyAmountCents,
+      })
+      continue
+    }
     let date = sell.soldAt
     let buyAmountCents: number
-    if (rebuy) {
+    if (sellFirst) {
       if ((sell.actualRebuyQty ?? 0) < sell.qty) { pendingRebuyCount++; continue }
       const fills = sell.actualRebuyFills ?? []
       if (fills.reduce((sum, fill) => sum + fill.qty, 0) !== sell.qty || fills.some(fill => fill.priceCents === null)) {
@@ -68,7 +93,7 @@ export function buildTradingStatistics(
     if (sell.priceCents === null) { unpricedCount++; continue }
     const sellAmountCents = sell.priceCents * sell.qty
     if (![buyAmountCents, sellAmountCents].every(Number.isSafeInteger) || !Number.isSafeInteger(sell.qty) || sell.qty <= 0) { unpricedCount++; continue }
-    const kind = rebuy ? 'rebuy' : 'sale'
+    const kind = sellFirst ? 'rebuy' : 'sale'
     // 同一回执若分配到不同完成日/方向，分别展示；不能把未回补部分并入完成记录。
     const id = `${receiptByRow.get(sell.sourceRow) ?? sell.id}:${kind}:${date ?? 'missing'}`
     const hit = grouped.get(id)

@@ -1163,9 +1163,17 @@ try {
   check('热点位跳转带股票和价格档', hotHash.startsWith('#/trades') && /price=\d+/.test(hotHash) && decodeURIComponent(hotHash).includes('stock='), hotHash)
 
   // V9.7：年 / 月累计盈利 + 日历按天聚合
-  // fixture 的成交样本在2026年10月，不能依赖执行当天仍是同月。
-  await evaluate(`localStorage.setItem('ezgrid.statsCal', '2026-10')`)
+  // fixture 的成交样本在2026年10月；V9.72 起日历默认回东八区今天，需手动翻到数据月份。
   await nav('stats')
+  {
+    const todayMonth = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 7)
+    const [ty, tm] = todayMonth.split('-').map(Number)
+    const steps = (ty - 2026) * 12 + (tm - 10)
+    for (let i = 0; i < Math.abs(steps); i += 1) {
+      await evaluate(`document.querySelector('[aria-label=${steps > 0 ? '上个月' : '下个月'}]')?.click()`)
+      await sleep(150)
+    }
+  }
   text = await bodyText()
   // 总账仍为¥7,970；新收益视图排除普通高买低卖，缺日期不进累计，2026年为¥7,768；10月R56仍为¥196。
   check('网格收益年累计（¥7,768），与总账口径分开', (await evaluate(`document.querySelector('[data-stat-year="2026"]')?.textContent`)).includes('7,768'), '')

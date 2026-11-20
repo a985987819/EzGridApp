@@ -872,6 +872,10 @@ button { font-family: inherit; }
   translate: 0 0;
   transition-delay: 0s;
 }
+/* V9.72 挂单页左右滑切股票：纵向滚动交给浏览器，横向手势由页面判定接管 */
+.orders-swipe-area { touch-action: pan-y; overscroll-behavior-x: contain; }
+/* 横向筛选条保留自己的原生横向滚动，不参与切股票手势 */
+.orders-swipe-area .filter-chips { touch-action: auto; }
 .orders-compact-inner { display: flex; }
 .orders-compact {
   display: flex;

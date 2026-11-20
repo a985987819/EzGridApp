@@ -71,6 +71,13 @@ try {
     assert(await run(`(()=>{const element=document.querySelector(${JSON.stringify(selector)});if(!element)return false;element.scrollIntoView({block:'center'});element.click();return true})()`), '缺少元素 ' + selector)
     await pause(200)
   }
+  // V9.72：日历每次挂载都回到东八区今天；历史数据校验前先翻到 2026-10
+  const todayShanghaiMonth = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 7)
+  const [todayYear, todayMonthNumber] = todayShanghaiMonth.split('-').map(Number)
+  const monthSteps = (todayYear - 2026) * 12 + (todayMonthNumber - 10)
+  const goCalendar202610 = async () => {
+    for (let i = 0; i < Math.abs(monthSteps); i++) await click(`[aria-label=${monthSteps > 0 ? '上个月' : '下个月'}]`)
+  }
   const shot = async name => {
     const result = await send('Page.captureScreenshot', { format: 'png' })
     writeFileSync(join(OUT, `${name}.png`), Buffer.from(result.data, 'base64'))
@@ -90,7 +97,6 @@ try {
     const {StatsPage}=await import('/src/pages/StatsPage.tsx')
     const {TradesPage}=await import('/src/pages/TradesPage.tsx')
     const {buildTradingStatistics}=await import('/src/domain/statistics.ts')
-    localStorage.setItem('ezgrid.statsCal','2026-10')
     document.getElementById('root').style.display='none'
     const mount=document.createElement('div');mount.id='statistics-root';document.body.appendChild(mount)
     function Probe(){
@@ -123,6 +129,8 @@ try {
   const completed = statistics.events.find(event => event.kind === 'rebuy')
   check('200股5元＋300股5.5元全回补，以实际均价5.30确认850元', completed?.date === '2026-10-07' && completed.originalSoldAt === '2026-08-25' && completed.qty === 500 && completed.buyPriceCents === 530 && completed.profitCents === 85000, completed)
   check('全部收益仅在10月完成日归集为900元、2笔600股', statistics.daily.length === 1 && statistics.daily[0].day === '2026-10-07' && statistics.daily[0].sellCount === 2 && statistics.daily[0].sellQty === 600 && statistics.daily[0].profitCents === 90000 && statistics.monthly.length === 1 && statistics.monthly[0].month === '2026-10' && statistics.monthly[0].profitCents === 90000 && statistics.pendingRebuyCount === 0, statistics)
+  // V9.72：日历默认回今天；下面的历史数据校验先翻到数据所在月份（2026-10）
+  await goCalendar202610()
   check('日历年月累计、月度列表和趋势均显示900元', await run(`document.querySelector('[data-stat-year="2026"]').textContent.includes('900.00')&&document.querySelector('[data-stat-month-total="2026-10"]').textContent.includes('900.00')&&document.querySelector('[data-stat-month="2026-10"]').textContent.includes('900.00')&&document.querySelector('[data-testid=profit-trend] .trend-col').title.includes('900.00')`))
   check('原8月卖出日与9月部分回补日不产生统计事件', statistics.events.every(event => event.date !== '2026-08-25' && event.date !== '2026-09-20') && await run(`!document.querySelector('[data-stat-month="2026-08"]')&&!document.querySelector('[data-stat-month="2026-09"]')`))
   await click('[data-testid=stats-calendar] [data-date="2026-10-07"]')
@@ -136,12 +144,14 @@ try {
   check('点击完成日回补记录，跳转真实明细且不以完成日过滤旧卖出行', await run(`!lastTradesQuery.from&&!lastTradesQuery.to&&!!lastTradesQuery.id&&lastTradesQuery.stock==='T'&&!!document.querySelector('#statistics-root [data-row="'+root+'"]')`))
   await act('showStatistics()')
   await until(`!!document.querySelector('#statistics-root [data-testid=stats-calendar]')`)
+  await goCalendar202610()
   await click('[data-testid=stats-calendar] [data-date="2026-10-07"]')
   await run(`(()=>{const button=[...document.querySelectorAll('[data-testid=stats-calendar] button')].find(element=>element.textContent.includes('看这天明细'));button.click()})()`)
   await until(`!!document.querySelector('#statistics-root [data-row="'+root+'"]')&&!!document.querySelector('#statistics-root [data-row="'+normalSale+'"]')`)
   check('完成日整体明细同时保留两笔真实来源，已完成订单不被隐藏', await run(`lastTradesQuery.showDone===true&&!lastTradesQuery.from&&!lastTradesQuery.to&&document.querySelectorAll('#statistics-root [data-row]').length===2`))
   await act('showStatistics()')
   await until(`!!document.querySelector('#statistics-root [data-testid=stats-calendar]')`)
+  await goCalendar202610()
   await act(`window.fullBackup=await testApp.exportBackup();window.expectedStatistics=JSON.stringify(statistics());await testApp.resetAll();await testApp.restoreBackup(fullBackup)`)
   check('JSON恢复保留实际回补来源、完成日期与900元收益', await run('JSON.stringify(statistics())===expectedStatistics'))
   const workbook = await act(`const {exportLedgerWorkbook,parseLedgerWorkbook}=await import('/src/io/ledgerWorkbook.ts');
@@ -160,6 +170,22 @@ try {
   await pause(350)
   await shot('calendar-completed-320')
   check('总账和回本链仍保留原高位亏损，不重复加统计价差', await run(`testApp.ledger.totals.profitCents===-145000&&testApp.ledger.repairChains.some(chain=>chain.lossCents===-150000&&chain.profitCents===0)&&testApp.ledger.checks.every(check=>check.ok)`))
+  // V9.72：底仓做T的先卖后买按卖出日、已买回部分逐笔显示
+  await act(`await testApp.resetAll();window.baseRoot=await testApp.addManualRecord({kind:'sell',stockName:'T',date:'2026-10-20',price:'10',qty:'1000'})`)
+  await act(`await testApp.recordRebuy(testApp.ledger.orders.find(o=>o.sourceRow===baseRoot),400,500,0)`)
+  await act(`await testApp.setSellGridMode(baseRoot,'baseT')`)
+  statistics = await run('statistics()')
+  const baseEvent = statistics.events.find(event => event.kind === 'baseT')
+  check('底仓做T按卖出日统计已买回部分价差', baseEvent?.date === '2026-10-20' && baseEvent?.qty === 400 && baseEvent?.profitCents === 200000 && baseEvent.sourceRows[0] === await run('baseRoot'), JSON.stringify(baseEvent))
+  check('底仓做T不进入未回补暂缓计数', statistics.pendingRebuyCount === 0)
+  await click('[data-testid=stats-calendar] [data-date="2026-10-20"]')
+  check('日历明细显示底仓做T记录与已买回均价', await run(`document.querySelector('[data-stat-kind=baseT]').textContent.includes('底仓做T')&&document.querySelector('[data-stat-kind=baseT]').textContent.includes('做T买回均价 5.00')&&document.querySelector('[data-stat-kind=baseT]').textContent.includes('已买回 400 股')`))
+  await click('[data-stat-kind=baseT]')
+  await until(`!!document.querySelector('#statistics-root [data-row="'+baseRoot+'"]')`)
+  check('点击底仓做T明细按来源ID定位这笔先卖后买', await run(`!lastTradesQuery.from&&!lastTradesQuery.to&&!!lastTradesQuery.id&&lastTradesQuery.stock==='T'&&!!document.querySelector('#statistics-root [data-row="'+baseRoot+'"]')`))
+  await act('showStatistics()')
+  await until(`!!document.querySelector('#statistics-root [data-testid=stats-calendar]')`)
+  check('统计日历默认定位东八区当月', await run(`!!document.querySelector('[data-stat-month-total="${new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 7)}"]')`))
   check('页面无运行时错误和React警告', problems.length === 0, problems)
   console.log(`\nSTATISTICS E2E PASS (${passed})`)
 } finally {

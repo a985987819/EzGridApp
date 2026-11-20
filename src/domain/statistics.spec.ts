@@ -117,6 +117,32 @@ describe('统计日历的网格表现口径', () => {
     expect(ledger.lots.find(l => l.id === 'lot:exec:e1')).toMatchObject({ buyPriceCents: 500, targetPriceCents: 1200, remainingQty: 500 })
   })
 
+  it('显式底仓做T的先卖后买按卖出日逐笔统计已实现价差，部分回补也算', () => {
+    const marker = { id: 'grid-mode:3', lotId: 'lot:3', qty: 0, priceCents: 700, at: 1,
+      strategy: { mode: 'baseT' as const, sellRow: 3, rebuyPriceCents: 500, nextSellPriceCents: 700, groupId: 'grid-mode:3' } }
+    const partial = project([high, root], { extraTargets: [marker], executions: [execution('e1', 3, 200, 500, '2026-02-01')] })
+    expect(partial.statistics.events).toMatchObject([{
+      kind: 'baseT', date: '2026-01-15', sourceRows: [3], qty: 200,
+      sellPriceCents: 700, buyPriceCents: 500, profitCents: 40000,
+    }])
+    expect(partial.statistics.pendingRebuyCount).toBe(0)
+    const full = project([high, root], { extraTargets: [marker], executions: [
+      execution('e1', 3, 200, 500, '2026-01-31'), execution('e2', 3, 300, 550, '2026-02-01'),
+    ] })
+    expect(full.statistics.events).toMatchObject([{ kind: 'baseT', date: '2026-01-15', qty: 500, buyPriceCents: 530, profitCents: 85000 }])
+    expect(full.statistics.daily).toEqual([{ day: '2026-01-15', sellCount: 1, sellQty: 500, profitCents: 85000, dateMissing: false }])
+    expect(full.statistics.monthly).toEqual([{ month: '2026-01', sellCount: 1, sellQty: 500, sellAmountCents: 350000, profitCents: 85000, dateMissing: false }])
+    const secondRoot = { ...root, sourceRow: 4 }
+    const marker4 = { ...marker, id: 'grid-mode:4', lotId: 'lot:4',
+      strategy: { ...marker.strategy, sellRow: 4, groupId: 'grid-mode:4' } }
+    const two = project([high, root, secondRoot], { extraTargets: [marker, marker4], executions: [
+      execution('e1', 3, 200, 500, '2026-02-01'), execution('e2', 4, 300, 600, '2026-02-02'),
+    ] })
+    expect(two.statistics.events.map(event => [event.kind, event.date, event.sourceRows[0]])).toEqual([
+      ['baseT', '2026-01-15', 3], ['baseT', '2026-01-15', 4],
+    ])
+  })
+
   it('正常盈利按卖出日，缺日期进入未填日期，正常亏损和零收益不显示', () => {
     const normal = row(2, { buyDateSerial: serial('2026-01-01'), buyPriceCents: 500, buyQtyRaw: 100,
       soldQty: 100, targetPriceCents: 700, sellDateSerial: serial('2026-01-20') })

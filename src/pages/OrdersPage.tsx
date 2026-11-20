@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { allocatePlan, bookingContributions } from '../domain/booking'
 import { BookingCheck, useBookingCheck } from '../components/BookingCheck'
 import { Button, Card, Input, Modal, Tag, notificationOpen } from 'animal-island-ui'
@@ -119,6 +119,56 @@ export function OrdersPage({
   const nano = useMemo(() => buildNanoIdIndex(records), [records])
 
   const effectiveStock = stockNames.includes(stockName) ? stockName : stockNames[0] ?? ''
+  const stockIndex = stockNames.indexOf(effectiveStock)
+  /**
+   * V9.72：左右滑动页面切换股票（顺序 = 下拉选择框）。
+   * 左滑 → 上一只，右滑 → 下一只；第一只不能左滑、最后一只不能右滑。
+   * 只有横向位移明显大于纵向、且起点不在输入框/按钮/横向滚动区时才生效，避免误触。
+   */
+  const swipeRef = useRef<{ id: number; x: number; y: number; axis: '?' | 'x' | 'y' } | null>(null)
+  function switchStockBy(delta: number) {
+    const next = stockNames[stockIndex + delta]
+    if (!next || next === effectiveStock) return
+    transitionView(() => {
+      patchOrdersSession({ stockName: next })
+      setEditingLimit(false)
+    })
+  }
+  function onOrdersPointerDown(e: ReactPointerEvent<HTMLDivElement>) {
+    if (e.pointerType === 'mouse' && e.button !== 0) return
+    const target = e.target as HTMLElement
+    if (target.closest('input, textarea, select, button, a, label, summary, canvas, [contenteditable="true"], [role="combobox"], [role="option"], [data-no-swipe], .app-select-panel, .filter-chips, .trade-swipe, .orders-compact')) return
+    // 起点在横向可滚动容器里：交给原生横向滚动，不切股票
+    for (let el: HTMLElement | null = target; el && el !== e.currentTarget; el = el.parentElement) {
+      const style = getComputedStyle(el)
+      if (/(auto|scroll)/.test(style.overflowX) && el.scrollWidth > el.clientWidth + 2) return
+    }
+    swipeRef.current = { id: e.pointerId, x: e.clientX, y: e.clientY, axis: '?' }
+  }
+  function onOrdersPointerMove(e: ReactPointerEvent<HTMLDivElement>) {
+    const d = swipeRef.current
+    if (!d || d.id !== e.pointerId) return
+    const dx = e.clientX - d.x
+    const dy = e.clientY - d.y
+    if (d.axis === '?') {
+      if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return
+      d.axis = Math.abs(dx) > Math.abs(dy) * 1.4 ? 'x' : 'y'
+      if (d.axis === 'x') e.currentTarget.setPointerCapture?.(e.pointerId)
+    }
+    // 横向手势里纵向也跑太多 → 更像滚动/斜拖，放弃
+    if (d.axis === 'x' && Math.abs(dy) > 40) swipeRef.current = null
+  }
+  function onOrdersPointerUp(e: ReactPointerEvent<HTMLDivElement>) {
+    const d = swipeRef.current
+    if (!d) return
+    swipeRef.current = null
+    if (d.id !== e.pointerId || d.axis !== 'x') return
+    const dx = e.clientX - d.x
+    const dy = e.clientY - d.y
+    if (Math.abs(dy) > 40) return
+    if (dx <= -64) switchStockBy(-1)
+    else if (dx >= 64) switchStockBy(1)
+  }
   const cfg = stocks.find((s) => s.name === effectiveStock)
   // 昨收按股票记在会话里（V9.10）：切股再切回来，输入和确认结果都还在
   const lastClose = ordersSession.closes[effectiveStock] ?? ''
@@ -958,7 +1008,14 @@ export function OrdersPage({
   }
 
   return (
-    <div className="stack">
+    <div
+      id="orders-page"
+      className="stack orders-swipe-area"
+      onPointerDown={onOrdersPointerDown}
+      onPointerMove={onOrdersPointerMove}
+      onPointerUp={onOrdersPointerUp}
+      onPointerCancel={() => { swipeRef.current = null }}
+    >
       <div ref={stickyRef} className="page-sticky scroll-header orders-sticky" data-sticky="orders">
       <div data-scroll-summary className="orders-compact-slot" aria-hidden="true">
         <div className="orders-compact-inner">
@@ -1072,6 +1129,7 @@ export function OrdersPage({
             }}
             aria-label="选择股票"
           />
+          <p className="tiny muted" style={{ margin: 0 }}>左滑上一只 · 右滑下一只（第一只和最后一只到头即停）</p>
           <div className="row nowrap">
             <Input
               className="grow"
