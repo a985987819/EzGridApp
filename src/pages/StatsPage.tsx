@@ -118,6 +118,9 @@ export function StatsPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) 
         </div>
       </Card>
 
+      {/* V9.73：近 12 个月盈利更常用，挪到网格进行度上方；每个月直接显示数值 */}
+      <TrendCard monthly={statistics.monthly.filter(m => !m.dateMissing)} />
+
       {/* V9.61 网格进行度：一眼看清做到哪一步了 */}
       <Card data-testid="grid-progress">
         <div className="sec-head">
@@ -215,9 +218,6 @@ export function StatsPage({ goTrades }: { goTrades: (q: TradesQuery) => void }) 
           </div>
         )}
       </Card>
-
-      {/* V9.61 近 12 个月盈利趋势：红盈绿亏，条高按绝对值 */}
-      <TrendCard monthly={statistics.monthly.filter(m => !m.dateMissing)} />
 
       <Card>
         <div className="sec-head">
@@ -321,11 +321,14 @@ function TrendCard({ monthly }: { monthly: { month: string; profitCents: number;
         <div className="trend-chart">
           {recent.map((m) => (
             <div key={m.month} className="trend-col" title={`${m.month} · ${signedMoney(m.profitCents)} · ${m.sellCount} 笔`}>
-              <div
-                className={`trend-bar ${tone(m.profitCents)}`}
-                style={{ height: `${Math.max(3, Math.round((Math.abs(m.profitCents) / maxAbs) * 100))}%` }}
-              />
+              <div className="trend-plot">
+                <div
+                  className={`trend-bar ${tone(m.profitCents)}`}
+                  style={{ height: `${Math.max(3, Math.round((Math.abs(m.profitCents) / maxAbs) * 100))}%` }}
+                />
+              </div>
               <div className="trend-month num">{m.month.slice(5)}</div>
+              <div className={`trend-value num ${tone(m.profitCents)}`}>{compactYuan(m.profitCents)}</div>
             </div>
           ))}
         </div>

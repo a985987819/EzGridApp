@@ -372,27 +372,45 @@ button { font-family: inherit; }
 }
 .side-chip.sell { color: var(--up, #d0453f); background: rgba(208, 69, 63, 0.06); }
 
-/* 明细行左滑删除：动作按钮藏在卡片右侧，卡片本体平移露出（竖向手势不拦，仍可滚动） */
-.trade-swipe { position: relative; overflow: hidden; border-radius: 12px; touch-action: pan-y; }
+/* 明细行左滑删除：动作按钮藏在卡片右侧，卡片本体平移露出（竖向手势不拦，仍可滚动）
+   V9.73：外层留一点内边距承载卡片阴影；删除按钮随滑动进度从中心小圆长大到整行高。 */
+.trade-swipe {
+  position: relative;
+  overflow: hidden;
+  border-radius: 12px;
+  touch-action: pan-y;
+  padding: 3px 4px 8px;
+  margin: -3px -4px -8px;
+}
 .trade-swipe[data-swipe='off'] { display: contents; }
 .trade-swipe-action {
   position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: 76px;
+  top: 3px;
+  right: 4px;
+  bottom: 8px;
+  width: 72px;
   border: 0;
-  border-radius: 0 12px 12px 0;
+  border-radius: 12px;
   background: var(--up, #d0453f);
   color: #fff;
   font-weight: 700;
   font-size: 14px;
   letter-spacing: 1px;
+  transform-origin: center;
+  will-change: transform, opacity, box-shadow;
+  transition: transform 0.18s var(--ease-soft, ease-out), opacity 0.18s var(--ease-soft, ease-out),
+    box-shadow 0.2s ease, background-color 0.2s ease;
 }
 .trade-swipe-action.restore { background: var(--app-teal, #19c8b9); }
-.trade-swipe-front { position: relative; transition: transform 0.2s ease; will-change: transform; }
+.trade-swipe-front { position: relative; transition: transform 0.24s var(--ease-soft, ease-out); will-change: transform; }
 
-.trade-item { display: flex; flex-direction: column; gap: 6px; }
+.trade-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  box-shadow: 0 1px 2px rgba(63, 45, 18, 0.05), 0 3px 9px rgba(63, 45, 18, 0.06);
+}
+.trade-swipe[data-swiping='1'] .trade-item { box-shadow: 0 6px 20px rgba(63, 45, 18, 0.16); }
 .trade-item .head { display: flex; align-items: center; gap: 8px; }
 .trade-item .head .name { font-weight: 700; font-size: 15px; }
 .trade-item .mid { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
@@ -939,8 +957,8 @@ button { font-family: inherit; }
 .trend-chart {
   display: flex;
   align-items: stretch;
-  gap: 6px;
-  height: 118px;
+  gap: 3px;
+  height: 132px;
   padding: 4px 2px 0;
 }
 .trend-col {
@@ -950,7 +968,9 @@ button { font-family: inherit; }
   flex-direction: column;
   justify-content: flex-end;
 }
+.trend-plot { flex: 1; display: flex; align-items: flex-end; width: 100%; }
 .trend-bar {
+  width: 100%;
   border-radius: 5px 5px 2px 2px;
   min-height: 3px;
   transition: height var(--dur-3) var(--ease-soft);
@@ -959,11 +979,24 @@ button { font-family: inherit; }
 .trend-bar.down { background: var(--down); }
 .trend-bar.flat { background: rgba(61, 52, 40, 0.15); }
 .trend-month {
-  margin-top: 4px;
+  margin-top: 3px;
   text-align: center;
-  font-size: 10px;
+  font-size: 9px;
   color: #a09080;
 }
+.trend-value {
+  margin-top: 1px;
+  text-align: center;
+  font-size: 9px;
+  line-height: 1.2;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.3px;
+  white-space: nowrap;
+}
+.trend-value.up { color: var(--up); }
+.trend-value.down { color: var(--down); }
+.trend-value.flat { color: #8a7c68; }
 
 /* ---------- 概览 · 估值温度带（2026-11-03）：股价/PE/PB 近 5 年百分位 ----------
    渐变是数据色谱（冷→热），不是装饰色；只有针和文字走主题 token。扁平无阴影。 */
@@ -1767,8 +1800,9 @@ button:not(:disabled):active {
 .sandbox-delta b { font-variant-numeric: tabular-nums; }
 
 /* 默认扁平；只有明确标记的关键执行操作使用阴影。
-   覆盖组件库自带的悬浮/按下阴影与位移，避免Tab选中后自动变成立体按钮。 */
-body button {
+   覆盖组件库自带的悬浮/按下阴影与位移，避免Tab选中后自动变成立体按钮。
+   左滑删除按钮例外：它的缩放/浮起阴影由行内样式按滑动进度驱动。 */
+body button:not(.trade-swipe-action) {
   box-shadow: none !important;
   transform: none !important;
 }

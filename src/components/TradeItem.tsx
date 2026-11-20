@@ -78,9 +78,13 @@ export function TradeItem({
   const REVEAL = 76
   const [dx, setDx] = useState(0)
   const drag = useRef<{ x: number; y: number; axis: 'x' | 'y' | '?' } | null>(null)
+  /** V9.73：滑动后浏览器可能补一个 click，别让它把刚露出的按钮又收回去 */
+  const movedRef = useRef(false)
+  const suppressClick = useRef(false)
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (!onSwipeDelete || (e.pointerType === 'mouse' && e.button !== 0)) return
     drag.current = { x: e.clientX, y: e.clientY, axis: '?' }
+    movedRef.current = false
   }
   const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
     const d = drag.current
@@ -92,6 +96,7 @@ export function TradeItem({
       d.axis = Math.abs(mx) > Math.abs(my) ? 'x' : 'y'
     }
     if (d.axis !== 'x') return
+    if (Math.abs(mx) >= 8) movedRef.current = true
     // 已删除行只允许右滑露出「恢复」，未删除行只允许左滑露出「删除」
     const next = deleted ? Math.min(REVEAL, Math.max(0, mx)) : Math.max(-REVEAL, Math.min(0, mx))
     setDx(next)
@@ -99,23 +104,40 @@ export function TradeItem({
   const onPointerUp = () => {
     if (!drag.current) return
     drag.current = null
+    if (movedRef.current) {
+      suppressClick.current = true
+      window.setTimeout(() => { suppressClick.current = false }, 400)
+    }
     setDx((cur) => (Math.abs(cur) >= REVEAL / 2 ? (deleted ? REVEAL : -REVEAL) : 0))
   }
   const revealed = Math.abs(dx) >= REVEAL / 2
+  // V9.73：左滑进度——删除按钮随之从小浮起并长到整行高
+  const swipeProgress = Math.min(1, Math.abs(dx) / REVEAL)
+  const actionRgb = deleted ? '25, 200, 185' : '208, 69, 63'
 
   return (
     <div
       className="trade-swipe"
       data-swipe={onSwipeDelete ? 'enabled' : 'off'}
+      data-swiping={dx !== 0 ? '1' : undefined}
+      data-revealed={revealed ? '1' : undefined}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
     >
-      {onSwipeDelete && revealed && (
+      {onSwipeDelete && (
         <button
           type="button"
           className={`trade-swipe-action${deleted ? ' restore' : ''}`}
+          tabIndex={revealed ? 0 : -1}
+          aria-hidden={!revealed}
+          style={{
+            transform: `scale(${0.48 + swipeProgress * 0.52})`,
+            opacity: swipeProgress,
+            pointerEvents: revealed ? 'auto' : 'none',
+            boxShadow: `0 ${4 + 10 * swipeProgress}px ${10 + 16 * swipeProgress}px rgba(${actionRgb}, ${0.16 + 0.22 * swipeProgress})`,
+          }}
           onClick={(e) => {
             e.stopPropagation()
             setDx(0)
@@ -131,6 +153,11 @@ export function TradeItem({
         onClickCapture={(e) => {
           // 捕获阶段拦截：露出动作时先收起、不误开详情；滑过也不把这次点击当「打开」。
           // 必须 capture——冒泡阶段 Card 的 onClick 已经先把抽屉打开了。
+          // V9.73：刚滑完浏览器补的 click 直接吞掉，保留刚露出的删除按钮。
+          if (suppressClick.current) {
+            e.stopPropagation()
+            return
+          }
           if (dx !== 0) {
             e.stopPropagation()
             setDx(0)
