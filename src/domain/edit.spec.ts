@@ -1,12 +1,12 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { applyEdits, fieldText, isoToSerial } from './edit'
+import { applyEdits, editedFromCreation, fieldText, isoToSerial } from './edit'
 import { serialToIso } from './defaults'
 import { buildLedger } from './ledger'
 import { DEFAULT_STOCKS } from './defaults'
 import { parseWorkbook } from '../io/parseWorkbook'
-import type { RawRecord } from './types'
+import type { AuditLog, RawRecord } from './types'
 
 let seq = 500
 function rec(over: Partial<RawRecord> & { stockName: string }): RawRecord {
@@ -94,6 +94,40 @@ describe('行内编辑（P10）', () => {
     const bad = applyEdits(base, { soldQty: '-5' })
     expect(bad.errors).toHaveLength(1)
     expect(bad.record.soldQty).toBeNull()
+  })
+})
+
+describe('「改过」标签（V9.71）', () => {
+  const audit = (over: Partial<AuditLog>): AuditLog => ({
+    id: 1, entity: 'record', entityId: 'record:901', field: '买入价',
+    oldValue: '5.00', newValue: '6.00', at: 1, source: 'edit', ...over,
+  })
+  const original = rec({ stockName: '柳工', sourceRow: 901, buyPriceCents: 500, buyQtyRaw: 1000, targetPriceCents: 1000, editedAt: 1 })
+
+  it('新建行没有编辑审计：即使旧库带 editedAt 也不显示', () => {
+    expect(editedFromCreation(original, [audit({ field: '新增买入', source: 'create' })])).toBe(false)
+    expect(editedFromCreation(original, [])).toBe(false)
+  })
+
+  it('改过又改回新建值：不显示', () => {
+    expect(editedFromCreation(original, [audit({})])).toBe(false)
+    expect(editedFromCreation(original, [audit({ oldValue: '（空）', at: 2 }), audit({ at: 1 })])).toBe(false)
+  })
+
+  it('当前值与新建值不同：显示', () => {
+    const changed = rec({ stockName: '柳工', sourceRow: 901, buyPriceCents: 600, buyQtyRaw: 1000, targetPriceCents: 1000, editedAt: 2 })
+    expect(editedFromCreation(changed, [audit({})])).toBe(true)
+  })
+
+  it('导入更新也算编辑，并用最早 oldValue 作为新建值', () => {
+    const nullP = rec({ stockName: '柳工', sourceRow: 901, buyPriceCents: 500, buyQtyRaw: 1000, targetPriceCents: 1000, editedAt: 2 })
+    expect(editedFromCreation(nullP, [audit({ field: '回补价', oldValue: '（空）', source: 'import-update' })])).toBe(false)
+    const withP = rec({ stockName: '柳工', sourceRow: 901, buyPriceCents: 500, buyQtyRaw: 1000, targetPriceCents: 1000, earlyBuyPriceCents: 450, editedAt: 2 })
+    expect(editedFromCreation(withP, [audit({ field: '回补价', oldValue: '（空）', source: 'import-update' })])).toBe(true)
+  })
+
+  it('没有 editedAt 时不显示', () => {
+    expect(editedFromCreation({ ...original, editedAt: undefined }, [audit({})])).toBe(false)
   })
 })
 

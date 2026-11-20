@@ -2,7 +2,7 @@
 
 import { centsToYuan, toCents } from './money'
 import { serialToIso } from './defaults'
-import type { RawRecord } from './types'
+import type { AuditLog, RawRecord } from './types'
 
 export type EditableKey =
   | 'buyDate'
@@ -168,4 +168,40 @@ export function applyEdits(rec: RawRecord, draft: Partial<Record<EditableKey, st
 
   if (errors.length === 0 && changes.length > 0) next.editedAt = Date.now()
   return { record: next, changes, errors }
+}
+
+/**
+ * V9.71：「改过」标签只在当前值与最初新建时不一致时显示。
+ *
+ * - 新建手动行不再写 editedAt（旧库里已写进去的，只要没有真正的编辑审计就不会显示）；
+ * - 编辑审计（source='edit'）和导入更新（source='import-update'）的**最早一条 oldValue**
+ *   就是该字段新建时的值；所有被改过的字段都改回这个值，说明这笔又变回原样，不显示「改过」；
+ * - 只改过内部派生标记（如目标价按公式派生）不算用户可见差异。
+ */
+const AUDIT_FIELD_KEY: Record<string, EditableKey> = {
+  '买入日期': 'buyDate',
+  '买入价': 'buyPrice',
+  '买入份额': 'buyQty',
+  '目标售价': 'targetPrice',
+  '已卖份额': 'soldQty',
+  '卖出日期': 'sellDate',
+  '回补价（P 列）': 'earlyBuyPrice',
+  '回补价': 'earlyBuyPrice',
+}
+
+export function editedFromCreation(rec: RawRecord, history: readonly AuditLog[]): boolean {
+  if (!rec.editedAt) return false
+  const earliest = new Map<EditableKey, string>()
+  for (const a of [...history].sort((x, y) => x.at - y.at)) {
+    if (a.source !== 'edit' && a.source !== 'import-update') continue
+    const key = AUDIT_FIELD_KEY[a.field]
+    if (!key || earliest.has(key)) continue
+    earliest.set(key, a.oldValue)
+  }
+  if (earliest.size === 0) return false
+  for (const [key, oldValue] of earliest) {
+    const current = fieldText(rec, key)
+    if ((current === '' ? '（空）' : current) !== oldValue) return true
+  }
+  return false
 }

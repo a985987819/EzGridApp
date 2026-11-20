@@ -34,6 +34,7 @@ export function TradeItem({
   chain,
   levelProfit,
   profitCents,
+  edited,
   onSwipeDelete,
 }: {
   row: TradeRow
@@ -55,6 +56,8 @@ export function TradeItem({
   levelProfit?: { priceCents: number; group?: GroupPool }
   /** V9.70：底仓做T 的已实现价差；传 null/数字时覆盖右上角盈利显示（undefined = 用原 sell 盈利） */
   profitCents?: number | null
+  /** V9.71：是否真的和新建时不同（由 domain/edit 的 editedFromCreation 派生，不再只看 editedAt） */
+  edited?: boolean
   /**
    * 左滑露出的删除动作（明细页传；价格树 hover 浮层不传，保持只读）。
    * 不需要先打开详情抽屉就能删；原生拖拽/触摸都支持，竖向滚动不受影响。
@@ -193,7 +196,7 @@ export function TradeItem({
           <Tag size="small" variant="soft" color="app-yellow">缺买入日期</Tag>
         )}
         {sell && sell.priceCents === null && <Tag size="small" variant="soft" color="app-red">缺价格</Tag>}
-        {rec.editedAt && <Tag size="small" variant="soft" color="purple">改过</Tag>}
+        {edited && <Tag size="small" variant="soft" color="purple">改过</Tag>}
         {deleted && <Tag size="small" variant="soft" color="app-red">已删除</Tag>}
         {/* 右下角挂单角标（V9.26.1）：这条该挂的单子数值，与左边框同色系 */}
         {holding && (

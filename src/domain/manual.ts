@@ -144,6 +144,8 @@ export function buildManualRecord(
     }
   }
 
-  if (errors.length === 0) record.editedAt = Date.now()
+  // V9.71：新建行不写 editedAt——applyEdits 会把创建草稿当成一次「修改」，
+  // 这里必须摘掉；「改过」只表示之后真的编辑过且与新建值不同。
+  delete record.editedAt
   return { record, errors }
 }

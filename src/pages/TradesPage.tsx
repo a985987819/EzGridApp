@@ -5,7 +5,7 @@ import { useApp } from '../store/useApp'
 import { serialToIso, stockIdOf } from '../domain/defaults'
 import { groupKeyOf } from '../domain/ledger'
 import { LevelProfit } from '../components/LevelProfit'
-import { EDITABLE, fieldText, isoToSerial, type EditableKey } from '../domain/edit'
+import { EDITABLE, editedFromCreation, fieldText, isoToSerial, type EditableKey } from '../domain/edit'
 import { activeStocks } from '../domain/stocks'
 import { sellsByRecord } from '../domain/suggestions'
 import { isSoldOut } from '../domain/tradeState'
@@ -461,6 +461,16 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
         return arr.sort((a, b) => noOf(b) - noOf(a))
     }
   }, [filtered, sortBy, recordNo])
+
+  /**
+   * V9.71：「改过」只在当前内容与新建时不同才显示——
+   * 新建行不再写 editedAt；旧库里的 editedAt 还要有真实编辑审计且改不回原值才算。
+   */
+  const editedRows = useMemo(() => {
+    const set = new Set<number>()
+    for (const r of visible) if (editedFromCreation(r.rec, historyOf(r.rec.sourceRow))) set.add(r.rec.sourceRow)
+    return set
+  }, [visible, historyOf])
 
   const current = visible.find((r) => r.rec.sourceRow === openRow) ?? null
   const editCheck = useBookingCheck('backfill', { side: 'buy', stockName: current?.rec.stockName ?? '', date: serialToIso(isoToSerial(draft.buyDate)), priceCents: toCents(draft.buyPrice), qty: Number(draft.buyQty) }, [openRow, draft])
@@ -1046,6 +1056,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
               anim={anim}
               chain={pureT || isBaseT ? undefined : anchorChain ? 'anchor' : memberChain ? (isBranch ? 'branch' : 'member') : undefined}
               profitCents={isBaseT ? baseTSummary?.profitCents ?? null : undefined}
+              edited={editedRows.has(r.rec.sourceRow)}
               levelProfit={levelProfitOf(r)}
               onSwipeDelete={() => {
                 // 行上左滑直接删/恢复：不必先打开详情抽屉。已删除行露出的是「恢复」。

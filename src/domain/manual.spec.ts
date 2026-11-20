@@ -20,6 +20,8 @@ describe('手动新增：买入', () => {
     // 8.01 + 0.57 = 8.58
     expect(l.targets[0].priceCents).toBe(858)
     expect(l.totals.targetQty).toBe(700)
+    // V9.71：新建行不是「改过」
+    expect(record.editedAt).toBeUndefined()
   })
 
   it('目标价填了就直接用，不再派生', () => {
