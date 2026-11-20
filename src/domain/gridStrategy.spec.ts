@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { buildLedger } from './ledger'
-import { buildLadder, gridStatuses, type GridMode } from './gridStrategy'
+import { buildLadder, baseTRowSummary, gridStatuses, type GridMode } from './gridStrategy'
 import { mergeTargetRows } from './merge'
 import { validateBackup } from './backup'
 import { buildBuySuggestions } from './suggestions'
@@ -110,6 +110,19 @@ describe('连续拆档与双模式', () => {
     expect(ledger.totals.profitCents).toBe(-150000)
     expect(ledger.totals.targetQty).toBe(700)
     expect(ledger.lots.find(l=>l.id==='lot:exec:e1')).toMatchObject({buyPriceCents:500,targetPriceCents:1200})
+  })
+  it('底仓做T没有可关联高位时不自动挂钩，只显示做T价差与剩余待买', () => {
+    const root=row(3,{buyPriceCents:null,buyQtyRaw:null,buyDateSerial:null,soldQty:500,sellDateSerial:46001,targetPriceCents:700,earlyBuyPriceCents:500})
+    const marker={id:'grid-mode:3',lotId:'lot:3',qty:0,priceCents:700,at:1,strategy:{mode:'baseT' as const,rebuyPriceCents:500,nextSellPriceCents:700,groupId:'grid-mode:3',sellRow:3}}
+    let ledger=buildLedger([root],[stock],{extraTargets:[marker]});balanced(ledger)
+    expect(ledger.effectiveHedges).toHaveLength(0)
+    expect(ledger.repairChains).toHaveLength(0)
+    expect(ledger.orders.find(o=>o.sourceRow===3)).toMatchObject({strategyMode:'baseT',sellFirst:true,rebuyPriceCents:500,baseQty:500,remainingQty:500})
+    ledger=buildLedger([root],[stock],{extraTargets:[marker],executions:[exec(200)]});balanced(ledger)
+    const sell=ledger.sells.find(s=>s.sourceRow===3)!
+    expect(baseTRowSummary(sell)).toMatchObject({profitCents:40000,boughtQty:200,remainingQty:300})
+    expect(ledger.lots.find(l=>l.id==='lot:exec:e1')?.targetPriceCents).toBe(700)
+    expect(ledger.repairChains).toHaveLength(0)
   })
   it('低位回本模式第二轮按实际来源继承，亏损卖出也留在原链', () => {
     const targets=make('repair'), records=[...base,sale(3,`target:${targets[0].id}`),sale(4,'target:lot:exec:e1',500,400,'lot:exec:e1')]

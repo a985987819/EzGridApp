@@ -32,9 +32,9 @@ describe('明细筛选的 URL 序列化（S7）', () => {
     expect(back).toEqual({ stock: '柳工' })
   })
 
-  it('来源列表去重、去空白后往返，序号列表单独保留并兼容单ID旧链接', () => {
-    expect(parseTradesQuery(serializeTradesQuery({ stock: '柳工', id: ' a, b,a, ,missing ', nos: ' 2、5、8-10 ' }))).toEqual({
-      stock: '柳工', id: 'a,b,missing', nos: '2、5、8-10',
+  it('来源列表去重、去空白后往返，并兼容单ID旧链接', () => {
+    expect(parseTradesQuery(serializeTradesQuery({ stock: '柳工', id: ' a, b,a, ,missing ' }))).toEqual({
+      stock: '柳工', id: 'a,b,missing',
     })
     expect(parseTradesQuery('id=one')).toEqual({ id: 'one' })
     expect(parseTradesQuery('id=, ,&nos= ')).toEqual({})

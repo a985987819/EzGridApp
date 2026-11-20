@@ -1050,18 +1050,36 @@ export function AppProvider({ children }: { children: ReactNode }) {
     await db.transaction('rw', LEDGER_TX_TABLES(), async () => {
       const records = await db.records.toArray(), targets = await db.extraTargets.toArray()
       const rec = records.find(r=>r.sourceRow===row&&!r.deletedAt)
-      if (!rec || rec.soldLotId || rec.buyPriceCents !== null) throw new Error('只支持无同行买入的先卖后买；已有明确策略档请在拆档时选择模式')
+      if (!rec || rec.soldLotId) throw new Error('只支持先卖后买的行；来源批次的子卖出请在拆档时选择模式')
+      // 已发生的回补成交不改写归属；本行自己的买入（先卖后买的回补侧）不算外部成交。
       if ((await db.rebuyExecutions.where('sellExecId').equals(`sell:${row}`).count())>0) throw new Error('已有回补成交，不能改写模式；请先核对并撤销后续依赖')
       const id=`grid-mode:${row}`
-      if (mode==='repair') { await db.extraTargets.delete(id) }
-      else {
+      if (mode==='repair') {
+        // 回本链是默认模式：删掉标记档，后续按最高成本高位批次自动关联。
+        await db.extraTargets.delete(id)
+      } else {
         const {ledger:l}=await currentLedger()
-        const hedge=l.effectiveHedges.find(h=>h.sellRow===row)
-        if ((l.sells.find(s=>s.sourceRow===row&&s.hedgedFromSellRow===undefined)?.actualRebuyQty??0)>0) throw new Error('已有真实买入覆盖该先卖单，不能改写已发生的策略归属')
-        if (!hedge || hedge.items.length!==1 || hedge.items[0].qty!==rec.soldQty) throw new Error('底仓做T需完整关联到一个高位批次，请先完成高位关联')
-        const lot=l.lots.find(l=>l.id===`lot:${hedge.items[0].row}`),order=l.orders.find(o=>o.sourceRow===row)
-        if (!lot?.targetPriceCents || !rec.targetPriceCents || !order) throw new Error('缺少原高位卖价或回补价')
-        await db.extraTargets.put({id,lotId:lot.id,qty:0,priceCents:rec.targetPriceCents,at:Date.now(),strategy:{mode,groupId:id,sellRow:row,rebuyPriceCents:order.rebuyPriceCents,nextSellPriceCents:lot.targetPriceCents}})
+        const sell=l.sells.find(s=>s.sourceRow===row&&s.hedgedFromSellRow===undefined)
+        if ((sell?.actualRebuyQty??0) - (sell?.ownLotCoverQty??0) > 0) throw new Error('已有真实买入覆盖该先卖单，不能改写已发生的策略归属')
+        // 只有回本链需要关联高位买单；底仓做T默认不关联。
+        // 若原来人工挂过唯一一个高位批次，就把那份底仓卖出关系保留下来（仅用于库存扣减），
+        // 但不参与回本链；多批次无法用一个模式档表达，要求先合并或解除。
+        const hedge=l.effectiveHedges.find(h=>h.sellRow===row&&h.items.length>0)
+        if (hedge && hedge.items.length>1) throw new Error('这笔卖出关联了多个高位批次，请先只保留一个批次再切到底仓做T')
+        const ownLot=l.lots.find(x=>x.sourceRow===row)
+        const hedgeLot=hedge ? l.lots.find(x=>x.sourceRow===hedge.items[0].row) : undefined
+        const lotId=hedgeLot && hedgeLot.sourceRow!==row ? hedgeLot.id : ownLot ? ownLot.id : `lot:${row}`
+        const order=l.orders.find(o=>o.sourceRow===row)
+        const sellPrice=rec.targetPriceCents ?? sell?.priceCents ?? null
+        const rebuyPrice=order?.rebuyPriceCents ?? sell?.rebuyPriceCents ?? null
+        if (sellPrice===null || !Number.isSafeInteger(sellPrice) || sellPrice<=0) throw new Error('缺少原卖出价，无法计算底仓做T')
+        if (rebuyPrice===null || !Number.isSafeInteger(rebuyPrice) || rebuyPrice<=0) throw new Error('缺少回补价，无法生成待买')
+        // 买回后恢复目标：有关联/同行底仓时用它自己的原目标价，没有底仓才回到这次卖价。
+        const nextSellPrice=hedgeLot?.targetPriceCents ?? ownLot?.targetPriceCents ?? sellPrice
+        // 模式档只做身份标记（qty 0）：买回后按原目标价恢复底仓，不写回本链。
+        await db.extraTargets.put({id,lotId,qty:0,priceCents:sellPrice,at:Date.now(),strategy:{mode,groupId:id,sellRow:row,rebuyPriceCents:rebuyPrice,nextSellPriceCents:nextSellPrice}})
+        // 人工挂钩旧记录不再参与底仓做T；保留会让「解除」入口误以为仍在关联高位。
+        await db.hedges.delete(`hedge:${row}`)
       }
       await db.auditLogs.add(audit(`grid-mode:${row}`,'先卖后买模式',targets.find(t=>t.id===id)?.strategy?.mode??'repair',mode,'grid','order'))
     })
@@ -1531,7 +1549,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const restoreBackup = useCallback(
     async (json: string) => {
-      const data = prepareBackup(JSON.parse(json))
+      // V9.69：旧导出曾给 JSON 写 UTF-8 BOM，带 BOM 的文本 JSON.parse 会直接失败。
+      const data = prepareBackup(JSON.parse(json.replace(/^\uFEFF/, '')))
       await db.transaction(
         'rw',
         LEDGER_TX_TABLES(),

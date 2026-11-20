@@ -1272,10 +1272,31 @@ button { font-family: inherit; }
 .filter-chips.scroll > * { flex: 0 0 auto; }
 
 .trade-filter-tools { margin-top: 10px; }
-.record-selection-controls { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
-.record-selection-controls > :first-child { flex: 1; min-width: 0; }
-.record-selection-controls button { flex: 0 0 auto; }
 .trade-filter-tools p, .trade-source-selection p { margin: 5px 0 0; line-height: 1.5; }
+
+/* V9.69 先卖后买模式滑块：默认左侧回本链（蓝），右侧底仓做T（红）。 */
+.sell-mode-row { display: flex; align-items: center; gap: 10px; margin: 2px 0 8px; }
+.sell-mode-caption { flex: 0 0 auto; font-size: 11px; color: #8c7d67; }
+.sell-mode-switch {
+  position: relative; display: grid; grid-template-columns: 1fr 1fr; flex: 1; min-width: 0; max-width: 260px;
+  padding: 3px; border: 1px solid var(--line); border-radius: 999px; background: #efe9de;
+}
+.sell-mode-thumb {
+  position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc(50% - 3px); border-radius: 999px;
+  background: var(--buy); box-shadow: 0 1px 3px rgba(47, 111, 214, 0.28);
+  transition: transform var(--dur-2) var(--ease-soft), background-color var(--dur-2) var(--ease-soft);
+}
+.sell-mode-switch[data-mode='baseT'] .sell-mode-thumb { transform: translateX(100%); background: var(--up); box-shadow: 0 1px 3px rgba(208, 69, 63, 0.28); }
+.sell-mode-option {
+  position: relative; z-index: 1; padding: 6px 10px; border: 0; border-radius: 999px; background: transparent;
+  color: #6f6250; font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap;
+  transition: color var(--dur-1) var(--ease-soft);
+}
+.sell-mode-option[aria-pressed='true'] { color: #fff; font-weight: 700; }
+.sell-mode-option:disabled { cursor: wait; }
+@media (prefers-reduced-motion: reduce) {
+  .sell-mode-thumb, .sell-mode-option { transition: none; }
+}
 .trade-filter-error { color: var(--animal-error-color, #c54747); }
 .trade-range-filter { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 8px; }
 .trade-range-filter summary { font-size: 12px; cursor: pointer; }

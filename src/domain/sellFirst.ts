@@ -10,7 +10,7 @@ export function isSellFirst(rec: Pick<RawRecord, 'buyPriceCents' | 'buyDateSeria
 }
 
 /** 人工关联先占额度；其余按卖出日、源行号，依次分配当时已买入的最高成本剩余股。 */
-export function defaultHedges(records: readonly RawRecord[], lots: readonly Lot[], sells: readonly SellExecution[], manual: readonly HedgeLink[]): HedgeLink[] {
+export function defaultHedges(records: readonly RawRecord[], lots: readonly Lot[], sells: readonly SellExecution[], manual: readonly HedgeLink[], skipRows: ReadonlySet<number> = new Set()): HedgeLink[] {
   const links = [...manual].sort((a, b) => a.at - b.at)
   const byRow = new Map(records.map((r) => [r.sourceRow, r]))
   const available = new Map(lots.map((l) => [l.sourceRow, l.remainingQty]))
@@ -35,7 +35,7 @@ export function defaultHedges(records: readonly RawRecord[], lots: readonly Lot[
     }
   }
   const overridden = new Set(manual.map((h) => h.sellRow))
-  const roots = sells.filter((s) => s.sellBeforeBuy && s.soldAt !== null && s.priceCents !== null && !overridden.has(s.sourceRow))
+  const roots = sells.filter((s) => s.sellBeforeBuy && s.soldAt !== null && s.priceCents !== null && !overridden.has(s.sourceRow) && !skipRows.has(s.sourceRow))
     .sort((a, b) => a.soldAt!.localeCompare(b.soldAt!) || a.sourceRow - b.sourceRow)
   for (const s of roots) {
     let left = s.qty

@@ -17,7 +17,6 @@ import { isoDate, money, price, qty, signedMoney, todayIso, tone } from '../ui/f
 import { replaceRoute, type TradesQuery } from '../ui/nav'
 import { buildNanoIdIndex } from '../ui/nanoid'
 import { normalizeRecordIds } from '../ui/recordIds'
-import { parseRecordSelection } from '../domain/recordSelection'
 import { centsToYuan, toCents } from '../domain/money'
 import { downloadBytes, downloadText, toCsv } from '../ui/csv'
 import { exportRecordsWorkbook } from '../io/parseWorkbook'
@@ -38,6 +37,7 @@ import { BookingCheck, useBookingCheck } from '../components/BookingCheck'
 import { TradeFilterTools } from '../components/TradeFilterTools'
 import { SplitExecModal } from '../components/SplitExecModal'
 import { isSimpleT, simpleTProfitCents } from '../domain/simpleT'
+import { baseTRowSummary, type GridMode } from '../domain/gridStrategy'
 
 /** 状态筛选可多选（V9 可叠加）：命中的行要满足每一个勾选的状态 */
 const STATUS_KEYS = ['holding', 'soldout', 'pending', 'exposure', 'buyDateMissing', 'sellDateMissing', 'needsPrice'] as const
@@ -181,6 +181,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     removeExtraTarget,
     addBuyTarget,
     removeBuyTarget,
+    setSellGridMode,
     exportBackup,
   } = useApp()
   const [stockFilter, setStockFilter] = useState(urlQuery.stock ?? 'all')
@@ -198,10 +199,8 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   const [fromDate, setFromDate] = useState(urlQuery.from ?? '')
   const [toDate, setToDate] = useState(urlQuery.to ?? '')
   const [idFilter, setIdFilter] = useState<string | null>(urlQuery.id ?? null)
-  const [numberFilter, setNumberFilter] = useState(urlQuery.nos ?? '')
   const selectedIds = useMemo(() => normalizeRecordIds(idFilter), [idFilter])
   const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds])
-  const selectedNumbers = useMemo(() => parseRecordSelection(numberFilter), [numberFilter])
   const [sortBy, setSortBy] = useState<SortBy>(() =>
     SORT_KEYS.includes(urlQuery.sort ?? '') ? (urlQuery.sort as SortBy) : 'rowDesc',
   )
@@ -227,6 +226,8 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   const [bpQty, setBpQty] = useState('')
   /** 买入拆分档「记成交」：关掉只关成交弹窗，详情抽屉继续开着，方便逐档记完 */
   const [execSplit, setExecSplit] = useState<BuySplit | null>(null)
+  /** V9.69：先卖后买模式切换在途（防止连点写两次标记档） */
+  const [modeBusy, setModeBusy] = useState(false)
 
   /**
    * V9.51 用户拍板：拆分默认量 = **还能拆的量**（剩余 − 已经拆出去的档），
@@ -268,7 +269,6 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     setFromDate(q.from ?? '')
     setToDate(q.to ?? '')
     setIdFilter(typeof q.id === 'string' && q.id ? q.id : null)
-    setNumberFilter(q.nos ?? '')
     setSortBy(SORT_KEYS.includes(q.sort ?? '') ? (q.sort as SortBy) : 'rowDesc')
     setShowDeleted(q.del === true)
     setHideDone(q.showDone !== true)
@@ -285,12 +285,11 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       from: fromDate || undefined,
       to: toDate || undefined,
       id: idFilter ?? undefined,
-      nos: numberFilter || undefined,
       sort: sortBy === 'rowDesc' ? undefined : sortBy,
       del: showDeleted || undefined,
       showDone: !hideDone || undefined,
     })
-    }, [stockFilter, statuses, priceFilter, priceLo, priceHi, fromDate, toDate, idFilter, numberFilter, sortBy, showDeleted, hideDone])
+    }, [stockFilter, statuses, priceFilter, priceLo, priceHi, fromDate, toDate, idFilter, sortBy, showDeleted, hideDone])
 
   // nanoId 索引：展示 / 筛选 / 跳转的唯一行级 id（V9.4）
   const nano = useMemo(() => buildNanoIdIndex(records), [records])
@@ -346,9 +345,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       // nanoId 深链要能命中已软删的行，showDeleted 的门对目标行放行
       const rId = nano.rowToId.get(r.rec.sourceRow)
       const idMatch = rId !== undefined && selectedIdSet.has(rId)
-      const numberMatch = selectedNumbers.numbers.has(recordNo.of(r.rec.sourceRow) ?? -1)
-      const deepLink = idMatch || (Boolean(numberFilter) && numberMatch)
-      if (numberFilter && (selectedNumbers.error || !numberMatch)) return false
+      const deepLink = idMatch
       if (!showDeleted && r.rec.deletedAt && !deepLink) return false
       if (stockFilter === 'all') {
         // 停用的股票不出现在明细里
@@ -386,7 +383,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       return true
     })
     return { filtered: list, noDateHidden: hidden }
-  }, [rows, stockFilter, priceFilter, priceLo, priceHi, statuses, showDeleted, enabledSet, fromDate, toDate, idFilter, selectedIdSet, selectedNumbers, numberFilter, recordNo, nano, hideDone, ledger.repairChains])
+  }, [rows, stockFilter, priceFilter, priceLo, priceHi, statuses, showDeleted, enabledSet, fromDate, toDate, idFilter, selectedIdSet, nano, hideDone, ledger.repairChains])
 
   /** 已生效的条件 chips：每颗都能单独点掉 */
   const activeChips = useMemo(() => {
@@ -424,9 +421,8 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
         clear: () => setIdFilter(null),
       })
     }
-    if (numberFilter) chips.push({ key: 'numbers', label: selectedNumbers.error ? '序号格式待修正' : numberFilter.length > 35 ? `序号 ${selectedNumbers.numbers.size} 笔` : `序号 ${numberFilter}`, clear: () => setNumberFilter('') })
     return chips
-  }, [stockFilter, statuses, priceFilter, priceLo, priceHi, fromDate, toDate, idFilter, selectedIds, numberFilter, selectedNumbers, nano, recordNo])
+  }, [stockFilter, statuses, priceFilter, priceLo, priceHi, fromDate, toDate, idFilter, selectedIds, nano, recordNo])
 
   /** 一键复位：股票 / 状态 / 日期 / 价格（含区间）/ nanoId 全清（排序与已删除开关不动），已完成恢复默认隐藏 */
   function resetFilters() {
@@ -438,7 +434,6 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     setFromDate('')
     setToDate('')
     setIdFilter(null)
-    setNumberFilter('')
     setHideDone(true)
   }
 
@@ -473,6 +468,33 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   /** V9.68：这一行是否已按多笔真实买入买回全部卖出份额——只做展示口径，不改总账 */
   const currentPureT = current !== null && current.sell !== null && isSimpleT(current.rec.sourceRow, ledger)
   const currentPureTProfit = current !== null && current.sell !== null && currentPureT ? simpleTProfitCents(current.sell) : null
+  /** V9.69：先卖后买的显式模式；默认回本链，只有显式标了底仓做T才切到右侧 */
+  const currentSellMode: GridMode =
+    current?.sell?.strategyMode === 'baseT' ? 'baseT' : 'repair'
+  const currentBaseT = current !== null && current.sell !== null && currentSellMode === 'baseT'
+  const currentBaseTSummary = current?.sell && currentBaseT ? baseTRowSummary(current.sell) : null
+  /** 可切换模式：先卖后买、不是来源批次的子卖出、未删除、未自动判定为单纯做T（已完整买回） */
+  const canSwitchMode = current !== null && !current.rec.deletedAt && !current.rec.soldLotId
+    && current.sell?.sellBeforeBuy === true && !currentPureT
+
+  async function switchSellMode(mode: GridMode) {
+    if (current === null || modeBusy || currentSellMode === mode) return
+    setModeBusy(true)
+    try {
+      await setSellGridMode(current.rec.sourceRow, mode)
+      notificationOpen({
+        message: mode === 'baseT' ? '已切到底仓做T' : '已切到回本链',
+        description: mode === 'baseT'
+          ? '不关联高位买入：买回后按原卖出价恢复目标，价差单独统计'
+          : '按最高成本的未卖批次自动关联，后续价差累计到回本链',
+        type: 'success',
+      })
+    } catch (e) {
+      notificationOpen({ message: '模式未保存', description: e instanceof Error ? e.message : String(e), type: 'error' })
+    } finally {
+      setModeBusy(false)
+    }
+  }
 
   /**
    * V9.62 拆分价缺省推导：**能推出来的价都当 placeholder + 留空默认值**，理想情况拆一档只需要点确认。
@@ -514,15 +536,23 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     () => new Set(ledger.anomalies.filter((a) => a.kind.startsWith('hedge')).map((a) => a.sourceRow)),
     [ledger.anomalies],
   )
+  /** 显式底仓做T的先卖单行：不展示回本链/挂钩关联（只有回本链需要关联高位买单） */
+  const baseTRowSet = useMemo(
+    () => new Set(ledger.sells.filter((s) => s.strategyMode === 'baseT').map((s) => s.sourceRow)),
+    [ledger.sells],
+  )
   /** 还没回补过的裸卖单（可挂/可改挂）：按行本身判定，不看有没有待买订单（V9.32） */
   const hedgeableRows = useMemo(() => {
     const execByRow = new Map<number, number>()
     // V9.57：挂钩只作用在「基础股」上；奖励股是额外买入，不算已买回欠量
     for (const o of ledger.orders) execByRow.set(o.sourceRow, Math.max(0, o.execQty - o.doneRewardQty))
     const set = new Set<number>()
-    for (const r of records) if (isHedgeable(r, execByRow.get(r.sourceRow) ?? 0)) set.add(r.sourceRow)
+    for (const r of records) {
+      if (baseTRowSet.has(r.sourceRow)) continue
+      if (isHedgeable(r, execByRow.get(r.sourceRow) ?? 0)) set.add(r.sourceRow)
+    }
     return set
-  }, [ledger.orders, records])
+  }, [ledger.orders, records, baseTRowSet])
   /** 点标签打开的「裸卖待挂钩」弹层（null = 关着） */
   const [hedgeRow, setHedgeRow] = useState<number | null>(null)
   // V9.55：抽屉 / 新增弹窗 / 挂钩弹层统一保滚动位置（原来只护了抽屉）
@@ -816,13 +846,10 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
           </button>
         </div>
 
-        <TradeFilterTools nos={numberFilter}
+        <TradeFilterTools
           range={{ priceLo: priceLo ?? priceFilter, priceHi: priceHi ?? priceFilter, from: fromDate, to: toDate }}
-          onSelectNumbers={value => transitionView(() => { setNumberFilter(value); if (value) setIdFilter(null) })}
           onApplyRange={value => transitionView(() => { setPriceFilter(null); setPriceLo(value.priceLo); setPriceHi(value.priceHi); setFromDate(value.from); setToDate(value.to) })}
           onClearRange={() => transitionView(() => { setPriceFilter(null); setPriceLo(null); setPriceHi(null); setFromDate(''); setToDate('') })} />
-
-        {selectedNumbers.error && numberFilter && <p className="tiny trade-filter-error" role="alert">{selectedNumbers.error}</p>}
 
         {selectedIds.length > 0 && <div className="trade-source-selection" data-testid="trade-source-selection">
           <div className="row"><strong className="tiny">限定 {selectedIds.length} 笔来源</strong><div className="spacer" />
@@ -912,7 +939,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
         <Card>
           <div className="empty-box">
             没有匹配的行
-            {(selectedIds.length > 0 || numberFilter) && <span className="tiny" style={{ display: 'block', marginTop: 4 }}>可移除来源限定或清空筛选，检查是否与其它条件冲突。</span>}
+            {(selectedIds.length > 0) && <span className="tiny" style={{ display: 'block', marginTop: 4 }}>可移除来源限定或清空筛选，检查是否与其它条件冲突。</span>}
             {noDateHidden > 0 && (
               <span className="tiny" style={{ display: 'block', marginTop: 4 }}>
                 另有 {noDateHidden} 行没有任何日期，被日期区间条件排除
@@ -925,11 +952,14 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
           // V9.68：先卖后买已按真实成交买回全部份额 → 单纯做T，不再挂回本链/挂钩标签
           const pureT = r.sell !== null && isSimpleT(r.rec.sourceRow, ledger)
           const pureTProfit = pureT && r.sell ? simpleTProfitCents(r.sell) : null
+          // V9.69：显式底仓做T——不挂回本链/高位关联，只显示做T价差或剩余待买
+          const isBaseT = r.sell?.strategyMode === 'baseT'
+          const baseTSummary = isBaseT && r.sell ? baseTRowSummary(r.sell) : null
           // V9.30 挂钩状态标签（可点）：先卖后买 → 「裸卖待挂钩」/「已挂钩 · 改挂」，
           // 点一下直接弹绑定面板（不用先开抽屉）；被挂的高位批次 → 「挂钩暂记 · 原目标 x」
           // V9.33：这条挂钩有异常（失效 / 超挂 / 挂不满）→ 标签变红，点进去看红条
           let hedgeTag: ReactNode = null
-          if (!pureT && hedgeableRows.has(r.rec.sourceRow)) {
+          if (!pureT && !isBaseT && hedgeableRows.has(r.rec.sourceRow)) {
             const linked = hedgeOf.has(r.rec.sourceRow)
             const broken = hedgeIssues.has(r.rec.sourceRow)
             hedgeTag = (
@@ -973,7 +1003,17 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                 单纯做T{pureTProfit !== null ? ` · ${signedMoney(pureTProfit)}` : ''}
               </Tag>
             )
-            : hedgeTag
+            : isBaseT
+              ? (
+                <Tag size="small" variant="soft" color="app-red">
+                  {baseTSummary && baseTSummary.remainingQty > 0
+                    ? `底仓做T · 剩 ${qty(baseTSummary.remainingQty)} 股待买`
+                    : baseTSummary?.profitCents != null
+                      ? `底仓做T · 已实现 ${signedMoney(baseTSummary.profitCents)}`
+                      : '底仓做T'}
+                </Tag>
+              )
+              : hedgeTag
               ? null
               : anchorChain
               ? (
@@ -1004,7 +1044,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
               // 自动归链后仍保留改挂入口；其它成员显示回本链标签。
               extraTag={hedgeTag ?? chainTag}
               anim={anim}
-              chain={pureT ? undefined : anchorChain ? 'anchor' : memberChain ? (isBranch ? 'branch' : 'member') : undefined}
+              chain={pureT || isBaseT ? undefined : anchorChain ? 'anchor' : memberChain ? (isBranch ? 'branch' : 'member') : undefined}
               levelProfit={levelProfitOf(r)}
               onSwipeDelete={() => {
                 // 行上左滑直接删/恢复：不必先打开详情抽屉。已删除行露出的是「恢复」。
@@ -1132,6 +1172,54 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                     </p>
                   </div>
                 )}
+                {canSwitchMode && current.sell && (
+                  <div className="sell-mode-row" data-testid="sell-mode-row">
+                    <span className="sell-mode-caption">先卖后买</span>
+                    <div
+                      id={`sell-mode-switch-${current.rec.sourceRow}`}
+                      className="sell-mode-switch"
+                      data-mode={currentSellMode}
+                      data-testid="sell-mode-switch"
+                      role="group"
+                      aria-label="先卖后买模式"
+                    >
+                      <span className="sell-mode-thumb" aria-hidden="true" />
+                      <button
+                        id={`sell-mode-repair-${current.rec.sourceRow}`}
+                        type="button"
+                        className="sell-mode-option"
+                        aria-pressed={currentSellMode === 'repair'}
+                        disabled={modeBusy}
+                        onClick={() => void switchSellMode('repair')}
+                      >
+                        回本链
+                      </button>
+                      <button
+                        id={`sell-mode-baset-${current.rec.sourceRow}`}
+                        type="button"
+                        className="sell-mode-option"
+                        aria-pressed={currentSellMode === 'baseT'}
+                        disabled={modeBusy}
+                        onClick={() => void switchSellMode('baseT')}
+                      >
+                        底仓做T
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {currentBaseT && currentBaseTSummary && (
+                  <div className="hint-block" data-testid="base-t-summary">
+                    <strong>
+                      {currentBaseTSummary.remainingQty > 0
+                        ? `底仓做T · 剩余 ${qty(currentBaseTSummary.remainingQty)} 股待买`
+                        : `底仓做T · 已实现 ${signedMoney(currentBaseTSummary.profitCents)}`}
+                    </strong>
+                    <p className="tiny muted" style={{ margin: '4px 0 0' }}>
+                      不关联高位买入，也不计入回本链：卖出后按实际买回价结算价差；
+                      买回后按原卖出价恢复目标。{currentBaseTSummary.boughtQty > 0 ? `已买回 ${qty(currentBaseTSummary.boughtQty)} 股。` : '还没买回。'}
+                    </p>
+                  </div>
+                )}
                 {!currentPureT && levelProfitOf(current) && !current.rec.deletedAt && <LevelProfit {...levelProfitOf(current)!} />}
                 {!currentPureT && current.sell?.hedgedHold === true && (
                   <p className="tiny muted" style={{ margin: '0 0 4px' }}>
@@ -1159,9 +1247,6 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                     <Tag size="small" variant="soft">已回补</Tag>
                   )}
                   {current.sell?.sellBeforeBuy && <Tag size="small" variant="soft" color="app-teal">先卖后买</Tag>}
-                  {current.rec.origin === 'excel' && (
-                    <Tag size="small" variant="soft">Excel 第 {current.rec.excelRow ?? current.rec.sourceRow} 行</Tag>
-                  )}
                   {current.sell?.dateMissing && <Tag size="small" variant="soft" color="app-yellow">缺日期</Tag>}
                   {current.sell && current.sell.priceCents === null && <Tag size="small" variant="soft" color="app-red">缺价格</Tag>}
                   {current.rec.deletedAt && <Tag size="small" variant="soft" color="app-red">已删除</Tag>}
@@ -1357,8 +1442,9 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                 {/* V9.45：同股同买入价、还没卖完的批次可以合并——只影响挂单提醒的显示 */}
                 <LotMergeBinder key={`merge-${current.rec.sourceRow}`} row={current.rec.sourceRow} />
 
-                {/* V9.26 先卖后买挂钩：裸卖未回补时人工指定未完成买单（V9.30 面板抽成 HedgeBinder） */}
-                {!currentPureT && isHedgeable(current.rec, 0) && (
+                {/* V9.26 先卖后买挂钩：裸卖未回补时人工指定未完成买单（V9.30 面板抽成 HedgeBinder）
+                    V9.69：底仓做T不需要关联高位买单，只有回本链显示这个入口 */}
+                {!currentPureT && !currentBaseT && isHedgeable(current.rec, 0) && (
                   <div className="divider-top" data-testid="hedge-section">
                     <div className="sec-head sm">
                       <strong>裸卖待挂钩</strong>
@@ -1369,8 +1455,9 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                   </div>
                 )}
 
-                {/* V9.46 回本链：亏损清仓当场成链，进度只累计归属交易的已实现净盈利 */}
-                {!currentPureT && (repairByAnchor.has(current.rec.sourceRow) ||
+                {/* V9.46 回本链：亏损清仓当场成链，进度只累计归属交易的已实现净盈利
+                    V9.69：底仓做T不挂回本链，不显示链卡 */}
+                {!currentPureT && !currentBaseT && (repairByAnchor.has(current.rec.sourceRow) ||
                   repairBySell.has(current.rec.sourceRow) ||
                   repairByMember.has(current.rec.sourceRow)) && (
                   <div className="divider-top" data-testid="chain-section">

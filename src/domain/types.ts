@@ -180,6 +180,12 @@ export interface SellExecution {
    * 纯派生标记，不落库、不改 profitCents。
    */
   simpleT?: boolean
+  /**
+   * V9.69：先卖后买的显式模式（来自 `grid-mode:<行>` 标记档）。
+   * repair = 回本链（默认，关联高位买入）；baseT = 底仓做T（不挂回本链，价差单列）。
+   * 纯派生，标记档本身仍落在 extraTargets。
+   */
+  strategyMode?: 'repair' | 'baseT'
 }
 
 /** 计划价（P8）：只挂在页面上与导出里，不动真实成交与任何计算 */

@@ -1,4 +1,4 @@
-import type { ExtraTarget, Ledger, Lot, RawRecord, RebuyExecution } from './types'
+import type { ExtraTarget, Ledger, Lot, RawRecord, RebuyExecution, SellExecution } from './types'
 import { isSellFirst } from './sellFirst'
 import { deriveBuyQty } from './qty'
 import { remainingSellTargets } from './sellTargets'
@@ -7,6 +7,25 @@ export type GridMode = 'repair' | 'baseT'
 
 /** 两种策略的固定展示名称；保留原存储标识以兼容历史记录和备份。 */
 export const GRID_MODE_LABEL = { repair: '低位回本', baseT: '底仓做T' } as const satisfies Record<GridMode, string>
+
+/**
+ * V9.69：底仓做T行已实现的做T价差与还没买回的量。
+ * 只认已经确认的真实买入（本行买入 / 回补成交），不拿计划价凑数；
+ * 部分没接回时 `remainingQty > 0`，界面只提醒剩余待买。
+ */
+export function baseTRowSummary(sell: SellExecution): { profitCents: number | null; boughtQty: number; remainingQty: number } {
+  const fills = (sell.actualRebuyFills ?? []).filter(
+    (f) => f.priceCents !== null && Number.isSafeInteger(f.qty) && f.qty > 0,
+  )
+  const boughtQty = (sell.actualRebuyFills ?? []).reduce((a, f) => a + (Number.isSafeInteger(f.qty) ? f.qty : 0), 0)
+  const remainingQty = Math.max(0, sell.qty - boughtQty)
+  if (sell.priceCents === null || fills.length === 0) return { profitCents: null, boughtQty, remainingQty }
+  return {
+    profitCents: fills.reduce((a, f) => a + (sell.priceCents! - f.priceCents!) * f.qty, 0),
+    boughtQty,
+    remainingQty,
+  }
+}
 
 /** 同行回补多买的份额不是做T还仓，继续使用原行普通目标。 */
 export function baseTSurplusTargets(records: readonly RawRecord[], targets: readonly ExtraTarget[], baseAmountYuan = 6000): ExtraTarget[] {
@@ -92,7 +111,7 @@ export function gridStatuses(targets: readonly ExtraTarget[], records: readonly 
     const repaidQty = sales.reduce((a,r)=>a+ownQty(r),0) + execs.reduce((a, e) => a + e.qty - e.rewardQty, 0)
     const spreadCents = sales.reduce((sum, r) => sum + ((r.targetPriceCents ?? 0) - (r.buyPriceCents ?? 0)) * ownQty(r) + execs.filter(e => e.sellExecId === `sell:${r.sourceRow}`)
       .reduce((a, e) => a + ((r.targetPriceCents ?? 0) - e.priceCents) * (e.qty - e.rewardQty), 0), 0)
-    return { id: t.id, lotId: t.lotId, stockName: lots.find(l => l.id === t.lotId)?.stockName ?? '', mode: t.strategy!.mode,
+    return { id: t.id, lotId: t.lotId, stockName: lots.find(l => l.id === t.lotId)?.stockName ?? records.find(r => r.sourceRow === t.strategy?.sellRow)?.stockName ?? '', mode: t.strategy!.mode,
       qty: t.strategy?.sellRow !== undefined ? soldQty : t.qty, unfilledQty: t.strategy?.sellRow !== undefined ? 0 : Math.max(0, t.qty - soldQty), soldQty, repaidQty, pendingQty: Math.max(0, soldQty - repaidQty), spreadCents,
       holdingQty: sales.reduce((a,r)=>a+Math.max(0,Math.min(ownQty(r),(lots.find(l=>l.id===`lot:${r.sourceRow}`)?.remainingQty??0)-(surplus.find(s=>s.lotId===`lot:${r.sourceRow}`)?.qty??0))),0)
         + execs.reduce((a, e) => a + (lots.find(l => l.id === `lot:exec:${e.id}`)?.remainingQty ?? 0), 0),

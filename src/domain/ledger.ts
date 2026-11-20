@@ -67,6 +67,12 @@ export function buildLedger(
   const plans = opts.plans ?? []
   const extraTargets = opts.extraTargets ?? []
   const gridSales = strategySales(records, extraTargets, executions)
+  /**
+   * V9.69：显式选了「底仓做T」的先卖单行。它们不参与回本链，也不再自动挂高位批次
+   * （只有回本链需要关联高位买单）；模式档自带的 lotId 若指向真实批次，仍只用于
+   * 把卖出的底仓份额从库存里扣掉，不产生回本链。
+   */
+  const baseTRootRows = new Set([...gridSales].filter(([, t]) => t.strategy?.mode === 'baseT' && t.strategy.sellRow !== undefined).map(([row]) => row))
   const surplusTargets = remainingSellTargets(baseTSurplusTargets(records, extraTargets, baseAmountYuan), records)
   const planByRef = new Map(plans.map((p) => [p.refId, p]))
   const extraByLot = new Map<string, ExtraTarget[]>()
@@ -211,6 +217,7 @@ export function buildLedger(
         rebuyPriceCents,
         ownLotCoverQty,
         sellBeforeBuy: sellBeforeBuy || gridSales.has(r.sourceRow),
+        strategyMode: gridSales.get(r.sourceRow)?.strategy?.mode,
         groupKey: sellFirst && rebuyPriceCents !== null ? groupKeyOf(stockId, rebuyPriceCents) : groupKey,
         costComplete,
         // §7.1：卖出挂回买入批次；先卖后买（无批次）留 null
@@ -280,9 +287,18 @@ export function buildLedger(
   // 对得上（否则 10 元批次复活 + 6 元回补批次会双算成 1000 股）。了结的亏损进
   // 「回本链」，由低位继续做T的价差逐轮冲平。
   // V9.32 起按挂单时间（at）先后应用，抢同一批次股数时先挂先占。
-  const modeHedges: HedgeLink[] = [...gridSales].filter(([,t])=>t.strategy?.sellRow!==undefined).map(([row,t])=>({
-    id:`grid-hedge:${row}`,sellRow:row,items:[{row:Number(t.lotId.slice(4)),qty:byRow.get(row)?.soldQty??0}],at:t.at }))
-  const hedgeLinks = defaultHedges(live, lots, sells, [...(opts.hedges??[]).filter(h=>!modeHedges.some(x=>x.sellRow===h.sellRow)),...modeHedges])
+  const modeHedges: HedgeLink[] = [...gridSales]
+    .filter(([row, t]) => t.strategy?.sellRow !== undefined && Number(t.lotId.slice(4)) !== row && lots.some((l) => l.id === t.lotId))
+    .map(([row, t]) => ({
+      id: `grid-hedge:${row}`, sellRow: row, items: [{ row: Number(t.lotId.slice(4)), qty: byRow.get(row)?.soldQty ?? 0 }], at: t.at,
+    }))
+  const hedgeLinks = defaultHedges(
+    live,
+    lots,
+    sells,
+    [...(opts.hedges ?? []).filter((h) => !baseTRootRows.has(h.sellRow) && !modeHedges.some((x) => x.sellRow === h.sellRow)), ...modeHedges],
+    baseTRootRows,
+  )
   const sellByRow = new Map(sells.map((s) => [s.sourceRow, s]))
   const lotByRow = new Map(lots.map((l) => [l.sourceRow, l]))
   const hedgeUsedByLot = new Map<number, number>()

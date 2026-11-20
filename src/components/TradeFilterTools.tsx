@@ -1,6 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { Button, Input } from 'animal-island-ui'
-import { parseRecordSelection } from '../domain/recordSelection'
 import { toCents, centsToYuan } from '../domain/money'
 import { isoToSerial } from '../domain/edit'
 import { serialToIso } from '../domain/defaults'
@@ -15,22 +14,17 @@ export interface TradeRangeFilter {
 
 /** 输入草稿只在应用时生效，避免打到一半就把列表筛空。 */
 export function TradeFilterTools({
-  nos, range, onSelectNumbers, onApplyRange, onClearRange,
+  range, onApplyRange, onClearRange,
 }: {
-  nos: string
   range: TradeRangeFilter
-  onSelectNumbers: (value: string) => void
   onApplyRange: (value: TradeRangeFilter) => void
   onClearRange: () => void
 }) {
-  const [numbers, setNumbers] = useState(nos)
-  const [numberError, setNumberError] = useState<string | null>(null)
   const [low, setLow] = useState(range.priceLo === null ? '' : centsToYuan(range.priceLo))
   const [high, setHigh] = useState(range.priceHi === null ? '' : centsToYuan(range.priceHi))
   const [from, setFrom] = useState(range.from)
   const [to, setTo] = useState(range.to)
   const [rangeError, setRangeError] = useState<string | null>(null)
-  useEffect(() => { setNumbers(nos); setNumberError(null) }, [nos])
   useEffect(() => {
     setLow(range.priceLo === null ? '' : centsToYuan(range.priceLo))
     setHigh(range.priceHi === null ? '' : centsToYuan(range.priceHi))
@@ -39,12 +33,6 @@ export function TradeFilterTools({
     setRangeError(null)
   }, [range.priceLo, range.priceHi, range.from, range.to])
 
-  function selectNumbers(event: FormEvent) {
-    event.preventDefault()
-    const result = parseRecordSelection(numbers)
-    setNumberError(result.error)
-    if (!result.error) onSelectNumbers(numbers.trim())
-  }
   function applyRange(event: FormEvent) {
     event.preventDefault()
     const priceLo = low.trim() ? toCents(low) : null
@@ -63,17 +51,6 @@ export function TradeFilterTools({
   }
 
   return <div className="trade-filter-tools">
-    <form onSubmit={selectNumbers} className="record-selection-form">
-      <label htmlFor="record-selection-input" className="tiny">按第几笔查找</label>
-      <div className="record-selection-controls">
-        <Input id="record-selection-input" value={numbers} onChange={event => { setNumbers(event.target.value); setNumberError(null) }}
-          placeholder="如 2、5、8-10" data-testid="record-selection-input" aria-describedby="record-selection-help" aria-invalid={Boolean(numberError)} />
-        <Button size="small" htmlType="submit" data-action="apply-record-selection">应用序号</Button>
-        {nos && <Button size="small" type="text" data-action="clear-record-selection" onClick={() => onSelectNumbers('')}>清除</Button>}
-      </div>
-      <p id="record-selection-help" className="tiny muted">逗号分隔多笔，短横线表示连续范围；应用后替换来源限定。</p>
-      {numberError && <p className="tiny trade-filter-error" data-testid="record-selection-error" role="alert">{numberError}</p>}
-    </form>
     <details className="trade-range-filter" data-testid="trade-range-filter">
       <summary>价格与日期筛选</summary>
       <form onSubmit={applyRange}>
