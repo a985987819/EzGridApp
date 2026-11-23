@@ -117,12 +117,13 @@ describe('统计日历的网格表现口径', () => {
     expect(ledger.lots.find(l => l.id === 'lot:exec:e1')).toMatchObject({ buyPriceCents: 500, targetPriceCents: 1200, remainingQty: 500 })
   })
 
-  it('显式底仓做T全部回补后按卖出日一次性统计整笔价差，部分回补不算', () => {
+  it('显式底仓做T回补后即按卖出日统计做T价差，部分回补先计已买回份额', () => {
     const marker = { id: 'grid-mode:3', lotId: 'lot:3', qty: 0, priceCents: 700, at: 1,
       strategy: { mode: 'baseT' as const, sellRow: 3, rebuyPriceCents: 500, nextSellPriceCents: 700, groupId: 'grid-mode:3' } }
     const partial = project([high, root], { extraTargets: [marker], executions: [execution('e1', 3, 200, 500, '2026-02-01')] })
-    expect(partial.statistics.events).toEqual([])
-    expect(partial.statistics.pendingRebuyCount).toBe(1)
+    expect(partial.statistics.events).toMatchObject([{ kind: 'baseT', date: '2026-01-15', qty: 200, sellPriceCents: 700, buyPriceCents: 500, profitCents: 40000 }])
+    expect(partial.statistics.pendingRebuyCount).toBe(0)
+    expect(partial.statistics.daily).toEqual([{ day: '2026-01-15', sellCount: 1, sellQty: 200, sellAmountCents: 140000, baseTSellCount: 1, baseTSellAmountCents: 140000, baseTProfitCents: 40000, profitCents: 40000, dateMissing: false }])
     expect(partial.ledger.sells.find(s => s.sourceRow === 3)).toMatchObject({ strategyMode: 'baseT' })
     const full = project([high, root], { extraTargets: [marker], executions: [
       execution('e1', 3, 200, 500, '2026-01-31'), execution('e2', 3, 300, 550, '2026-02-01'),

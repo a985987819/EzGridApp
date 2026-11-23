@@ -111,7 +111,7 @@ describe('连续拆档与双模式', () => {
     expect(ledger.totals.targetQty).toBe(700)
     expect(ledger.lots.find(l=>l.id==='lot:exec:e1')).toMatchObject({buyPriceCents:500,targetPriceCents:1200})
   })
-  it('底仓做T没有可关联高位时不自动挂钩，部分回补只显示已买回量与剩余待买', () => {
+  it('底仓做T没有可关联高位时不自动挂钩，部分回补也计已买回份额的做T价差', () => {
     const root=row(3,{buyPriceCents:null,buyQtyRaw:null,buyDateSerial:null,soldQty:500,sellDateSerial:46001,targetPriceCents:700,earlyBuyPriceCents:500})
     const marker={id:'grid-mode:3',lotId:'lot:3',qty:0,priceCents:700,at:1,strategy:{mode:'baseT' as const,rebuyPriceCents:500,nextSellPriceCents:700,groupId:'grid-mode:3',sellRow:3}}
     let ledger=buildLedger([root],[stock],{extraTargets:[marker]});balanced(ledger)
@@ -120,8 +120,8 @@ describe('连续拆档与双模式', () => {
     expect(ledger.orders.find(o=>o.sourceRow===3)).toMatchObject({strategyMode:'baseT',sellFirst:true,rebuyPriceCents:500,baseQty:500,remainingQty:500})
     ledger=buildLedger([root],[stock],{extraTargets:[marker],executions:[exec(200)]});balanced(ledger)
     const sell=ledger.sells.find(s=>s.sourceRow===3)!
-    // V9.75：部分回补不提前结算做T价差，全部买回后才出整笔盈利。
-    expect(baseTRowSummary(sell)).toMatchObject({profitCents:null,boughtQty:200,remainingQty:300})
+    // V9.76：买回多少就计多少做T价差（恢复 V9.72 展示），剩余继续挂待买。
+    expect(baseTRowSummary(sell)).toMatchObject({profitCents:40000,boughtQty:200,remainingQty:300})
     expect(ledger.lots.find(l=>l.id==='lot:exec:e1')?.targetPriceCents).toBe(700)
     expect(ledger.repairChains).toHaveLength(0)
   })

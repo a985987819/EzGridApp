@@ -53,17 +53,17 @@ export function buildTradingStatistics(
     const lowRepairSale = sell.lotId !== null && lotById.get(sell.lotId)?.strategyOrigin?.mode === 'repair'
     const sellFirst = isSellFirst(record) || (sell.sellBeforeBuy && !lowRepairSale)
     /**
-     * V9.75：显式「底仓做T」必须**全部买回**后才一次性结算整笔做T价差。
-     * 部分回补只算「还没全部回补」，不产生日历事件、不提前记盈利；
-     * 结算后仍按**卖出日期**归属，方便回看这笔卖出发生在哪一天。
+     * V9.76（用户口径，恢复 V9.72）：显式「底仓做T」**只要买回了就计做T价差**——
+     * 部分回补先按已买回份额结算，后续继续买回累加成整笔；日期按**卖出日**归属，
+     * 日历也按卖出日汇总做T笔数与卖出金额，不等全部回补。
      */
     if (isSellFirst(record) && sell.strategyMode === 'baseT') {
       const fills = sell.actualRebuyFills ?? []
       const summary = baseTRowSummary(sell)
       if (sell.qty <= 0) continue
-      if (summary.remainingQty > 0 || summary.boughtQty !== sell.qty) { pendingRebuyCount++; continue }
+      if (summary.boughtQty <= 0) { pendingRebuyCount++; continue }
       if (sell.priceCents === null || fills.some((fill) => fill.priceCents === null)) { unpricedCount++; continue }
-      const qty = sell.qty
+      const qty = summary.boughtQty
       const buyAmountCents = fills.reduce((sum, fill) => sum + fill.qty * fill.priceCents!, 0)
       const sellAmountCents = sell.priceCents * qty
       if (![buyAmountCents, sellAmountCents].every(Number.isSafeInteger) || qty <= 0) { unpricedCount++; continue }

@@ -424,7 +424,7 @@ function CalendarCard({ goTrades, statistics, rowToId }: { goTrades: (q: TradesQ
         )}
       </div>
       <p className="tiny muted" data-testid="stats-basis" style={{ margin: '0 0 8px' }}>
-        先买后卖仅计盈利；底仓做T在全部买回后，按卖出日一次性展示做T笔数、卖出金额与整笔做T盈利，部分回补暂不统计；其余先卖后买全部回补后，在完成日计实际价差。此处网格收益不等于总账盈亏，高位亏损保留在总账和回本链。
+        先买后卖仅计盈利；底仓做T只要买回了就按卖出日计已买回份额的做T价差，日历同时展示做T笔数、卖出金额与做T盈利（部分回补先计已买回那部分，后续买回继续累加）；其余先卖后买全部回补后，在完成日计实际价差。此处网格收益不等于总账盈亏，高位亏损保留在总账和回本链。
         {statistics.pendingRebuyCount > 0 && <> 另有 {statistics.pendingRebuyCount} 笔尚未全部回补，暂不统计。</>}
         {statistics.unpricedCount > 0 && <> {statistics.unpricedCount} 笔待核对实际成交价，暂不统计。</>}
       </p>
@@ -478,7 +478,7 @@ function CalendarCard({ goTrades, statistics, rowToId }: { goTrades: (q: TradesQ
                   </div>
                   <div className="t2">{s.sourceRows.map(row => recordNoLabel(row, recordNo)).join('、')} · {s.kind === 'rebuy' ? '实际买回均价' : s.kind === 'baseT' ? '做T买回均价' : '买入成本'} {price2(s.buyPriceCents)}</div>
                   {s.kind === 'rebuy' && <div className="tiny muted">原卖出日 {s.originalSoldAt ?? '待补日期'} · 本日全部回补</div>}
-                  {s.kind === 'baseT' && <div className="tiny muted">按卖出日 {s.date ?? '待补日期'} 计入 · 已全部买回 {s.qty} 股 · 卖出金额 {money(s.sellAmountCents)}</div>}
+                  {s.kind === 'baseT' && <div className="tiny muted">按卖出日 {s.date ?? '待补日期'} 计入 · 已买回 {s.qty} 股 · 卖出金额 {money(s.sellAmountCents)}</div>}
                 </div>
                 <div className="right num">
                   <div className={tone(s.profitCents)} style={{ fontWeight: 700 }}>{signedMoney(s.profitCents)}</div>

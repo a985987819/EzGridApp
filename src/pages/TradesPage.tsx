@@ -495,7 +495,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       notificationOpen({
         message: mode === 'baseT' ? '已切到底仓做T' : '已切到回本链',
         description: mode === 'baseT'
-          ? '不关联高位买入；全部买回后按实际买回价一次性结算做T价差，部分回补暂不记盈利'
+          ? '不关联高位买入；买回多少就按实际买回价计多少做T价差，后续买回继续累加'
           : '按最高成本的未卖批次自动关联，后续价差累计到回本链',
         type: 'success',
       })
@@ -1229,15 +1229,17 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                 {currentBaseT && currentBaseTSummary && (
                   <div className="hint-block" data-testid="base-t-summary">
                     <strong>
-                      {currentBaseTSummary.remainingQty > 0
-                        ? `底仓做T · 待买回 ${qty(currentBaseTSummary.remainingQty)} 股`
-                        : currentBaseTSummary.profitCents != null
-                          ? `底仓做T · 做T盈利 ${signedMoney(currentBaseTSummary.profitCents)}`
+                      {currentBaseTSummary.profitCents != null
+                        ? `底仓做T · 做T盈利 ${signedMoney(currentBaseTSummary.profitCents)}`
+                        : currentBaseTSummary.remainingQty > 0
+                          ? `底仓做T · 待买回 ${qty(currentBaseTSummary.remainingQty)} 股`
                           : '底仓做T · 已全部买回'}
+                      {currentBaseTSummary.profitCents != null && currentBaseTSummary.remainingQty > 0
+                        && ` · 待买回 ${qty(currentBaseTSummary.remainingQty)} 股`}
                     </strong>
                     <p className="tiny muted" style={{ margin: '4px 0 0' }}>
-                      不关联高位买入，也不计入回本链；<strong>全部买回后</strong>才一次性结算整笔做T价差，
-                      买回后按原卖出价恢复目标。
+                      不关联高位买入，也不计入回本链；<strong>买回多少就按卖出价差计多少做T盈利</strong>，
+                      后续买回继续累加，全部买回即为整笔做T所得，买回后按原卖出价恢复目标。
                       {currentBaseTSummary.remainingQty > 0
                         ? `剩余 ${qty(currentBaseTSummary.remainingQty)} 股已放入待买清单（挂单页加粗边框），可到挂单页改单或在这里编辑回补价 P。`
                         : `已全部买回 ${qty(currentBaseTSummary.boughtQty)} 股。`}

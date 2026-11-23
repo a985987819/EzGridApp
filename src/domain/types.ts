@@ -510,10 +510,10 @@ export interface DayBucket {
   sellCount: number
   sellQty: number
   sellAmountCents: number
-  /** 其中「底仓做T」的卖出笔数与卖出金额；按卖出日归集，全部回补后才结算。 */
+  /** 其中「底仓做T」的卖出笔数与卖出金额；按卖出日归集，买回即计入已买回份额。 */
   baseTSellCount: number
   baseTSellAmountCents: number
-  /** 其中「底仓做T」的整笔做T盈利；部分回补时为 0 且不产生事件。 */
+  /** 其中「底仓做T」的做T盈利；部分回补只计已买回份额，全部回补后为整笔。 */
   baseTProfitCents: number
   profitCents: number
   dateMissing: boolean

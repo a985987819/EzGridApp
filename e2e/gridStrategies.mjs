@@ -228,13 +228,13 @@ try {
   check('已有先卖单买回500后仅一份12元目标，保留实际亏损和做T策略收益',v.totals.netQty===500&&v.targets.length===1&&v.targets[0].priceCents===1200&&v.chains.length===0&&v.totals.profitCents===-150000)
   const markerRoundtrip=await act(`const {exportLedgerWorkbook,parseLedgerWorkbook}=await import('/src/io/ledgerWorkbook.ts');const snapshot=JSON.parse(await testApp.exportBackup());const result=await parseLedgerWorkbook(await exportLedgerWorkbook(snapshot));const canon=v=>JSON.stringify(v,(_,x)=>x&&typeof x==='object'&&!Array.isArray(x)?Object.fromEntries(Object.entries(x).sort(([a],[b])=>a.localeCompare(b))):x);return canon(result.snapshot.extraTargets)===canon(snapshot.extraTargets)&&result.differences.length===0`)
   check('既有先卖单模式标记也完整Excel往返',markerRoundtrip)
-  // V9.75：只能从回本链单向切入底仓做T；部分回补不提前结算做T价差
+  // V9.76：只能从回本链单向切入底仓做T；买回多少就计多少做T价差
   await act(`await testApp.resetAll();window.sfbuy=await testApp.addManualRecord({kind:'sell',stockName:'T',date:'2026-10-21',price:'10',qty:'1000'})`)
   await sleep(250)
   await act(`await testApp.recordRebuy(testApp.ledger.orders.find(o=>o.sourceRow===sfbuy),400,500,0)`)
   await act(`await testApp.setSellGridMode(sfbuy,'baseT')`)
   const switched=await act(`const {baseTRowSummary}=await import('/src/domain/gridStrategy.ts');const rec=testApp.records.find(r=>r.sourceRow===sfbuy),order=testApp.ledger.orders.find(o=>o.sourceRow===sfbuy),sell=testApp.ledger.sells.find(s=>s.sourceRow===sfbuy);return {p:rec.earlyBuyPriceCents,orderPrice:order?.rebuyPriceCents,remainingQty:order?.remainingQty,sellMode:sell?.strategyMode,mode:testApp.extraTargets.find(t=>t.id==='grid-mode:'+sfbuy)?.strategy?.mode,summary:baseTRowSummary(sell),buySplit:testApp.ledger.buySplits.find(b=>b.sourceRow===sfbuy)}`)
-  check('切底仓做T生成卖出价减默认间隔的待买价，部分回补不提前计做T盈利',switched.p===943&&switched.orderPrice===943&&switched.remainingQty===600&&switched.sellMode==='baseT'&&switched.mode==='baseT'&&switched.summary.profitCents===null&&switched.summary.remainingQty===600,JSON.stringify(switched))
+  check('切底仓做T生成卖出价减默认间隔的待买价，部分回补即计已买回份额的做T盈利',switched.p===943&&switched.orderPrice===943&&switched.remainingQty===600&&switched.sellMode==='baseT'&&switched.mode==='baseT'&&switched.summary.profitCents===200000&&switched.summary.remainingQty===600,JSON.stringify(switched))
   check('待买清单出现默认价位的回补买单',switched.buySplit?.priceCents===943&&switched.buySplit?.qty===600,JSON.stringify(switched.buySplit))
   await evaluate(`location.hash='#/orders'`);await sleep(450)
   check('挂单页底仓做T未完成买单整圈加粗边框',await evaluate(`(()=>{const el=document.querySelector('[data-base-t-buy="1"]');if(!el)return false;const s=getComputedStyle(el);return parseFloat(s.borderTopWidth)>=2&&parseFloat(s.borderRightWidth)>=2&&parseFloat(s.borderLeftWidth)>=2})()`))
