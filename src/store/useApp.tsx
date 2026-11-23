@@ -1054,8 +1054,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!rec || rec.soldLotId) throw new Error('只支持先卖后买的行；来源批次的子卖出请在拆档时选择模式')
       const id=`grid-mode:${row}`
       if (mode==='repair') {
-        // 回本链是默认模式：删掉标记档，后续按最高成本高位批次自动关联。
-        // V9.70：允许从底仓做T切回（即使已经记过回补），份额与成交记录都不改。
+        // V9.75：回本链 → 底仓做T 是单向切换；已经切到底仓做T的行不能再退回回本链。
+        // 标记档或派生出的 strategyMode 任一命中都算底仓做T（拆档成交没有 grid-mode 标记）。
+        const {ledger:l}=await currentLedger()
+        const marked=targets.find(t=>t.id===id)?.strategy?.mode
+        const derived=l.sells.find(s=>s.sourceRow===row&&s.hedgedFromSellRow===undefined)?.strategyMode
+        if (marked==='baseT'||derived==='baseT') throw new Error('底仓做T只能从回本链单向切入，不能再切回回本链')
         await db.extraTargets.delete(id)
       } else {
         const {ledger:l}=await currentLedger()
@@ -1183,7 +1187,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
       }
       const link: HedgeLink = { id: `hedge:${sellRow}`, sellRow, items, at: Date.now() }
-      if ((await db.extraTargets.toArray()).some(t=>t.strategy?.sellRow===sellRow)) throw new Error('此先卖单已启用底仓做T，请先切回低位回本再改高位关联')
+      if ((await db.extraTargets.toArray()).some(t=>t.strategy?.sellRow===sellRow)) throw new Error('此先卖单已启用底仓做T，固定关联原高位批次，不能再改高位关联')
       await db.transaction('rw', db.hedges, db.auditLogs, async () => {
         // V9.33：旧值写上一次的分配（改挂也能回溯），新值写这次的分配
         const prev = await db.hedges.get(`hedge:${sellRow}`)
@@ -1201,7 +1205,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const clearHedgeLink = useCallback(
     async (sellRow: number) => {
-      if ((await db.extraTargets.toArray()).some(t=>t.strategy?.sellRow===sellRow)) throw new Error('此先卖单已启用底仓做T，请先切回低位回本再解除高位关联')
+      if ((await db.extraTargets.toArray()).some(t=>t.strategy?.sellRow===sellRow)) throw new Error('此先卖单已启用底仓做T，固定关联原高位批次，不能解除高位关联')
       const prev = (await currentLedger()).ledger.effectiveHedges.find((h) => h.sellRow === sellRow)
       await db.transaction('rw', db.hedges, db.auditLogs, async () => {
         // 空关联是明确的人工解除，避免重算时又自动挂回最高价批次。

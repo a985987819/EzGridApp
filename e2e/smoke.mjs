@@ -885,8 +885,13 @@ try {
   text = await bodyText()
   check('出现手动拆分目标', text.includes('手动拆分') && text.includes('10.00'))
   check('自动目标缩到 100', text.includes('自动（E 列）'))
-  // 清理：删掉刚拆的手动目标，回到 29 条待卖
-  check('删掉拆分目标', await clickByText('button', '删除'))
+  // 清理：删掉刚拆的手动目标，回到 29 条待卖（按「卖出目标」行作用域，避开抽屉底部同名的删除按钮）
+  check('删掉拆分目标', await evaluate(`(() => {
+    const row = [...document.querySelectorAll('.line')].find((x) => x.textContent.includes('手动拆分'))
+    const btn = row?.querySelector('button')
+    if (!btn) return false
+    btn.click(); return true
+  })()`))
   await sleep(700)
   check('拆分目标已移除', !(await bodyText()).includes('手动拆分'))
   const splitDefaults = await evaluate(`({
@@ -897,7 +902,10 @@ try {
   await sleep(700)
   const defaultTarget = (await readTable('extraTargets')).find((t) => t.lotId === 'lot:16')
   check('拆分实际采用默认价量', defaultTarget?.priceCents === Math.round(Number(splitDefaults.price) * 100) && defaultTarget?.qty === Number(splitDefaults.qty), JSON.stringify(defaultTarget))
-  await clickByText('button', '删除')
+  await evaluate(`(() => {
+    const row = [...document.querySelectorAll('.line')].find((x) => x.textContent.includes('手动拆分'))
+    row?.querySelector('button')?.click()
+  })()`)
   await sleep(500)
   await closeDrawer()
 

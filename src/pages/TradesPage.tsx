@@ -495,7 +495,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       notificationOpen({
         message: mode === 'baseT' ? '已切到底仓做T' : '已切到回本链',
         description: mode === 'baseT'
-          ? '不关联高位买入：买回后按原卖出价恢复目标，价差单独统计'
+          ? '不关联高位买入；全部买回后按实际买回价一次性结算做T价差，部分回补暂不记盈利'
           : '按最高成本的未卖批次自动关联，后续价差累计到回本链',
         type: 'success',
       })
@@ -1018,7 +1018,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                 <Tag size="small" variant="soft" color="app-red">
                   {[
                     '底仓做T',
-                    baseTSummary?.profitCents != null ? `已实现 ${signedMoney(baseTSummary.profitCents)}` : '',
+                    baseTSummary?.profitCents != null ? `做T盈利 ${signedMoney(baseTSummary.profitCents)}` : '',
                     baseTSummary && baseTSummary.remainingQty > 0 ? `剩 ${qty(baseTSummary.remainingQty)} 待买` : '',
                   ].filter(Boolean).join(' · ')}
                 </Tag>
@@ -1201,7 +1201,9 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                         type="button"
                         className="sell-mode-option"
                         aria-pressed={currentSellMode === 'repair'}
-                        disabled={modeBusy}
+                        disabled={modeBusy || currentSellMode === 'baseT'}
+                        data-locked={currentSellMode === 'baseT' ? '1' : undefined}
+                        title={currentSellMode === 'baseT' ? '底仓做T只能从回本链单向切入，不能再退回回本链' : undefined}
                         onClick={() => void switchSellMode('repair')}
                       >
                         回本链
@@ -1219,18 +1221,25 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                     </div>
                   </div>
                 )}
+                {canSwitchMode && currentSellMode === 'baseT' && (
+                  <p className="tiny muted" style={{ margin: '0 0 8px' }} data-testid="sell-mode-oneway">
+                    底仓做T只能从回本链单向切入，不能再退回回本链；已买回的份额与成交记录都不受影响。
+                  </p>
+                )}
                 {currentBaseT && currentBaseTSummary && (
                   <div className="hint-block" data-testid="base-t-summary">
                     <strong>
-                      {currentBaseTSummary.profitCents != null
-                        ? `底仓做T · 已实现 ${signedMoney(currentBaseTSummary.profitCents)}`
-                        : '底仓做T · 还没买回'}
+                      {currentBaseTSummary.remainingQty > 0
+                        ? `底仓做T · 待买回 ${qty(currentBaseTSummary.remainingQty)} 股`
+                        : currentBaseTSummary.profitCents != null
+                          ? `底仓做T · 做T盈利 ${signedMoney(currentBaseTSummary.profitCents)}`
+                          : '底仓做T · 已全部买回'}
                     </strong>
                     <p className="tiny muted" style={{ margin: '4px 0 0' }}>
-                      不关联高位买入，也不计入回本链：卖出后按实际买回价结算价差；
+                      不关联高位买入，也不计入回本链；<strong>全部买回后</strong>才一次性结算整笔做T价差，
                       买回后按原卖出价恢复目标。
                       {currentBaseTSummary.remainingQty > 0
-                        ? `剩余 ${qty(currentBaseTSummary.remainingQty)} 股已放入待买清单，可到挂单页改单或在这里编辑回补价 P。`
+                        ? `剩余 ${qty(currentBaseTSummary.remainingQty)} 股已放入待买清单（挂单页加粗边框），可到挂单页改单或在这里编辑回补价 P。`
                         : `已全部买回 ${qty(currentBaseTSummary.boughtQty)} 股。`}
                     </p>
                   </div>

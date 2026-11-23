@@ -52,12 +52,17 @@ export function GridPlanner({ stockName }: { stockName: string }) {
     <Card data-testid="grid-strategies">
       <div className="sec-head"><strong>连续拆档与策略</strong><div className="spacer"/><Button data-action="grid-open" onClick={()=>startPlan()}>批量拆档</Button></div>
       <p className="tiny muted">原单保留，按剩余份额连续排档；先卖后买可选择{GRID_MODE_LABEL.repair}或{GRID_MODE_LABEL.baseT}。</p>
-      {existing.length>0 && <details data-testid="grid-existing"><summary className="tiny">未回补先卖单 · 选择模式</summary>
-        <p className="tiny muted">底仓做T需先完整关联到一个高位批次；已有回补的历史不自动迁移。</p>
-        {existing.map(o=><div key={o.id} className="line wrap-row"><span>第 {recordNo.of(o.sourceRow)} 笔 · 当前{GRID_MODE_LABEL[o.strategyMode??'repair']}</span>
-          <select aria-label={`第${recordNo.of(o.sourceRow)}笔模式`} data-grid-existing={o.sourceRow} value={o.strategyMode??'repair'} disabled={busy} onChange={e=>{
-            setBusy(true);void setSellGridMode(o.sourceRow,e.target.value as GridMode).catch(err=>notificationOpen({message:'模式未保存',description:String(err),type:'error'})).finally(()=>setBusy(false))
-          }}><option value="repair">{GRID_MODE_LABEL.repair}</option><option value="baseT">{GRID_MODE_LABEL.baseT}</option></select></div>)}
+      {existing.length>0 && <details data-testid="grid-existing"><summary className="tiny">未回补先卖单 · 选择模式（底仓做T单向）</summary>
+        <p className="tiny muted">底仓做T需先完整关联到一个高位批次；切入后不能再退回回本链，已有回补的历史不自动迁移。</p>
+        {existing.map(o=>{
+          const locked=o.strategyMode==='baseT'
+          return <div key={o.id} className="line wrap-row"><span>第 {recordNo.of(o.sourceRow)} 笔 · 当前{GRID_MODE_LABEL[o.strategyMode??'repair']}</span>
+            <select aria-label={`第${recordNo.of(o.sourceRow)}笔模式`} data-grid-existing={o.sourceRow} value={o.strategyMode??'repair'} disabled={busy||locked}
+              title={locked?'底仓做T只能从回本链单向切入，不能再退回回本链':undefined}
+              onChange={e=>{
+                setBusy(true);void setSellGridMode(o.sourceRow,e.target.value as GridMode).catch(err=>notificationOpen({message:'模式未保存',description:String(err),type:'error'})).finally(()=>setBusy(false))
+              }}>{!locked && <option value="repair">{GRID_MODE_LABEL.repair}</option>}<option value="baseT">{GRID_MODE_LABEL.baseT}</option></select></div>
+        })}
       </details>}
       {statuses.length > 0 && <details data-testid="grid-status"><summary className="tiny">策略台账 · {statuses.length} 档</summary>
         {statuses.map(s => <div key={s.id} className="line wrap-row" data-grid-id={s.id} data-grid-mode={s.mode}>

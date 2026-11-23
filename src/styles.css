@@ -432,6 +432,16 @@ button { font-family: inherit; }
 .line.pending-buy { border-left: 3px solid var(--buy, #2f6fd6); }
 .line.pending-sell { border-left: 3px solid var(--up, #d0453f); }
 
+/* V9.75 底仓做T未完成买单：整圈加粗红框，和普通待买的左侧蓝条区分 */
+.line.base-t-buy {
+  border: 2px solid var(--up, #d0453f);
+  border-left-width: 3px;
+  border-radius: 6px;
+  padding-left: 8px;
+  padding-right: 8px;
+  margin: 4px 0;
+}
+
 /* 裸卖待挂钩入口标签（V9.30）：点一下弹绑定面板，给个手型光标提示可点 */
 .hedge-entry { cursor: pointer; }
 
@@ -1331,6 +1341,8 @@ button { font-family: inherit; }
 }
 .sell-mode-option[aria-pressed='true'] { color: #fff; font-weight: 700; }
 .sell-mode-option:disabled { cursor: wait; }
+/* V9.75：底仓做T单向锁定「回本链」按钮，明确不可点而不是加载中 */
+.sell-mode-option[data-locked='1'] { opacity: 0.5; cursor: not-allowed; }
 @media (prefers-reduced-motion: reduce) {
   .sell-mode-thumb, .sell-mode-option { transition: none; }
 }
@@ -1581,6 +1593,21 @@ button { font-family: inherit; }
   white-space: nowrap;
   font-size: 0.92em;
   flex: 0 0 auto;
+}
+/* V9.75：底仓做T全部回补后，在卖出日格子里补一行「做T笔数 + 卖出金额」 */
+.cal-day-stat .bt {
+  color: var(--up, #d0453f);
+  font-weight: 600;
+  white-space: nowrap;
+  font-size: 0.95em;
+  line-height: 1.05;
+}
+.cal-day-stat .bt-amt {
+  opacity: 0.8;
+  white-space: nowrap;
+  font-size: 0.95em;
+  line-height: 1.05;
+  font-variant-numeric: tabular-nums;
 }
 .cal-day-stat { font-size: 9px; letter-spacing: -0.1px; }
 .cal-day-stat .amt { font-weight: 400; }

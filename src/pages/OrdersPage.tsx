@@ -344,8 +344,10 @@ export function OrdersPage({
   }
   const buySuggestionLine=(r:BuySuggestion)=>{
     const link = tradeSourceLink(r.stockName, r.sources.filter(source => source.qty > 0).map(source => source.row), sourceIndex)
+    // V9.75：底仓做T还没买回的买单在挂单页整圈加粗，和普通待买的左侧蓝条区分。
+    const baseTBuy = r.strategyMode === 'baseT' || r.sources.some((source) => 'strategyMode' in source && source.strategyMode === 'baseT')
     return (
-    <div key={r.key} className={`line wrap-row pending-buy${link.query ? ' clickable' : ''}`} data-testid="buy-suggestion" data-row={r.sources[0]?.row} data-price={r.priceCents} data-reward-qty={r.rewardQty ?? 0} data-edited={r.edited ? '1' : undefined} data-sell-first={r.sellFirst ? '1' : undefined}
+    <div key={r.key} className={`line wrap-row pending-buy${baseTBuy ? ' base-t-buy' : ''}${link.query ? ' clickable' : ''}`} data-testid="buy-suggestion" data-base-t-buy={baseTBuy ? '1' : undefined} data-row={r.sources[0]?.row} data-price={r.priceCents} data-reward-qty={r.rewardQty ?? 0} data-edited={r.edited ? '1' : undefined} data-sell-first={r.sellFirst ? '1' : undefined}
       // V9.58：锦上添花里全部来源都是「下一轮」的档保留深链身份（点行跳已完成那笔，不被 hideDone 挡）
       data-buy-level={r.sources.every((v) => v.kind === 'next') ? r.sources[0]?.row : undefined}
       onClick={(e) => {
@@ -1427,11 +1429,14 @@ export function OrdersPage({
                 const sim = sandboxByRow.get(o.sourceRow)
                 const link = view.effectiveHedges.find((h) => h.sellRow === o.sourceRow && h.items.length > 0)
                 const source = tradeSourceLink(o.stockName, [o.sourceRow], sourceIndex)
+                // V9.75：逐笔台账里的底仓做T未完成买单同样加粗，方便和挂单区对上。
+                const baseTBuy = o.strategyMode === 'baseT' && o.remainingQty > 0
                 return (
                   <div
                     key={o.id}
-                    className={`line ${sim ? 'sandbox-row' : source.query ? 'clickable' : ''}`}
+                    className={`line${baseTBuy ? ' base-t-buy' : ''}${sim ? ' sandbox-row' : source.query ? ' clickable' : ''}`}
                     data-row={o.sourceRow}
+                    data-base-t-buy={baseTBuy ? '1' : undefined}
                     data-sandbox-row={sim ? o.sourceRow : undefined}
                     data-anim={justRebought.has(o.sourceRow) ? 'done' : undefined}
                     onClick={sim ? undefined : () => openSources(source)}

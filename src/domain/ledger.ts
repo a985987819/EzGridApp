@@ -1079,12 +1079,17 @@ function summarizeDaily(sells: SellExecution[]): DayBucket[] {
     const day = s.soldAt ?? '未填日期'
     let b = map.get(day)
     if (!b) {
-      b = { day, sellCount: 0, sellQty: 0, profitCents: 0, dateMissing: day === '未填日期' }
+      b = {
+        day, sellCount: 0, sellQty: 0, sellAmountCents: 0,
+        baseTSellCount: 0, baseTSellAmountCents: 0, baseTProfitCents: 0,
+        profitCents: 0, dateMissing: day === '未填日期',
+      }
       map.set(day, b)
     }
     if (s.hedgedFromSellRow === undefined) {
       b.sellCount += 1
       b.sellQty += s.qty
+      b.sellAmountCents += (s.priceCents ?? 0) * s.qty
     }
     b.profitCents += s.profitCents ?? 0
   }
