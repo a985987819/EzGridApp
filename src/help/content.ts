@@ -18,6 +18,7 @@ import perfPlan from '../../docs/优化建议-动效性能加载更新-2026-11.m
 import splitPlan from '../../docs/拆档与先卖后买双模式规划.md?raw'
 import roadmap from '../../docs/云端同步与持续优化路线图.md?raw'
 import m00 from '../../docs/M00现状与性能基线-2026-11-04.md?raw'
+import lifecycle from '../../docs/交易生命周期与完成口径.md?raw'
 import { buildManageHash, type ManageQuery } from '../ui/nav'
 
 export interface GuideDocument {
@@ -42,6 +43,7 @@ export const documents: readonly GuideDocument[] = [
   { id: 'split-plan', title: '拆档与先卖后买双模式', file: '拆档与先卖后买双模式规划.md', summary: '原单不改、连续排档、低位回本与底仓做T的操作与边界', kind: 'rules', body: splitPlan },
   { id: 'booking-plan', title: '记账流程改进方案', file: '记账流程与防重改进建议.md', summary: '初版规划与后续方向，当前功能以成交记录与核对为准', kind: 'history', body: bookingPlan },
   { id: 'kinds', title: '明细类型图鉴', file: 'detail-kinds.md', summary: '持仓、先卖后买、回补和链的类型速查', kind: 'rules', body: kinds },
+  { id: 'lifecycle', title: '三类交易生命周期与完成口径', file: '交易生命周期与完成口径.md', summary: '普通买单/回本链/底仓做T 的状态机、拆多次完成判定与代码锚点', kind: 'rules', body: lifecycle },
   { id: 'scenarios', title: '网格交易场景与核对', file: '网格交易场景与核对.md', summary: '108 个场景、五个算例和核对公式', kind: 'rules', body: scenarios },
   { id: 'workbook', title: '完整台账 Excel', file: '完整台账Excel.md', summary: '全量导出、字段单位、编辑与恢复预览', kind: 'rules', body: workbook },
   { id: 'sell-first', title: '先卖后买与回本链', file: '先卖后买与回本链需求.md', summary: '覆盖、高位关联、回本及真实 CSV 基准', kind: 'rules', body: sellFirst },

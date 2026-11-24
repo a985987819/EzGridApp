@@ -149,7 +149,7 @@ try {
   check('问题深链直达对应段落并显示当前修复状态', await run(`location.hash.includes('anchor=c01') && document.querySelector('#c01').getBoundingClientRect().top>=0 && document.querySelector('#c01').getBoundingClientRect().top<160`) && (await text()).includes('2026-11-05已修复并补反例'))
   await click('[data-testid="guide-back"]')
   await click('[data-guide-mode="documents"]')
-  check('完整文档收录全部20篇本地指南、规划与审计资料', await run(`document.querySelectorAll('[data-guide-doc]').length===20`))
+  check('完整文档收录全部21篇本地指南、规划与审计资料', await run(`document.querySelectorAll('[data-guide-doc]').length===21`))
   await click('[data-guide-doc="optimization-roadmap"]')
   check('云优化路线图明确待实施状态并展示分轮任务', (await text()).includes('当前应用尚未提供其中的新功能') && (await text()).includes('下一轮入口') && (await text()).includes('M00'))
   const roadmapHash = await run('location.hash')
