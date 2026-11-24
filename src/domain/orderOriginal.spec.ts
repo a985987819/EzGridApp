@@ -73,17 +73,18 @@ describe('改单前的推荐参考只展示当前未完成份额', () => {
     expect(r.members).toEqual([{ key: 'buy:cover:T:550', qty: 100 }, { key: 'buy:cover:T:650', qty: 500 }])
   })
 
-  it('买入参考按欠股/可选及显式策略隔离，默认策略保持原推荐身份', () => {
+  it('买入参考按欠股/可选隔离；欠股内改单价撞同价（含显式策略）合并为一条', () => {
     const splits = [
       split(9, 600, 300, { strategyMode: 'repair', strategyIsDefault: true }),
       split(10, 600, 200, { strategyMode: 'repair', originalPriceCents: 620 }),
       split(11, 600, 100, { strategyMode: 'baseT', originalPriceCents: 640 }),
     ]
     const board = buildBuySuggestions(splits, [next({ key: 'buy:2', qty: 100, rows: [2], sourceQty: { 2: 100 } })], [plan('buy', 'buy:cover:T:600', 580, 100)])
-    expect(board).toHaveLength(4)
-    expect(board.find(r => r.key === 'buy:cover:T:600')).toMatchObject({ qty: 100, originalQty: 300, originalAmountCents: 180000 })
-    expect(board.find(r => r.key === 'buy:cover:T:600:repair')).toMatchObject({ qty: 200, originalQty: 200, originalAmountCents: 124000 })
-    expect(board.find(r => r.key === 'buy:cover:T:600:baseT')).toMatchObject({ qty: 100, originalQty: 100, originalAmountCents: 64000 })
+    expect(board).toHaveLength(3)
+    // 默认策略改单挪到 580，单独占一条（计划身份不变）
+    expect(board.find(r => r.key === 'buy:cover:T:600')).toMatchObject({ priceCents: 580, qty: 100, originalQty: 300, originalAmountCents: 180000, edited: true })
+    // 显式低位回本 + 底仓做T 同价 → 欠股分区内合并为一条，来源保留
+    expect(board.find(r => r.key === 'buy:cover:T:600:repair')).toMatchObject({ priceCents: 600, qty: 300, originalQty: 300, originalAmountCents: 188000, mixedStrategy: true })
     expect(board.find(r => r.key === 'buy:optional:T:600')).toMatchObject({ qty: 100, originalQty: 100, originalAmountCents: 60000 })
   })
 

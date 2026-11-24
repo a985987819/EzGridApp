@@ -1292,6 +1292,12 @@ try {
   const blk = JSON.parse(blocks)
   check('挂单页有带边框的数据块', blk.bordered >= 2, blocks)
   check('三组卡片标题都在', blk.heads.includes('应该买入') && blk.heads.includes('锦上添花') && blk.heads.includes('应该卖出'), blocks)
+  // V9.80：锦上添花移到应该卖出下方（用户口径）
+  check('锦上添花卡在应该卖出下方', await evaluate(`(() => {
+    const sell = document.querySelector('[data-testid="should-sell-card"]')
+    const bonus = document.querySelector('[data-testid="bonus-card"]')
+    return Boolean(sell && bonus && (sell.compareDocumentPosition(bonus) & Node.DOCUMENT_POSITION_FOLLOWING))
+  })()`))
 
   // V9.29.1：可挂买 / 可挂卖 行加左侧状态边框（与明细页 trade-item 同语义：蓝=买、红=卖）
   const rowEdge = await evaluate(`(() => {
@@ -1548,12 +1554,7 @@ try {
   await closeDrawer()
   await nav('orders')
   await sleep(1000)
-  // V9.58：区间外的合并行收进「区间外」折叠区，先展开再读（收起时 innerText 拿不到内容）
-  const openOut = await evaluate(`(() => {
-    const d = document.querySelector('[data-testid="sell-out"]')
-    if (d && !d.open) d.open = true
-    return Boolean(d)
-  })()`)
+  // V9.80：应该卖出不再折叠区间外行，合并行（含逐笔数量）直接在主列表里
   const mergedRaw = await evaluate(`(() => {
     const blocks = [...document.querySelectorAll('.data-block')]
     const rows = blocks.flatMap((b) => [...b.querySelectorAll('.line[data-merge-group]')])
@@ -1573,6 +1574,14 @@ try {
   check('合并行标「合并 3 笔」', mergedRow.text.includes('合并 3 笔'), mergedRaw)
   check('合并行日期取最早的 2026-03-16', mergedRow.text.includes('2026-03-16'), mergedRaw)
   check('合并行带 data-merge-group', mergedRow.stale.some((key)=>key.includes('sell:柳工:1068')), mergedRaw)
+  // V9.80：合并卖单下方逐条列「第 N 笔 · 买入价 · 数量」；区间外卖档不再折叠
+  const mergeMembers = await evaluate(`(() => {
+    const el = document.querySelector('.line[data-merge-group] [data-testid="sell-merge-members"]')
+    return el ? el.innerText.replace(/\\s+/g, ' ').trim() : ''
+  })()`)
+  check('合并卖单下方逐条列每笔买入价与数量', mergeMembers.includes('第 10 笔') && mergeMembers.includes('买入 10.09') && mergeMembers.includes('800 股'), mergeMembers)
+  check('应该卖出不再折叠区间外卖档', await evaluate(`!document.querySelector('[data-testid="sell-out"]')`))
+  check('越界卖档直接标「越界」', await evaluate(`[...document.querySelectorAll('[data-testid="should-sell-card"] .line')].some((el) => el.textContent.includes('越界'))`))
   const mergedShot = await send('Page.captureScreenshot', { format: 'png' })
   writeFileSync(join(OUT, 'mobile-orders-merged.png'), Buffer.from(mergedShot.data, 'base64'))
 
@@ -1593,7 +1602,6 @@ try {
   await closeDrawer()
   await nav('orders')
   await sleep(900)
-  await evaluate(`(() => { const d = document.querySelector('[data-testid="sell-out"]'); if (d && !d.open) d.open = true })()`)
   const splitRaw = await evaluate(`(() => {
     const same = [...document.querySelectorAll('.data-block .line')].filter((l) => l.textContent.includes('10.68'))
     return JSON.stringify({

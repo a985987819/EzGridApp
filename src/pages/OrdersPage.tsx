@@ -32,7 +32,6 @@ import type { TradesQuery } from '../ui/nav'
 import type { BuySplit, RebuyOrder } from '../domain/types'
 import { HedgeSheet } from '../components/HedgeBinder'
 import { SplitModal } from '../components/SplitModal'
-import { GridPlanner } from '../components/GridPlanner'
 
 /** 当前推荐对应的原价原量，仅作改单前后的对照。 */
 function OriginalRecommendation({ shares, amountCents }: { shares: number; amountCents: number }) {
@@ -249,8 +248,12 @@ export function OrdersPage({
   // 与卖档/下一轮/逐笔台账使用同一个选股范围，再做建议合并与区间判断。
   const buySplits = useMemo(() => view.buySplits.filter(b => b.stockName === effectiveStock), [view.buySplits, effectiveStock])
   const orderById = new Map(orders.map((o) => [o.id, o]))
-  const sellShown = range ? targetRows.filter((r) => within(r.priceCents)) : targetRows
-  const sellOutRows = range ? targetRows.filter((r) => !within(r.priceCents)) : []
+  /**
+   * V9.80 用户口径：**正常已买入批次的卖出推荐要全部列出来**——不再把区间外的卖档
+   * 折进「区间外」小节（行上直接标 区间内/越界），避免只看主列表时以为只剩先卖后买。
+   * 买入侧仍保留区间外折叠（未确认区间时不出推荐）。
+   */
+  const sellShown = targetRows
   const sellAmount = sellShown.reduce((a, r) => a + r.amountCents, 0)
 
   /**
@@ -350,7 +353,7 @@ export function OrdersPage({
     // V9.79：这笔买单在给一条还没回本的回本链补窟窿 → 橙色阴影提醒
     const chainOpen = r.sources.some((source) => openChainRows.rows.has(source.row))
     return (
-    <div key={r.key} className={`line wrap-row pending-buy${baseTBuy ? ' base-t-buy' : ''}${chainOpen ? ' chain-open' : ''}${link.query ? ' clickable' : ''}`} data-testid="buy-suggestion" data-base-t-buy={baseTBuy ? '1' : undefined} data-chain-open={chainOpen ? '1' : undefined} data-row={r.sources[0]?.row} data-price={r.priceCents} data-reward-qty={r.rewardQty ?? 0} data-edited={r.edited ? '1' : undefined} data-sell-first={r.sellFirst ? '1' : undefined}
+      <div key={r.key} className={`line wrap-row pending-buy${baseTBuy ? ' base-t-buy' : ''}${chainOpen ? ' chain-open' : ''}${link.query ? ' clickable' : ''}`} data-testid="buy-suggestion" data-base-t-buy={baseTBuy ? '1' : undefined} data-chain-open={chainOpen ? '1' : undefined} data-mixed-strategy={r.mixedStrategy ? '1' : undefined} data-row={r.sources[0]?.row} data-price={r.priceCents} data-reward-qty={r.rewardQty ?? 0} data-edited={r.edited ? '1' : undefined} data-sell-first={r.sellFirst ? '1' : undefined}
       // V9.58：锦上添花里全部来源都是「下一轮」的档保留深链身份（点行跳已完成那笔，不被 hideDone 挡）
       data-buy-level={r.sources.every((v) => v.kind === 'next') ? r.sources[0]?.row : undefined}
       onClick={(e) => {
@@ -384,7 +387,7 @@ export function OrdersPage({
               key 只用「类型+行号」会重复；带上拆分段身份/股数才唯一 */}
           {r.sources.map((v)=>{
             const single = tradeSourceLink(r.stockName, [v.row], sourceIndex)
-            return <div key={`${v.kind}:${v.row}:${v.kind==='order'?(v.splitKey??''):''}:${v.qty}`} className="tiny"><Button type="text" size="small" disabled={!single.query} onClick={stopWith(()=>openSources(single))}>{recordNoLabel(v.row,recordNo)}</Button> · {v.kind==='next'?'下一轮':(v.sellFirst?'先卖后买':'待回补')}{v.kind==='order' && v.splitKey?.includes('#') ? ` 第 ${buySplits.filter(b=>b.orderId===v.id&&b.split).findIndex(b=>b.key===v.splitKey)+1} 档` : ''} {qty(v.qty)} 股</div>
+            return <div key={`${v.kind}:${v.row}:${v.kind==='order'?(v.splitKey??''):''}:${v.qty}`} className="tiny"><Button type="text" size="small" disabled={!single.query} onClick={stopWith(()=>openSources(single))}>{recordNoLabel(v.row,recordNo)}</Button> · {v.kind==='next'?'下一轮':(v.sellFirst?'先卖后买':'待回补')}{r.mixedStrategy && v.kind==='order' && v.strategyMode ? ` · ${GRID_MODE_LABEL[v.strategyMode]}` : ''}{v.kind==='order' && v.splitKey?.includes('#') ? ` 第 ${buySplits.filter(b=>b.orderId===v.id&&b.split).findIndex(b=>b.key===v.splitKey)+1} 档` : ''} {qty(v.qty)} 股</div>
           })}
         </details>
       </div>
@@ -471,7 +474,7 @@ export function OrdersPage({
   /** 待卖行的身份文案：合并行报「合并 N 笔 + 最早买入日期」，单笔行还是「第 N 笔 · 买入价」 */
   const sellRowLabel = (r: TargetRow) =>
     r.merged
-      ? `合并 ${r.lotRows.length} 笔 · 买入 ${price(r.buyPriceCents)}${r.earliestBuyDate ? ` · 最早 ${r.earliestBuyDate}` : ''}`
+      ? `合并 ${r.lotRows.length} 笔${r.buyPriceCents !== null ? ` · 买入 ${price(r.buyPriceCents)}` : ''}${r.earliestBuyDate ? ` · 最早 ${r.earliestBuyDate}` : ''}`
       : `${lotLabel(r.targets[0].lotId, recordNo)} · 买入 ${price(r.buyPriceCents)}`
   /** 复制 / CSV 里的短标签 */
   const sellRowShort = (r: TargetRow) =>
@@ -642,7 +645,26 @@ export function OrdersPage({
               ? `${sellRowLabel(r)} · 预期 ${signedMoney(r.expectProfitCents)}`
               : `${sim ? '沙盒模拟批次' : lotLabel(r.targets[0].lotId, recordNo)} · 预期 ${signedMoney(r.expectProfitCents)}`}
           </div>
+          {/* V9.80：同价合并的卖出挂单在下方逐条列数量（用户口径：合计看总数，明细看每一条） */}
+          {r.merged && (
+            <div className="tiny muted" data-testid="sell-merge-members" style={{ marginTop: 2 }}>
+              {r.targets.map((t) => {
+                const lot = view.lots.find((l) => l.id === t.lotId)
+                return (
+                  <div key={`${t.lotId}:${t.id}`}>
+                    {lotLabel(t.lotId, recordNo)}
+                    {lot ? ` · 买入 ${price(lot.buyPriceCents)}` : ''} · {qty(t.qty)} 股
+                  </div>
+                )
+              })}
+            </div>
+          )}
           {r.targets[0]?.strategyMode && <Tag size="small" variant="soft">{GRID_MODE_LABEL[r.targets[0].strategyMode]}</Tag>}
+          {range && (
+            <Tag size="small" variant="soft" color={zone(r.priceCents) === '区间内' ? 'app-green' : 'app-red'}>
+              {zone(r.priceCents)}
+            </Tag>
+          )}
           {r.planPriceCents != null && (
             <div className="tag-row" style={{ marginTop: 4 }}>
               <Tag size="small" variant="soft" color="purple">
@@ -969,7 +991,7 @@ export function OrdersPage({
         `昨收 ${(confirmed.closeCents / 100).toFixed(2)} · 区间 ${(range.downCents / 100).toFixed(2)}~${(range.upCents / 100).toFixed(2)}`,
       )
     }
-    /** V9.58：复制清单按三组顺序（应该买入 → 锦上添花 → 应该卖出），区间外只报数量 */
+    /** V9.80：复制清单顺序跟随页面（应该买入 → 应该卖出 → 锦上添花），卖档全部列出；区间外只报买入数量 */
     if (buyWindow.referenceCents !== null) lines.push(`上次最低未完成买单 ${price(buyWindow.referenceCents)} · 买入仅推荐低于此价的档位`)
     const musts = mustToday
     const bonuses = bonusToday
@@ -977,21 +999,21 @@ export function OrdersPage({
       lines.push('【应该买入】')
       for (const r of musts) lines.push(`  ${price(r.priceCents)} × ${r.qty} 股（${r.sources.length} 笔来源${r.sellFirst ? ' · 先卖后买' : ''}）`)
     }
-    if (bonuses.length) {
-      lines.push('【锦上添花】')
-      for (const r of bonuses) lines.push(`  ${price(r.priceCents)} × ${r.qty} 股（${r.sources.length} 笔来源）`)
-    }
-    const sells = range ? sellShown : targetRows
+    const sells = targetRows
     if (sells.length) {
       lines.push('【应该卖出】')
       for (const r of sells) {
         lines.push(`  ${sellRowShort(r)}  ${price(r.planPriceCents ?? r.priceCents)} × ${r.planQty ?? r.qty} 股`)
       }
     }
+    if (bonuses.length) {
+      lines.push('【锦上添花】')
+      for (const r of bonuses) lines.push(`  ${price(r.priceCents)} × ${r.qty} 股（${r.sources.length} 笔来源）`)
+    }
     if (range) {
       const outBuys = [...mustOut, ...bonusOut]
-      if (outBuys.length || sellOutRows.length) {
-        lines.push(`【区间外 · 今日无法成交】买 ${outBuys.length} 档 · 卖 ${sellOutRows.length} 档`)
+      if (outBuys.length) {
+        lines.push(`【区间外 · 今日无法成交】买 ${outBuys.length} 档`)
       }
     } else {
       lines.push('（未确认涨跌停区间，暂不推荐买入；以上仅展示待卖）')
@@ -1001,9 +1023,9 @@ export function OrdersPage({
   }
 
   function exportCsv() {
-    const mustKeys = new Set(mustBuy.map((r) => r.key))
     const rows: (string | number)[][] = [['类型', '序号', '价格', '股数', '金额', '区间']]
-    for (const r of [...mustToday, ...bonusToday]) rows.push([mustKeys.has(r.key) ? '应该买入' : '锦上添花',r.sources.map((v)=>recordNoLabel(v.row,recordNo)).join(' + '),price(r.priceCents),r.qty,(r.amountCents/100).toFixed(2),zone(r.priceCents)])
+    // V9.80：导出顺序跟随页面（应该买入 → 应该卖出 → 锦上添花）
+    for (const r of mustToday) rows.push(['应该买入', r.sources.map((v)=>recordNoLabel(v.row,recordNo)).join(' + '),price(r.priceCents),r.qty,(r.amountCents/100).toFixed(2),zone(r.priceCents)])
     for (const r of targetRows) {
       const p = r.planPriceCents ?? r.priceCents
       const q = r.planQty ?? r.qty
@@ -1016,6 +1038,7 @@ export function OrdersPage({
         zone(p),
       ])
     }
+    for (const r of bonusToday) rows.push(['锦上添花', r.sources.map((v)=>recordNoLabel(v.row,recordNo)).join(' + '),price(r.priceCents),r.qty,(r.amountCents/100).toFixed(2),zone(r.priceCents)])
     downloadText(`${effectiveStock}-挂单清单.csv`, toCsv(rows), 'text/csv;charset=utf-8')
   }
 
@@ -1373,7 +1396,38 @@ export function OrdersPage({
         )}
       </Card>
 
-      {/* 3. 锦上添花：已完成批次的下一轮 + P 列再买——拿这一轮的钱再投一轮（V9.58） */}
+      {/* 3. 应该卖出：未完成买单的所有可卖份额（V9.58/ V9.80 区间外也逐行列出并标区间） */}
+      <Card data-testid="should-sell-card">
+        <div className="sec-head">
+          <strong>应该卖出</strong>
+          <Tag size="small" variant="soft" color="app-orange">{sellShown.length} 档</Tag>
+          <div className="spacer" />
+          <span className="sec-sub">
+            {effectiveStock}
+            {sellAmount > 0 && ` · ${money(sellAmount)}`}
+          </span>
+        </div>
+        {sellShown.length === 0 ? (
+          <div className="empty-box">
+            {sandbox.active ? '该股批次已全部卖完，沙盒面板可加模拟待卖' : '该股批次已全部卖完'}
+          </div>
+        ) : (
+          <div className="data-block">{sellShown.map(sellLine)}</div>
+        )}
+        {targetRows.length > 0 && (
+          <div className="data-block">
+            <div className="line">
+              <div className="left t1">合计</div>
+              <div className="right num" style={{ fontWeight: 600 }}>
+                {money(targetTotal)}
+                <div className="tiny up num">{signedMoney(targetRows.reduce((a, r) => a + r.expectProfitCents, 0))}</div>
+              </div>
+            </div>
+          </div>
+        )}
+      </Card>
+
+      {/* 4. 锦上添花：已完成批次的下一轮 + P 列再买——拿这一轮的钱再投一轮（V9.58；V9.80 移到卖单下方） */}
       <Card data-testid="bonus-card">
         <div className="sec-head">
           <strong>锦上添花</strong>
@@ -1416,45 +1470,6 @@ export function OrdersPage({
         <p className="tiny muted" style={{ margin: '8px 0 0' }}>
           已完成批次回到买入价那一档再买一轮；P列再买也归这里。下一轮与回补共用价位盈利奖励，已用金额不会重复授予。
         </p>
-      </Card>
-
-      {!sandbox.active && <GridPlanner stockName={effectiveStock} />}
-
-      {/* 4. 应该卖出：未完成买单的所有可卖份额（V9.58） */}
-      <Card data-testid="should-sell-card">
-        <div className="sec-head">
-          <strong>应该卖出</strong>
-          <Tag size="small" variant="soft" color="app-orange">{sellShown.length} 档</Tag>
-          <div className="spacer" />
-          <span className="sec-sub">
-            {effectiveStock}
-            {sellAmount > 0 && ` · ${money(sellAmount)}`}
-          </span>
-        </div>
-        {sellShown.length === 0 ? (
-          <div className="empty-box">
-            {sandbox.active ? '该股批次已全部卖完，沙盒面板可加模拟待卖' : '该股批次已全部卖完'}
-          </div>
-        ) : (
-          <div className="data-block">{sellShown.map(sellLine)}</div>
-        )}
-        {sellOutRows.length > 0 && (
-          <details className="divider-top" data-testid="sell-out">
-            <summary className="tiny muted">区间外 · {outSummary(sellOutRows)}</summary>
-            <div className="data-block">{sellOutRows.map(sellLine)}</div>
-          </details>
-        )}
-        {targetRows.length > 0 && (
-          <div className="data-block">
-            <div className="line">
-              <div className="left t1">合计</div>
-              <div className="right num" style={{ fontWeight: 600 }}>
-                {money(targetTotal)}
-                <div className="tiny up num">{signedMoney(targetRows.reduce((a, r) => a + r.expectProfitCents, 0))}</div>
-              </div>
-            </div>
-          </div>
-        )}
       </Card>
 
       {/* 5. 台账：逐笔回补的状态、撤销与挂钩入口——审计工具，默认收起（V9.58） */}

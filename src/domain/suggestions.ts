@@ -46,6 +46,11 @@ export interface BuySuggestion {
   purpose?: 'cover' | 'optional'
   planRefs?: string[]
   legacyPlanConflict?: boolean
+  /**
+   * V9.80：同一分区内同价合并后，来源里混着不同策略模式（显式低位回本 / 底仓做T / 普通）。
+   * 行级不再挂单一模式标签，改在来源明细里逐条标。
+   */
+  mixedStrategy?: boolean
 }
 export function consumedNextRounds(records: readonly RawRecord[]): Map<number,number> {
   const out=new Map<number,number>()
@@ -235,14 +240,16 @@ export function buildBuySuggestions(splits: readonly BuySplit[], next: readonly 
   /**
    * V9.55：**改单之后撞价的要再合一次**。上面第一次合并是按「派生价」合的，改单把两档
    * 改到同一个价位之后就成了两行同价同类型的挂单——既难看也容易点错。这里按
-   * （股票 + 最终价）重新归组：数量相加、金额按最终价重算，**来源各自留着**
+   * （分区 + 股票 + 最终价）重新归组：数量相加、金额按最终价重算，**来源各自留着**
    * （改单不动来源，`sources` 一条都不少，界面上分开列）。
    * 行身份优先留「本来就落在这个价」的那条（`buy:股票:价`），没有就沿用第一条——
    * 计划是按 key 挂的，身份稳定才不会出现「改完一刷新又变回去」的抖动。
+   * V9.80（用户口径）：策略身份（显式低位回本 / 底仓做T）不再妨碍同价合并——**同一分区内**
+   * 同价就并成一条（跨分区不并），行上不再挂单一模式标签，来源明细里逐条标模式。
    */
   const byPrice = new Map<string, BuySuggestion>()
   const originalByPrice = new Map<string, { qty: number; amountCents: number }>()
-  const bucketOf = (r: BuySuggestion) => `${r.purpose}|${r.strategyIsDefault ? '' : r.strategyMode ?? ''}|${r.stockName}|${r.priceCents}`
+  const bucketOf = (r: BuySuggestion) => `${r.purpose}|${r.stockName}|${r.priceCents}`
   for (const r of out) {
     const bucket = bucketOf(r)
     const original = originalByPrice.get(bucket) ?? { qty: 0, amountCents: 0 }
@@ -264,6 +271,12 @@ export function buildBuySuggestions(splits: readonly BuySplit[], next: readonly 
     hit.legacyPlanConflict ||= r.legacyPlanConflict
     if (r.sellFirst) hit.sellFirst = true
     if (r.edited) hit.edited = true
+    // 合并进来的来源模式与行级不一致 → 行级清空，改由来源明细逐条标。
+    if (hit.strategyMode !== r.strategyMode || hit.strategyIsDefault !== r.strategyIsDefault) {
+      hit.mixedStrategy = Boolean(hit.strategyMode || hit.strategyIsDefault || r.strategyMode || r.strategyIsDefault)
+      hit.strategyMode = undefined
+      hit.strategyIsDefault = undefined
+    }
     if (hit.key !== natural && r.key === natural) hit.key = natural
   }
   const list = [...byPrice.values()]

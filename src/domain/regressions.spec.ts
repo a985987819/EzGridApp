@@ -128,6 +128,12 @@ describe('挂单建议回归',()=>{
   const l=buildLedger([rec(2,{buyPriceCents:500,buyQtyRaw:500}),rec(3,{buyPriceCents:500,buyQtyRaw:500,soldQty:500})],[stock])
   expect(l.targets[0]).toMatchObject({priceCents:700,qty:500});expect(l.sells[0].priceCents).toBeNull()
  })
+ it('部分卖出且 E 列为空：剩余份额仍按买入价+间隔推荐卖出（V9.80）',()=>{
+  const l=buildLedger([rec(2,{buyPriceCents:500,buyQtyRaw:1000,soldQty:400})],[stock])
+  expect(l.sells[0].priceCents).toBeNull()
+  expect(l.targets).toEqual([expect.objectContaining({priceCents:700,qty:600})])
+  expect(l.lots[0]).toMatchObject({targetPriceCents:700,remainingQty:600,needsPrice:false})
+ })
  it('导入裸卖缺 P 时推导买回建议，明确已回补则不推导',()=>{
   expect(buildLedger([{...sell(9,700,500),earlyBuyPriceCents:null}],[stock]).orders[0].rebuyPriceCents).toBe(500)
   expect(buildLedger([{...sell(9,700,500),earlyBuyPriceCents:null,rebuyPriceSource:'repaid'}],[stock]).orders).toEqual([])

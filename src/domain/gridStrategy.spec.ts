@@ -42,17 +42,17 @@ describe('连续拆档与双模式', () => {
     expect(ledger.orders.find(o=>o.sourceRow===4)?.strategyMode).toBeUndefined()
     expect(ledger.orders.find(o=>o.sourceRow===4)?.strategyIsDefault).toBeUndefined()
   })
-  it('默认与显式低位回本同价仍分组，旧默认改单只缩自己的100股到50股', () => {
+  it('默认与显式低位回本同价合并为一条（V9.80），旧默认改单只缩自己的100股到50股', () => {
     const targets=make('repair'), root=row(4,{buyPriceCents:null,buyQtyRaw:null,buyDateSerial:null,soldQty:100,sellDateSerial:46001,targetPriceCents:700,earlyBuyPriceCents:500})
     const records=[...base,sale(3,`target:${targets[0].id}`,100),root]
     const ledger=buildLedger(records,[stock],{extraTargets:targets});balanced(ledger)
     const plan={id:'p',refId:'buy:cover:T:500',kind:'buy' as const,priceCents:500,qty:50,at:1}
     const board=buildBuySuggestions(ledger.buySplits,[],[plan])
-    expect(board).toHaveLength(2)
-    expect(board.reduce((sum,r)=>sum+r.qty,0)).toBe(150)
-    expect(board.find(r=>r.key===plan.refId)).toMatchObject({strategyMode:'repair',strategyIsDefault:true,qty:50,edited:true,sources:[{row:4,qty:50}]})
-    expect(board.find(r=>r.key==='buy:cover:T:500:repair')).toMatchObject({strategyMode:'repair',qty:100,sources:[{row:3,qty:100}]})
+    expect(board).toHaveLength(1)
+    expect(board[0]).toMatchObject({ key: 'buy:cover:T:500', qty: 150, mixedStrategy: true })
+    expect(board[0].sources.map(s => [s.row, s.qty]).sort((a, b) => a[0] - b[0])).toEqual([[3, 100], [4, 50]])
     const moved=buildBuySuggestions(ledger.buySplits,[],[{...plan,priceCents:450}])
+    expect(moved).toHaveLength(2)
     expect(moved.find(r=>r.key===plan.refId)).toMatchObject({priceCents:450,qty:50,sources:[{row:4,qty:50}]})
     expect(moved.find(r=>r.key==='buy:cover:T:500:repair')).toMatchObject({priceCents:500,qty:100,sources:[{row:3,qty:100}]})
   })

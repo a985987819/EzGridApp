@@ -122,6 +122,13 @@ export function buildLedger(
     if (target === null && (soldQty === 0 || r.targetNeedsDerive) && r.buyPriceCents && interval > 0) {
       if (soldQty === 0 || deriveSellPrice) target = r.buyPriceCents + interval
     }
+    /**
+     * V9.80（用户口径）：**待卖目标与已成交价推定分开**。部分卖出的行如果 E 列空，
+     * 已成交那截的价格仍不猜（`sell.priceCents` 保持 null），但**剩余待卖份额**要按
+     * 「买入价 + 间隔」给目标——否则这个批次有剩余库存却在「应该卖出」里没有任何挂单，
+     * 看起来就像只推荐了先卖后买的单子。
+     */
+    const lotTarget = target ?? (soldQty > 0 && r.buyPriceCents && interval > 0 ? r.buyPriceCents + interval : null)
 
     const buyDate = serialToIso(r.buyDateSerial)
     const soldAt = serialToIso(r.sellDateSerial)
@@ -142,8 +149,8 @@ export function buildLedger(
         qty: qty!,
         soldQty: lotSoldQty,
         remainingQty: rem,
-        targetPriceCents: target,
-        needsPrice: target === null,
+        targetPriceCents: lotTarget,
+        needsPrice: lotTarget === null,
         importKey: r.importKey,
       }
       const grid = gridSales.get(r.sourceRow)
@@ -162,7 +169,7 @@ export function buildLedger(
           detail: `卖出 ${soldQty} 股 > 买入 ${qty} 股，超出 ${soldQty - qty!} 股无批次对应`,
         })
       }
-      if (target === null && rem > 0) {
+      if (lotTarget === null && rem > 0) {
         anomalies.push({
           kind: 'needsPrice',
           sourceRow: r.sourceRow,
