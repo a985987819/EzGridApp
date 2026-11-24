@@ -4,6 +4,15 @@
 规则来源是用户的 Excel 台账口径（62 行基准数据钉死在测试里），改口径前先读本文「关键口径」。
 **上手与逐类讲解看 `docs/使用手册.md`；明细/批次/订单的类型体系速查看 `docs/detail-kinds.md`——理解数据先读这两篇，本文是公式与决策记录。**
 
+## 工程原则（2026-11-24）：可维护性 · 解耦性 · 可复用性
+
+改动要同时兼顾这三项，不为省事牺牲其中任何一项：
+
+- **可维护性**：业务口径单源，只写在 `domain/*`（纯函数、无 IO、无 React）并配单测；改口径先改 domain 与基准测试（`io/baseline.spec.ts` 是红线），决策与例外记录进本文对应小节，不散落成代码注释里的孤证。
+- **解耦性**：数据流单向——io 解析 → `store/useApp.tsx`（唯一写库层）→ 纯派生 Ledger → pages 只消费。pages 禁止绕过 store 写库、禁止手改派生对象；展示组件不直接碰 Dexie；`domain/*` 不依赖 React 与 IO。
+- **可复用性**：跨页面/跨弹层的能力先抽到 `ui/*`（`scrollHold`、`Select`、`DateField`、`transitions`、`bookingDraft` 等）再复用；同一口径（金额分、回补覆盖、挂单排序等）只实现一次、多入口共用同一函数，禁止复制粘贴改出两套口径。
+- 三者冲突时优先保「口径单源 + 解耦」；抽象只在出现第二个真实使用方时才抽，不为假想复用提前造轮子。
+
 ## 当前优化口径（2026-10-28，优先于历史描述）
 
 - 底仓做T拆分改「子单」模型（2026-11-24，用户口径，取代上方 V9.76 单事件聚合）：底仓做T详情不再走「拆档→记成交」两步/待买挂单，改点「拆分」直接弹 `BaseTChildModal`（`src/components/BaseTChildModal.tsx`）——用户点拆分时填的回补价/股数带入弹窗（没填则留空由用户填，**禁止走 `deriveBuyQty` 的 6000 元固定 200 股**），只需再选日期，确认即调 `recordRebuy(...,date?)`（`src/store/useApp.tsx` 末尾新增可选 `dateIso`，落在那天中午 `T12:00:00` 定虚拟批次 buyDate）生成一笔真实回补子单（RebuyExecution→`lot:exec:*`，走 saveBooking/价格树/盈亏全套），默认为已完成、**只在父底仓做T记录详情展示**（`data-base-t-child`），不进明细列表。子单笔数=`baseTRowSummary.fillCount`（`src/domain/gridStrategy.ts` 新增）。统计日历的 baseT 事件改为**每笔回补成交各一个 event**（`src/domain/statistics.ts`：id=`${sell.id}:baseT:${index++}:${date}`、date=卖出日、qty=该笔量、buyPrice=该笔买价、profit=(卖−该笔买)×该笔量），笔数=回补笔数、逐笔价差累加（用户示例：10卖1000，9买回400+400→卖出日做T2笔共800元；再8回补200→3笔共1200元）；`baseTSellCount`/`baseTSellAmountCents`/`baseTProfitCents` 按 event 累加，`pendingRebuyCount` 仅 fills 空才计。全部回补（remainingQty===0 且 boughtQty===sell.qty）时行卡右上角显示 ✅（`TradeItem` 新 prop `baseTDone` / `data-testid="base-t-done"`）、抽屉 footer 显示已完成提示（V9.79 起 `data-testid="base-t-done-hint"`，不再是旧的 `base-t-locked` 锁定条）、hideDone 默认也保留该行可见。**V9.79 用户口径：手误填错必须能改**——全部回补的行不再提供左滑删除，左滑改露「编辑」（`TradeItem` 新 prop `onSwipeEdit`，`.trade-swipe-action.edit` 蓝色，与 `onSwipeDelete` 互斥），点开详情逐笔改子单：父详情「做T回补子单」每行有「修改」按钮（`data-action="base-t-child-edit"`）→ `BaseTChildModal` 传 `editing` 预填现值 → store 新增 `editRebuy(id,{qty,priceCents,dateIso})` 原地改这一条 RebuyExecution（不新增批次、虚拟批次 `lot:exec:<id>` 按新值重算；校验来源 order 的 baseQty/rewardQty 额度、奖励预算按「扣掉自己那笔支出」重算、多分配回执与后续卖出/拆档拦截，写审计「修改回补成交」）；**买入日期允许晚于卖出日**（V9.47.1 口径，不校验先后；日期含糊时回本链价位槽 fail-closed 不归链属允许后果）。备份 schemaVersion 不变（日期走 exec.at，无新字段）。回归：`statistics.spec.ts`、`e2e/baseTChildren.mjs`（拆分带入/仅选日期/子单隐藏/父详情展示/日历按笔数/✅后仍可改子单日期）、`e2e/statistics.mjs`、`e2e/gridStrategies.mjs`、`e2e/smoke.mjs`。
