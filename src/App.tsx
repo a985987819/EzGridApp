@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
+import { BackTop } from 'animal-island-ui'
 import 'animal-island-ui/style'
 import { AppProvider, useApp } from './store/useApp'
 import { IconChart, IconGear, IconGrid, IconList, IconTag } from './ui/icons'
@@ -120,6 +121,9 @@ function Shell() {
         )}
         </PageErrorBoundary>
       </main>
+
+      {/* V9.78：组件库返回顶部（右下角火箭）。固定在底部导航上方，默认滚过 400px 才出现 */}
+      <BackTop className="app-backtop" visibilityHeight={400} />
 
       <nav className="app-nav" aria-label="主导航">
         <div className="app-nav-inner">

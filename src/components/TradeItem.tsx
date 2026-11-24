@@ -37,6 +37,7 @@ export function TradeItem({
   edited,
   baseTDone,
   onSwipeDelete,
+  onSwipeEdit,
 }: {
   row: TradeRow
   /** 第几笔（V9.43 统一身份：导入与应用内新增一样） */
@@ -59,13 +60,19 @@ export function TradeItem({
   profitCents?: number | null
   /** V9.71：是否真的和新建时不同（由 domain/edit 的 editedFromCreation 派生，不再只看 editedAt） */
   edited?: boolean
-  /** 底仓做T全部回补完成：右上角显示 ✅ 区分，且该行不可再编辑 */
+  /** 底仓做T全部回补完成：右上角显示 ✅ 区分 */
   baseTDone?: boolean
   /**
    * 左滑露出的删除动作（明细页传；价格树 hover 浮层不传，保持只读）。
    * 不需要先打开详情抽屉就能删；原生拖拽/触摸都支持，竖向滚动不受影响。
    */
   onSwipeDelete?: () => void
+  /**
+   * V9.79：左滑露出「编辑」——底仓做T全部回补的行没有删除入口（已锁定），
+   * 但子单填错了还得能改，所以改成露出编辑、打开详情去改子单。
+   * 与 onSwipeDelete 互斥（同一时刻只露一个动作）。
+   */
+  onSwipeEdit?: () => void
 }) {
   const { rec, lot, sell } = row
   const deleted = Boolean(rec.deletedAt)
@@ -77,7 +84,8 @@ export function TradeItem({
   const stateCls = holding ? ' pending-sell' : awaitingBuy ? ' pending-buy' : ''
   const targetP = lot?.targetPriceCents ?? rec.targetPriceCents
 
-  // —— 左滑删除：只在给出 onSwipeDelete 时启用；手指/鼠标都走同一套指针事件 ——
+  // —— 左滑动作（删除 / 编辑）：给出 onSwipeDelete 或 onSwipeEdit 时启用 ——
+  const swipeAction = onSwipeDelete ? 'delete' : onSwipeEdit ? 'edit' : null
   const REVEAL = 76
   const [dx, setDx] = useState(0)
   const drag = useRef<{ x: number; y: number; axis: 'x' | 'y' | '?'; baseDx: number } | null>(null)
@@ -85,7 +93,7 @@ export function TradeItem({
   const movedRef = useRef(false)
   const suppressClick = useRef(false)
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (!onSwipeDelete || (e.pointerType === 'mouse' && e.button !== 0)) return
+    if (!swipeAction || (e.pointerType === 'mouse' && e.button !== 0)) return
     drag.current = { x: e.clientX, y: e.clientY, axis: '?', baseDx: dx }
     movedRef.current = false
   }
@@ -116,14 +124,14 @@ export function TradeItem({
     setDx((cur) => (Math.abs(cur) >= REVEAL / 2 ? (deleted ? REVEAL : -REVEAL) : 0))
   }
   const revealed = Math.abs(dx) >= REVEAL / 2
-  // V9.73：左滑进度——删除按钮随之从小浮起并长到整行高
+  // V9.73：左滑进度——动作按钮随之从小浮起并长到整行高
   const swipeProgress = Math.min(1, Math.abs(dx) / REVEAL)
-  const actionRgb = deleted ? '25, 200, 185' : '208, 69, 63'
+  const actionRgb = swipeAction === 'edit' ? '43, 122, 233' : deleted ? '25, 200, 185' : '208, 69, 63'
 
   return (
     <div
       className="trade-swipe"
-      data-swipe={onSwipeDelete ? 'enabled' : 'off'}
+      data-swipe={swipeAction ? 'enabled' : 'off'}
       data-swiping={dx !== 0 ? '1' : undefined}
       data-revealed={revealed ? '1' : undefined}
       onPointerDown={onPointerDown}
@@ -131,10 +139,10 @@ export function TradeItem({
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
     >
-      {onSwipeDelete && (
+      {swipeAction && (
         <button
           type="button"
-          className={`trade-swipe-action${deleted ? ' restore' : ''}`}
+          className={`trade-swipe-action${deleted && swipeAction === 'delete' ? ' restore' : ''}${swipeAction === 'edit' ? ' edit' : ''}`}
           tabIndex={revealed ? 0 : -1}
           aria-hidden={!revealed}
           style={{
@@ -146,10 +154,11 @@ export function TradeItem({
           onClick={(e) => {
             e.stopPropagation()
             setDx(0)
-            onSwipeDelete()
+            if (swipeAction === 'edit') onSwipeEdit?.()
+            else onSwipeDelete?.()
           }}
         >
-          {deleted ? '恢复' : '删除'}
+          {swipeAction === 'edit' ? '编辑' : deleted ? '恢复' : '删除'}
         </button>
       )}
       <div
@@ -181,7 +190,7 @@ export function TradeItem({
         <Tag size="small" variant="soft">{no == null ? '记录' : `第 ${no} 笔`}</Tag>
         <span className="name">{rec.stockName}</span>
         <div className="spacer" />
-        {baseTDone && <span className="base-t-done" data-testid="base-t-done" title="已全部回补，不可再编辑">✅</span>}
+        {baseTDone && <span className="base-t-done" data-testid="base-t-done" title="已全部回补">✅</span>}
         <span className={`profit ${tone(profitCents !== undefined ? profitCents : sell?.profitCents ?? null)}`}>
           {/* V9.33：被全额挂住的裸卖盈利暂缓——写「暂缓」比写「—」更像回事
               V9.70：底仓做T 用已实现价差覆盖（没有成交时显示 —） */}

@@ -121,12 +121,13 @@ export function buildTradingStatistics(
     const day = event.date ?? '未填日期', month = event.date?.slice(0, 7) ?? '未填日期'
     const daily = days.get(day) ?? {
       day, sellCount: 0, sellQty: 0, sellAmountCents: 0,
-      baseTSellCount: 0, baseTSellAmountCents: 0, baseTProfitCents: 0,
+      baseTRebuyCount: 0, baseTProfitCents: 0,
       profitCents: 0, dateMissing: event.date === null,
     }
     daily.sellCount++; daily.sellQty += event.qty; daily.sellAmountCents += event.sellAmountCents; daily.profitCents += event.profitCents
     if (event.kind === 'baseT') {
-      daily.baseTSellCount++; daily.baseTSellAmountCents += event.sellAmountCents; daily.baseTProfitCents += event.profitCents
+      // 做T盈利直接并入当日 profitCents（用户口径：与常规已实现盈利合并展示），这里只额外记回补次数。
+      daily.baseTRebuyCount++; daily.baseTProfitCents += event.profitCents
     }
     days.set(day, daily)
     const monthly = months.get(month) ?? { month, sellCount: 0, sellQty: 0, sellAmountCents: 0, profitCents: 0, dateMissing: event.date === null }

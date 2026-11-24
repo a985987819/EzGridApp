@@ -25,7 +25,7 @@ import { useFlashOnAppear } from '../ui/motion'
 import { todayIso, money, price, qty, signedMoney, tone } from '../ui/format'
 import { DateField } from '../ui/DateField'
 import { useScrollHold } from '../ui/scrollHold'
-import { scrollToPageTop, useScrollHeader } from '../ui/scrollHeader'
+import { useScrollHeader } from '../ui/scrollHeader'
 import { transitionView } from '../ui/transitions'
 import { enterSubmit } from '../ui/enterSave'
 import type { TradesQuery } from '../ui/nav'
@@ -313,11 +313,12 @@ export function OrdersPage({
   const [tradeQty,setTradeQty]=useState('')
   const [tradeDate,setTradeDate]=useState(todayIso())
   const [savingTrade,setSavingTrade]=useState(false)
-  const tradeCheck = useBookingCheck('order-trade', { side: trade?.side ?? 'buy', stockName: trade?.buy?.stockName ?? effectiveStock, date: tradeDate, priceCents: toCents(tradePrice), qty: Number(tradeQty) }, [trade, tradePrice, tradeQty, tradeDate])
+  const tradeCheck = useBookingCheck('order-trade', { side: trade?.side ?? 'buy', stockName: trade?.buy?.stockName ?? effectiveStock, date: tradeDate, priceCents: toCents(inputOrDefault(tradePrice, trade ? centsToYuan((trade.buy ?? trade.sell!).priceCents) : '')), qty: Number(inputOrDefault(tradeQty, trade ? String((trade.buy ?? trade.sell!).qty) : '')) }, [trade, tradePrice, tradeQty, tradeDate])
   function openTrade(side:'buy'|'sell',row:BuySuggestion|TargetRow){
     tradeCheck.reset()
     setTrade(side==='buy'?{side,buy:row as BuySuggestion}:{side,sell:row as TargetRow})
-    setTradePrice(centsToYuan(row.priceCents));setTradeQty(String(row.qty));setTradeDate(todayIso())
+    // V9.79：价量留空，placeholder 就是这条挂单的默认值——直接点保存即按建议成交。
+    setTradePrice('');setTradeQty('');setTradeDate(todayIso())
   }
   async function saveTrade(){
     if(!trade||savingTrade)return
@@ -346,8 +347,10 @@ export function OrdersPage({
     const link = tradeSourceLink(r.stockName, r.sources.filter(source => source.qty > 0).map(source => source.row), sourceIndex)
     // V9.75：底仓做T还没买回的买单在挂单页整圈加粗，和普通待买的左侧蓝条区分。
     const baseTBuy = r.strategyMode === 'baseT' || r.sources.some((source) => 'strategyMode' in source && source.strategyMode === 'baseT')
+    // V9.79：这笔买单在给一条还没回本的回本链补窟窿 → 橙色阴影提醒
+    const chainOpen = r.sources.some((source) => openChainRows.rows.has(source.row))
     return (
-    <div key={r.key} className={`line wrap-row pending-buy${baseTBuy ? ' base-t-buy' : ''}${link.query ? ' clickable' : ''}`} data-testid="buy-suggestion" data-base-t-buy={baseTBuy ? '1' : undefined} data-row={r.sources[0]?.row} data-price={r.priceCents} data-reward-qty={r.rewardQty ?? 0} data-edited={r.edited ? '1' : undefined} data-sell-first={r.sellFirst ? '1' : undefined}
+    <div key={r.key} className={`line wrap-row pending-buy${baseTBuy ? ' base-t-buy' : ''}${chainOpen ? ' chain-open' : ''}${link.query ? ' clickable' : ''}`} data-testid="buy-suggestion" data-base-t-buy={baseTBuy ? '1' : undefined} data-chain-open={chainOpen ? '1' : undefined} data-row={r.sources[0]?.row} data-price={r.priceCents} data-reward-qty={r.rewardQty ?? 0} data-edited={r.edited ? '1' : undefined} data-sell-first={r.sellFirst ? '1' : undefined}
       // V9.58：锦上添花里全部来源都是「下一轮」的档保留深链身份（点行跳已完成那笔，不被 hideDone 挡）
       data-buy-level={r.sources.every((v) => v.kind === 'next') ? r.sources[0]?.row : undefined}
       onClick={(e) => {
@@ -484,6 +487,34 @@ export function OrdersPage({
   }, [view])
 
   /**
+   * V9.79：还没回本（已实现盈利没盖住高买低卖亏损）的回本链所牵连的明细行。
+   * 挂单页上这些行对应的买单和卖单加 #ff7043 阴影——提醒「这笔钱还在补窟窿」。
+   * 已回本 / 人工结束的链不算：结束之后的新交易本来就不归链了。
+   */
+  const openChainRows = useMemo(() => {
+    const s = new Set<number>()
+    const lots = new Set<string>()
+    for (const c of view.repairChains) {
+      if (c.done || c.closedByUserAt !== null) continue
+      s.add(c.anchorRow)
+      for (const row of c.relatedSellRows) s.add(row)
+      for (const b of c.branches) {
+        if (b.row !== null) {
+          s.add(b.row)
+          // 归属的真实买入批次：待卖清单按 lotId 找来源，行号也要能对上
+          if (b.kind === 'record') lots.add(`lot:${b.row}`)
+        }
+        // 回补批次是虚拟批次（lot:exec:*，sourceRow 从 200000 起），没有真实行号，
+        // 只能靠 lotId 认出待卖清单里那一行。
+        if (b.kind === 'rebuy' && b.key.startsWith('exec:')) lots.add(`lot:exec:${b.key.slice('exec:'.length)}`)
+        if (b.rootSellRow !== null) s.add(b.rootSellRow)
+        for (const row of b.memberRows) s.add(row)
+      }
+    }
+    return { rows: s, lots }
+  }, [view])
+
+  /**
    * V9.58：沙盒买档行（原「今日挂单」内联渲染抽出）。沙盒不走 buildBuySuggestions——
    * 模拟行要保留「记为成交 / 删除」，且模拟/真实同价不能并成一条。
    */
@@ -491,13 +522,15 @@ export function OrdersPage({
     const sim = sandboxByRow.get(b.sourceRow)
     const o = orderById.get(b.orderId)
     const link = tradeSourceLink(b.stockName, [b.sourceRow], sourceIndex)
+    const chainOpen = !sim && openChainRows.rows.has(b.sourceRow)
     return (
       <div
         key={`t-${b.key}`}
         // V9.29.1：左侧状态边框（蓝=买 / 红=卖），与明细页 trade-item 同一套语义
-        className={`line wrap-row pending-buy ${sim ? 'sandbox-row' : link.query ? 'clickable' : ''}`}
+        className={`line wrap-row pending-buy ${sim ? 'sandbox-row' : link.query ? 'clickable' : ''}${chainOpen ? ' chain-open' : ''}`}
         data-row={b.sourceRow}
         data-price={b.priceCents}
+        data-chain-open={chainOpen ? '1' : undefined}
         data-split-key={b.split ? b.key : undefined}
         data-sandbox-row={sim ? b.sourceRow : undefined}
         onClick={sim ? undefined : () => openSources(link)}
@@ -583,11 +616,16 @@ export function OrdersPage({
   const sellLine = (r: TargetRow) => {
     const sim = sandboxByRow.get(r.anchorRow)
     const link = tradeSourceLink(r.targets[0].stockName, r.targets.filter(target => target.qty > 0).map(target => ({ sourceRow: r.anchorRow, lotId: target.lotId })), sourceIndex)
+    // V9.79：待卖批次属于一条还没回本的回本链（锚点或归进来的成员）→ 橙色阴影
+    const chainOpen = !sim && (openChainRows.rows.has(r.anchorRow)
+      || r.lotRows.some((row) => openChainRows.rows.has(row))
+      || r.lotIds.some((id) => openChainRows.lots.has(id)))
     return (
       <div
         key={`s-${r.key}`}
-        className={`line wrap-row pending-sell ${sim ? 'sandbox-row' : link.query ? 'clickable' : ''}`}
+        className={`line wrap-row pending-sell ${sim ? 'sandbox-row' : link.query ? 'clickable' : ''}${chainOpen ? ' chain-open' : ''}`}
         data-row={r.anchorRow}
+        data-chain-open={chainOpen ? '1' : undefined}
         data-merge-group={r.merged ? r.key : undefined}
         data-sandbox-row={sim ? r.anchorRow : undefined}
         onClick={sim ? undefined : () => openSources(link)}
@@ -741,7 +779,8 @@ export function OrdersPage({
     planRefs?: string[],
   ) {
     setPlanRef({ kind, refId, title, suggestPrice, suggestQty, members, planRefs })
-    setPlanPrice((planPriceCents ?? suggestPrice) === 0 ? '' : ((planPriceCents ?? suggestPrice) / 100).toFixed(2))
+    // V9.79：没有已存计划就留空，placeholder 即建议价量，直接确认 = 按建议价量改单。
+    setPlanPrice(planPriceCents != null && planPriceCents > 0 ? (planPriceCents / 100).toFixed(2) : '')
     setPlanQty(planQtyValue ? String(planQtyValue) : '')
   }
 
@@ -782,9 +821,10 @@ export function OrdersPage({
     const baseLeft=split?.baseRemainingQty??Math.max(0,o.baseQty-o.execQty+o.doneRewardQty)
     const defaults={qty:suggestion?.qty??o.remainingQty,priceCents:suggestion?.priceCents??o.rebuyPriceCents,reward:suggestion?Math.max(0,suggestion.qty-baseLeft):Math.max(0,o.rewardQty-o.doneRewardQty)}
     setExecDefaults(defaults)
-    setExecQty(String(defaults.qty))
-    setExecPrice(centsToYuan(defaults.priceCents))
-    setExecReward(String(defaults.reward))
+    // V9.79：留空，placeholder = 默认价量；直接点保存就是按建议回补。
+    setExecQty('')
+    setExecPrice('')
+    setExecReward('')
   }
 
   async function saveExec() {
@@ -828,20 +868,12 @@ export function OrdersPage({
   }
 
   function openSandboxForm(kind: SandboxKind) {
-    const step = cfg?.intervalCents ?? 0
     setSbKind(kind)
     setSbDate(todayIso())
-    setSbPrice(confirmedCents != null ? (confirmedCents / 100).toFixed(2) : '')
-    setSbQty('100')
-    setSbExtra(
-      confirmedCents == null || step <= 0
-        ? ''
-        : kind === 'sell'
-          ? confirmedCents - step > 0
-            ? ((confirmedCents - step) / 100).toFixed(2)
-            : ''
-          : ((confirmedCents + step) / 100).toFixed(2),
-    )
+    // V9.79：价/量留空，placeholder 就是默认值（昨收、100 股、按间隔推的另一侧价）。
+    setSbPrice('')
+    setSbQty('')
+    setSbExtra('')
   }
 
   function saveSandboxForm() {
@@ -1021,26 +1053,37 @@ export function OrdersPage({
       <div ref={stickyRef} className="page-sticky scroll-header orders-sticky" data-sticky="orders">
       <div data-scroll-summary className="orders-compact-slot" aria-hidden="true">
         <div className="orders-compact-inner">
-          <button
-            type="button"
-            className="orders-compact"
-            data-testid="orders-compact"
-            onClick={scrollToPageTop}
-            aria-label="回到顶部展开挂单设置"
-          >
-            <span className="oc-stock">{effectiveStock || '未选股'}</span>
-            <span className="oc-piece">昨收 <b>{confirmed ? price(confirmed.closeCents) : lastClose.trim() || '—'}</b></span>
-            {range ? (
+          {/* V9.78：收起后点摘要条直接展开换股下拉（原来是回顶），股票名右侧的 ▾ 提示可点 */}
+          <Select
+            options={stockNames.map((s) => ({ key: s, label: s }))}
+            value={effectiveStock}
+            onChange={(v) => {
+              transitionView(() => {
+                patchOrdersSession({ stockName: v })
+                setEditingLimit(false)
+              })
+            }}
+            aria-label="收起状态下换股票"
+            className="orders-compact-select"
+            triggerClassName="orders-compact"
+            triggerTestId="orders-compact"
+            triggerContent={(
               <>
-                <span className="oc-piece oc-up">涨停 <b>{price(range.upCents)}</b></span>
-                <span className="oc-piece oc-down">跌停 <b>{price(range.downCents)}</b></span>
+                <span className="oc-stock">{effectiveStock || '未选股'}</span>
+                <span className="oc-piece">昨收 <b>{confirmed ? price(confirmed.closeCents) : lastClose.trim() || '—'}</b></span>
+                {range ? (
+                  <>
+                    <span className="oc-piece oc-up">涨停 <b>{price(range.upCents)}</b></span>
+                    <span className="oc-piece oc-down">跌停 <b>{price(range.downCents)}</b></span>
+                  </>
+                ) : (
+                  <span className="oc-piece oc-muted">涨跌停未确认</span>
+                )}
+                {sandbox.active && <span className="oc-chip">沙盒</span>}
+                <span className="oc-expand" aria-hidden="true">▾</span>
               </>
-            ) : (
-              <span className="oc-piece oc-muted">涨跌停未确认</span>
             )}
-            {sandbox.active && <span className="oc-chip">沙盒</span>}
-            <span className="oc-expand" aria-hidden="true">↑</span>
-          </button>
+          />
         </div>
       </div>
       <div data-scroll-expanded className="orders-setup-collapse">
@@ -1543,8 +1586,8 @@ export function OrdersPage({
         <div onKeyDown={enterSubmit(() => void saveTrade())}>
         <p className="tiny muted" style={{ marginTop: 0 }}>股票：{trade?.buy?.stockName ?? effectiveStock}</p>
         <div className="form-grid">
-          <label><span>实际成交价</span><Input value={tradePrice} onChange={(e)=>setTradePrice(e.target.value)} data-field="tradePrice" /></label>
-          <label><span>实际成交量</span><Input value={tradeQty} onChange={(e)=>setTradeQty(e.target.value)} data-field="tradeQty" /></label>
+          <label><span>实际成交价</span><Input value={tradePrice} onChange={(e)=>setTradePrice(e.target.value)} placeholder={trade ? centsToYuan((trade.buy ?? trade.sell!).priceCents) : ''} data-field="tradePrice" /></label>
+          <label><span>实际成交量</span><Input value={tradeQty} onChange={(e)=>setTradeQty(e.target.value)} placeholder={trade ? String((trade.buy ?? trade.sell!).qty) : ''} data-field="tradeQty" /></label>
           <label><span>成交日期</span><DateField value={tradeDate} onChange={setTradeDate} /></label>
         </div>
         <p className="tiny muted">

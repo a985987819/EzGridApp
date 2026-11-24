@@ -1,7 +1,8 @@
 /**
  * 底仓做T子单 UI 回归（m00139 / m00001）：
  * 拆分按填入数量生成子单（预填价量+仅选日期）→ 子单只在父详情可见、默认已完成
- * → 日历按回补笔数与逐笔价差显示 → 全部回补父行加 ✅ 且锁定不可编辑。
+ * → 日历按回补次数与合并盈利显示 → 全部回补父行加 ✅（V9.79 起整行不提供编辑/删除，
+ *   但每笔子单可点「修改」改价量日期，日期允许晚于卖出日）。
  *
  *   node e2e/baseTChildren.mjs http://127.0.0.1:5173
  */
@@ -215,7 +216,7 @@ try {
   check('日历翻到2026年10月', octOk)
   await click('[data-testid="stats-calendar"] [data-date="2026-10-20"]')
   const dayCell = await evaluate(`document.querySelector('[data-testid="stats-calendar"] [data-testid="cal-base-t"]')?.textContent ?? ''`)
-  check('日历卖出日显示做T1笔及逐笔价差', dayCell.includes('做T1笔'), dayCell)
+  check('日历卖出日显示回补1次（做T盈利并入当日）', dayCell.includes('回补1次'), dayCell)
 
   // 第二笔：400@9 + 第三笔：200@8 → 卖出日 3 笔；再全回补加 ✅
   await evaluate(`showTrades()`)
@@ -237,10 +238,27 @@ try {
 
   check('三笔回补全部入账，数量合计1000', await evaluate(`testApp.executions.filter(e => e.sellExecId === 'sell:' + baseRow).reduce((a, e) => a + e.qty, 0) === 1000`))
   check('父行右侧出现✅', await evaluate(`!!document.querySelector('.trade-item[data-row="' + baseRow + '"] [data-testid="base-t-done"]')`))
-  check('父详情提示已锁定不可再编辑且无编辑入口', await evaluate(`(() => {
-    const footer = document.querySelector('.trades-edit-drawer [data-testid="base-t-locked"]')
-    const edit = [...document.querySelectorAll('.trades-edit-drawer button')].find(b => b.textContent.trim() === '编辑')
-    return !!footer && !edit
+  check('父详情提示已全部回补、无整行编辑入口，子单各有「修改」', await evaluate(`(() => {
+    const hint = document.querySelector('.trades-edit-drawer [data-testid="base-t-done-hint"]')
+    const recordEdit = [...document.querySelectorAll('.trades-edit-drawer > .acts button, .trades-edit-drawer .footer button')].find(b => b.textContent.trim() === '编辑')
+    const childEdits = document.querySelectorAll('[data-action="base-t-child-edit"]')
+    return !!hint && !recordEdit && childEdits.length === 3
+  })()`))
+  // V9.79：子单可以改（尤其日期），改完父行仍是 ✅，统计日历按新日期重算
+  await click('[data-action="base-t-child-edit"]')
+  check('点「修改」打开子单弹窗并预填现值', await evaluate(`(() => {
+    const q = document.querySelector('input[data-field="base-t-child-qty"]')?.value
+    const p = document.querySelector('input[data-field="base-t-child-price"]')?.value
+    const d = document.querySelector('input[data-field="base-t-child-date"]')?.value
+    return q === '400' && p === '9.00' && d === '2026-10-22'
+  })()`))
+  await setInput('input[data-field="base-t-child-date"]', '2026-10-25')
+  await click('[data-action="base-t-child-save"]')
+  await sleep(400)
+  check('改子单日期生效（买入日期可晚于卖出日）', await evaluate(`(() => {
+    // 两笔 400@9 都在（一笔 10-23 新建、一笔由 10-22 改成 10-25），只要有一笔落在 10-25 即生效
+    return testApp.executions.some(x => x.sellExecId === 'sell:' + baseRow && x.qty === 400 && x.priceCents === 900
+      && new Date(x.at).toISOString().slice(0,10) === '2026-10-25')
   })()`))
   check('父详情子单列表显示3笔且全部已完成', await evaluate(`(() => {
     const rows = [...document.querySelectorAll('[data-base-t-child]')]
@@ -252,7 +270,7 @@ try {
   await goOct()
   await click('[data-testid="stats-calendar"] [data-date="2026-10-20"]')
   const dayText = await evaluate(`document.querySelector('[data-testid="stats-calendar"] [data-testid="cal-base-t"]')?.textContent ?? ''`)
-  check('日历卖出日显示做T3笔', dayText.includes('做T3笔'), dayText)
+  check('日历卖出日显示回补3次', dayText.includes('回补3次'), dayText)
 
   check('无运行时错误', problems.length === 0, problems.join(' | '))
   socket.close()

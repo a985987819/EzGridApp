@@ -24,14 +24,13 @@ export function Overview({
   /** 沙盒横幅里回挂单页继续模拟 */
   goOrders?: () => void
 }) {
-  const { ledger, sandbox, sandboxLedger, sandboxPreviewRecords, baseline, records, executions, recordNo, basename, stocks, lastBackupAt, ordersSession, bookingReceipts } = useApp()
+  const { ledger, sandbox, sandboxLedger, sandboxPreviewRecords, records, executions, recordNo, basename, stocks, lastBackupAt, ordersSession, bookingReceipts } = useApp()
   const [active, setActive] = useState('')
   const [openMetric, setOpenMetric] = useState<'target' | 'exposure' | 'net' | null>(null)
   /** 沙盒开着且有模拟条目：整页指标与树都改用预览账本（真实 + 模拟，纯派生） */
   const previewOn = sandbox.active && sandbox.items.length > 0
   const viewLedger = previewOn ? sandboxLedger : ledger
   const t = viewLedger.totals
-  const failed = baseline.filter((c) => !c.ok).length
   const backupDays = lastBackupAt ? Math.floor((Date.now() - lastBackupAt) / 86400000) : null
   const backupStale = backupDays === null || backupDays >= 7
   // 跨数据跳转：待补日期 N 笔 → 明细里只看缺卖出日期的行
@@ -290,12 +289,6 @@ export function Overview({
         </div>
         <p className="tiny muted metrics-hint">点上面三格可以展开构成明细</p>
         <div className="row divider-top" style={{ gap: 6 }}>
-          {/* 基准体检挪去了管理 · 校验（V9.10）；这里只在异常时提醒一句 */}
-          {failed > 0 && (
-            <Tag size="small" variant="soft" color="app-red" onClick={goManage}>
-              基准 {baseline.length - failed}/{baseline.length} · 去管理页看
-            </Tag>
-          )}
           {/* V9.27：盈利数字右侧追加加粗「共计x次」，x 比其它字大 5px（CSS calc(1em+5px)） */}
           <Tag size="small" variant="soft" color="app-blue">
             已实现 {signedMoney(t.profitCents)}

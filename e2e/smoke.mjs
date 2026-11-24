@@ -5,47 +5,16 @@
  *
  *   node e2e/smoke.mjs http://127.0.0.1:5173
  */
-import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-const PORT = 9444
+import { openBrowser, pause } from './lib/browser.mjs'
+
 const BASE = (process.argv[2] ?? 'http://127.0.0.1:5173').replace(/\/+$/, '')
 const OUT = join(process.cwd(), 'e2e', 'out')
 mkdirSync(OUT, { recursive: true })
 
-const CANDIDATES = [
-  process.env.CHROME_PATH,
-  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-  'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-  'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-].filter(Boolean)
-const browserPath = CANDIDATES.find((p) => existsSync(p))
-if (!browserPath) {
-  console.error('找不到 Chrome/Edge，请设置 CHROME_PATH')
-  process.exit(2)
-}
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-const profile = mkdtempSync(join(tmpdir(), 'grid-e2e-'))
-const browser = spawn(
-  browserPath,
-  [
-    '--headless=new',
-    `--remote-debugging-port=${PORT}`,
-    `--user-data-dir=${profile}`,
-    '--no-first-run',
-    '--no-default-browser-check',
-    '--disable-gpu',
-    '--disable-extensions',
-    '--window-size=390,844',
-    'about:blank',
-  ],
-  { stdio: 'ignore' },
-)
+const sleep = pause
 
 const problems = []
 let ok = true
@@ -58,46 +27,15 @@ function check(name, cond, extra = '') {
   }
 }
 
+let session
 try {
-  for (let i = 0; i < 60; i += 1) {
-    try {
-      const r = await fetch(`http://127.0.0.1:${PORT}/json/version`)
-      if (r.ok) break
-    } catch {
-      /* keep waiting */
-    }
-    await sleep(250)
-  }
-
-  const target = await (await fetch(`http://127.0.0.1:${PORT}/json/new?about:blank`, { method: 'PUT' })).json()
-  const socket = new WebSocket(target.webSocketDebuggerUrl)
-  let nextId = 1
-  const pending = new Map()
-  const listeners = new Set()
-  socket.addEventListener('message', (e) => {
-    const m = JSON.parse(e.data)
-    if (m.id && pending.has(m.id)) {
-      const { resolve, reject } = pending.get(m.id)
-      pending.delete(m.id)
-      if (m.error) reject(new Error(JSON.stringify(m.error)))
-      else resolve(m.result)
-      return
-    }
-    if (m.method) listeners.forEach((fn) => fn(m))
-  })
-  await new Promise((res, rej) => {
-    socket.addEventListener('open', () => res())
-    socket.addEventListener('error', rej)
-  })
-  const send = (method, params = {}) =>
-    new Promise((resolve, reject) => {
-      const id = nextId++
-      pending.set(id, { resolve, reject })
-      socket.send(JSON.stringify({ id, method, params }))
-    })
+  // 调试端口由浏览器自选（DevToolsActivePort），不再固定 9444：
+  // 残留 chrome 占着固定端口时新浏览器绑不上，脚本会静默连到那只僵尸进程上。
+  session = await openBrowser({ name: 'grid-smoke', timeout: 60_000 })
+  const send = session.send
 
   const IGNORED = /favicon|net::ERR_|React DevTools|DevTools failed|\[vite\]|WebSocket/i
-  listeners.add((m) => {
+  session.onEvent((m) => {
     if (m.method === 'Runtime.exceptionThrown') {
       const d = m.params.exceptionDetails
       problems.push(`exception: ${d.exception?.description ?? d.text}`)
@@ -234,7 +172,7 @@ try {
   check('切到管理页', await nav('manage'))
   check(
     '管理页是按钮入口',
-    (await evaluate(`document.querySelectorAll('[data-manage-entry]').length`)) === 8 &&
+    (await evaluate(`document.querySelectorAll('[data-manage-entry]').length`)) === 7 &&
       Boolean(await evaluate(`Boolean(document.querySelector('[data-manage-entry="guide"]'))`)),
   )
   text = await bodyText()
@@ -752,6 +690,30 @@ try {
   await sleep(400)
   check('复位后行数恢复', (await headCount()) === allCount, `${await headCount()}/${allCount}`)
   check('复位后 URL 不带筛选', (await evaluate('location.hash')) === '#/trades', await evaluate('location.hash'))
+
+  // V9.79：新增「先卖后买」状态筛选——底仓做T 与回本链（锚点/归属/价位槽）都要被筛出来
+  check('筛选「先卖后买」', await toggleStatus('先卖后买'))
+  const sellFirstCount = await headCount()
+  // 筛出来的行必须真属于先卖后买：回本链（data-chain 或「回本链/高位已了结」标签）、
+  // 显式底仓做T、或行本身带「先卖后买」标签
+  const sellFirstBad = await evaluate(`(() => {
+    const items = [...document.querySelectorAll('.trade-item')]
+    if (items.length === 0) return JSON.stringify({ n: 0, chain: 0, bad: ['(空列表)'] })
+    let chain = 0
+    const bad = items.filter((el) => {
+      const tags = el.querySelector('.tag-row')?.textContent ?? ''
+      const isChain = el.dataset.chain !== undefined || /回本链|高位已了结/.test(tags)
+      if (isChain) chain++
+      return !isChain && !/底仓做T|先卖后买/.test(tags)
+    }).map((el) => JSON.stringify({ row: el.dataset.row, chain: el.dataset.chain, tags: el.querySelector('.tag-row')?.textContent ?? '', text: el.textContent.slice(0, 60) }))
+    return JSON.stringify({ n: items.length, chain, bad })
+  })()`)
+  const sellFirstInfo = JSON.parse(sellFirstBad)
+  check('先卖后买筛选只收这类行', sellFirstInfo.n > 0 && sellFirstInfo.bad.length === 0, sellFirstBad)
+  // 回本链的行（锚点 / 归属 / 价位槽）不一定带 sellBeforeBuy，靠链成员补进筛选——这里钉住确实收进来了
+  check('先卖后买筛选包含回本链行', sellFirstInfo.chain > 0, sellFirstBad)
+  check('清掉先卖后买筛选', await clickByText('[data-testid="active-chips"] .filter-chip', '先卖后买'))
+  await sleep(400)
 
   // V9.5：默认隐藏已完成，chip 一键找回，URL 记住 showDone=1
   // V9.46：奥佳华第 26/30 笔亏着清仓、当场成了回本链的锚点——还欠着账，不算完成，新口径保留先卖后买的实际回补持仓，33 → 36
@@ -1456,8 +1418,47 @@ try {
   check('摘要收放保持原占位、不推挤挂单', compactBar.h === Math.round(fullH), `full=${fullH} compact=${compactBar.h}`)
   const compactShot = await send('Page.captureScreenshot', { format: 'png' })
   writeFileSync(join(OUT, 'mobile-orders-compact.png'), Buffer.from(compactShot.data, 'base64'))
-  check('点摘要回顶', await evaluate(`document.querySelector('[data-testid="orders-compact"]')?.click() ?? true`))
-  await sleep(1400)
+  // V9.78：收起后点摘要条不再回顶，而是直接展开换股下拉
+  check('点摘要打开换股下拉', await evaluate(`document.querySelector('[data-testid="orders-compact"]')?.click() ?? true`))
+  await sleep(500)
+  const dropRaw = await evaluate(`(() => {
+    const panel = document.querySelector('[data-scroll-summary] .app-select-panel')
+    const opts = panel ? [...panel.querySelectorAll('[role="option"]')].map(o => o.textContent.trim()) : []
+    const r = panel?.getBoundingClientRect()
+    return JSON.stringify({
+      open: Boolean(panel),
+      expanded: document.querySelector('[data-testid="orders-compact"]')?.getAttribute('aria-expanded'),
+      opts,
+      inView: r ? r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth : false,
+      y: Math.round(window.scrollY),
+      compact: document.querySelector('[data-sticky="orders"]').classList.contains('is-compact'),
+    })
+  })()`)
+  const drop = JSON.parse(dropRaw)
+  console.log('  下拉:', dropRaw)
+  check('摘要条展开股票下拉', drop.open && drop.expanded === 'true', dropRaw)
+  check('下拉列出全部启用股票', drop.opts.length === 4 && drop.opts.includes('柳工') && drop.opts.includes('三一重工'), dropRaw)
+  check('下拉面板不出屏', drop.inView === true, dropRaw)
+  check('换股时页面仍停在原滚动位置（不回顶）', drop.y > 96 && drop.compact === true, dropRaw)
+  check('选「三一重工」', await clickByText('[data-scroll-summary] [role="option"]', '三一重工'))
+  await sleep(900)
+  const switched = await evaluate(`JSON.stringify((() => ({
+    stock: document.querySelector('[data-testid="orders-compact"] .oc-stock')?.textContent ?? '',
+    input: document.querySelector('input[aria-label="昨收价"]')?.value ?? '',
+    y: Math.round(window.scrollY),
+  }))())`)
+  const sw = JSON.parse(switched)
+  console.log('  换股后:', switched)
+  check('摘要条股票已切到三一重工', sw.stock === '三一重工', switched)
+  check('切回柳工（后续断言依赖 8.10 昨收）', await evaluate(`(() => {
+    document.querySelector('[data-testid="orders-compact"]')?.click()
+    return true
+  })()`))
+  await sleep(400)
+  check('重新选回柳工', await clickByText('[data-scroll-summary] [role="option"]', '柳工'))
+  await sleep(800)
+  await evaluate(`window.scrollTo(0, 0)`)
+  await sleep(900)
   const restoredRaw = await evaluate(`(() => {
     const setup = document.querySelector('.orders-setup')
     return JSON.stringify({
@@ -1469,7 +1470,7 @@ try {
   })()`)
   const restoredTop = JSON.parse(restoredRaw)
   console.log('  回顶后:', restoredRaw)
-  check('回到顶部恢复完整设置', restoredTop.y === 0 && !restoredTop.compact && restoredTop.setupShown, restoredRaw)
+  check('回顶恢复完整设置', restoredTop.y === 0 && !restoredTop.compact && restoredTop.setupShown, restoredRaw)
   check('恢复后昨收仍是 8.10', restoredTop.input === '8.10', restoredRaw)
 
   // V9.44：顶部收放不能来回抽搐——临界点附近小步滚动，最多收/放各一次，scrollY 不被浏览器补偿拉走
@@ -1716,7 +1717,12 @@ try {
   check('点第一笔回补的「记成交」', await clickByText('[data-action="rebuy-execution"]', '记成交'))
   await sleep(600)
   check('弹出记成交窗口', (await bodyText()).includes('本次回补股数'))
-  check('默认股数已填', (await evaluate(`document.querySelector('input[data-field="execQty"]')?.value ?? ''`)) !== '')
+  // V9.79：弹窗价量留空、默认值走 placeholder——直接点保存即按建议回补
+  check(
+    '默认股数走 placeholder',
+    (await evaluate(`document.querySelector('input[data-field="execQty"]')?.value ?? ''`)) === '' &&
+      Number(await evaluate(`document.querySelector('input[data-field="execQty"]')?.placeholder ?? ''`)) > 0,
+  )
   const execDefaults = await evaluate(`({
     qty: document.querySelector('input[data-field="execQty"]').placeholder,
     price: document.querySelector('input[data-field="execPrice"]').placeholder,
@@ -2091,6 +2097,20 @@ try {
       check('未卖出时进度只算持仓', text.includes('当前持有'))
       const chainShot = await send('Page.captureScreenshot', { format: 'png' })
       writeFileSync(join(OUT, 'overview-chain.png'), Buffer.from(chainShot.data, 'base64'))
+
+      // V9.79：还没回本的回本链，挂单页上对应的买单和卖单都加 #ff7043 橙色阴影
+      await nav('orders')
+      await sleep(900)
+      const chainShadow = await evaluate(`(() => {
+        const rows = [...document.querySelectorAll('.line[data-chain-open="1"]')]
+        const shadowed = rows.filter((el) => getComputedStyle(el).boxShadow.includes('255, 112, 67'))
+        return JSON.stringify({ rows: rows.length, shadowed: shadowed.length,
+          buy: rows.filter((el) => el.classList.contains('pending-buy')).length,
+          sell: rows.filter((el) => el.classList.contains('pending-sell')).length })
+      })()`)
+      const cs = JSON.parse(chainShadow)
+      check('回本链未完成的挂单行带 #ff7043 阴影', cs.rows > 0 && cs.shadowed === cs.rows, chainShadow)
+      check('未回本链的买单和卖单都标出', cs.buy > 0 && cs.sell > 0, chainShadow)
     }
   } else {
     await closeDrawer()
@@ -2215,17 +2235,7 @@ try {
   check('回到净持仓 13,200', text.includes('13,200'))
   check('概览无基准异常提示', !text.includes('去管理页看'))
 
-  console.log('\n[11.1.1] 管理页 · 校验（V9.10 从概览挪来）')
-  await nav('manage')
-  check('切到校验入口', await clickByText('[data-manage-entry="checks"]', '校验'))
-  await sleep(500)
-  text = await bodyText()
-  check('基准快照在管理页且全中', text.includes('基准快照') && text.includes('全中'))
-  check('数量守恒在管理页', text.includes('数量守恒'))
-
   console.log('\n[11.2] 账户功能已删除（V9.32 单账户）')
-  await backToManageMenu()
-  await sleep(300)
   await nav('manage')
   text = await bodyText()
   check('管理页没有账户入口', !text.includes('账户'))
@@ -2409,9 +2419,10 @@ try {
   await sleep(500)
   const sbFormRaw = await evaluate(`(() => {
     const v = (f) => document.querySelector('input[data-field="' + f + '"]')?.value ?? null
+    const ph = (f) => document.querySelector('input[data-field="' + f + '"]')?.placeholder ?? null
     return JSON.stringify({
       title: document.body.innerText.includes('模拟一笔待买（先卖后买）'),
-      date: v('sandboxDate'), price: v('sandboxPrice'), qty: v('sandboxQty'), extra: v('sandboxExtra'),
+      date: v('sandboxDate'), price: ph('sandboxPrice'), qty: ph('sandboxQty'), extra: ph('sandboxExtra'),
     })
   })()`)
   const sbf = JSON.parse(sbFormRaw)
@@ -2660,10 +2671,10 @@ try {
   await evaluate(`document.querySelector('[data-action="sandbox-add-buy"]')?.click()`)
   await sleep(500)
   const sbBuyFormRaw = await evaluate(`(() => {
-    const v = (f) => document.querySelector('input[data-field="' + f + '"]')?.value ?? null
+    const ph = (f) => document.querySelector('input[data-field="' + f + '"]')?.placeholder ?? null
     return JSON.stringify({
       title: document.body.innerText.includes('模拟一笔待卖（假设买入）'),
-      price: v('sandboxPrice'), qty: v('sandboxQty'), extra: v('sandboxExtra'),
+      price: ph('sandboxPrice'), qty: ph('sandboxQty'), extra: ph('sandboxExtra'),
     })
   })()`)
   const sbbf = JSON.parse(sbBuyFormRaw)
@@ -2835,14 +2846,8 @@ try {
   console.log('\n[13] 运行时错误')
   check('无未捕获异常 / console.error', problems.length === 0, problems.slice(0, 5).join(' | '))
 
-  socket.close()
 } finally {
-  browser.kill()
-  try {
-    rmSync(profile, { recursive: true, force: true })
-  } catch {
-    /* ignore */
-  }
+  await session?.close()
 }
 
 console.log(ok ? '\nE2E PASS' : '\nE2E FAIL')

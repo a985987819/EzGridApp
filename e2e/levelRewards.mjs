@@ -138,7 +138,7 @@ try {
   const output = await run(`(async()=>({copy:rewardCopy,csv:await rewardCsv.at(-1).text()}))()`)
   check('复制和CSV同时包含奖励后的700股与3500元', output.copy.includes('5.00 × 700') && output.csv.includes('5.00,700,3500.00'), output)
   await click('[data-testid=buy-suggestion][data-price="500"] [data-action=suggestion-buy]')
-  check('真实成交弹窗默认包含700股推荐总量', await run(`document.querySelector('[data-field=tradeQty]')?.value==='700'&&document.querySelector('[data-field=tradePrice]')?.value==='5.00'`))
+  check('真实成交弹窗默认包含700股推荐总量', await run(`document.querySelector('[data-field=tradeQty]')?.placeholder==='700'&&document.querySelector('[data-field=tradePrice]')?.placeholder==='5.00'`))
   await input('[data-field=tradeQty]', '600')
   await run(`(()=>{const dialog=document.querySelector('[role=dialog]');[...dialog.querySelectorAll('button')].find(button=>button.textContent.trim()==='保存成交').click()})()`)
   await until(`!document.querySelector('[data-field=tradeQty]')`)

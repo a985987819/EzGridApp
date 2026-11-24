@@ -20,11 +20,10 @@ import { allocateRewardPurchase, rewardBudget } from '../domain/rewardPurchase'
 import { isoToSerial } from '../domain/edit'
 import { centsToYuan } from '../domain/money'
 import { serialToIso } from '../domain/defaults'
-import { buildLedger } from '../domain/ledger'
+import { buildLedger, stripAccountPrefix } from '../domain/ledger'
 import { buildLadder, strategySales, type GridMode, type LadderInput } from '../domain/gridStrategy'
 import { buildRecordNoIndex, recordNoLabel, type RecordNoIndex } from '../domain/recordNo'
 import { cleanupRowLinks } from '../domain/unlink'
-import { compareBaseline } from '../domain/baseline'
 import { DEFAULT_STOCKS } from '../domain/defaults'
 import { applyEdits, type EditableKey } from '../domain/edit'
 import { applyOrder, normalizeStocks } from '../domain/stocks'
@@ -46,7 +45,6 @@ import { formatImportIssue, validateImportRecords } from '../domain/importValida
 import { validateFinancialTotals } from '../domain/financialSafety'
 import type {
   AuditLog,
-  CheckResult,
   ExtraTarget,
   ExtraBuyTarget,
   HedgeLink,
@@ -155,7 +153,6 @@ interface AppContextValue {
   ledger: Ledger
   /** 界面行身份（V9.43）：按录入顺序派生的「第 N 笔」，Excel 行号退成追溯信息 */
   recordNo: RecordNoIndex
-  baseline: CheckResult[]
   deriveSellPrice: boolean
   setDeriveSellPrice: (v: boolean) => void
   preview: ParseResult | null
@@ -172,6 +169,8 @@ interface AppContextValue {
   recordLotSales: (sources: {lotId:string;targetId?:string;qty:number}[], qty:number, priceCents:number, date:string, options?: BookingOptions) => Promise<BookingReceipt>
   recordBuySuggestion: (sources: BuySource[], qty:number, priceCents:number, date:string, options?: BookingOptions) => Promise<BookingReceipt>
   recordRebuy: (order: RebuyOrder, qty: number, priceCents: number, rewardQty: number, note?: string, splitKey?: string, options?: BookingOptions, date?: string) => Promise<BookingReceipt>
+  /** V9.79：改一笔已记录的回补成交（底仓做T子单填错时用），日期允许晚于卖出日 */
+  editRebuy: (id: string, patch: { qty: number; priceCents: number; dateIso: string }) => Promise<void>
   removeRebuy: (id: string) => Promise<void>
   setPlan: (kind: 'buy' | 'sell', refId: string, priceCents: number, qty: number) => Promise<void>
   clearPlan: (refId: string) => Promise<void>
@@ -427,8 +426,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   )
 
   const recordNo = useMemo(() => buildRecordNoIndex(records), [records])
-
-  const baseline = useMemo(() => compareBaseline(ledger), [ledger])
 
   const sandboxPreviewRecords = useMemo(
     () => (sandbox.items.length ? [...records, ...buildSandboxRecords(sandbox.items)] : records),
@@ -958,6 +955,64 @@ export function AppProvider({ children }: { children: ReactNode }) {
       })
     },
     [saveBooking,currentLedger],
+  )
+
+  /**
+   * V9.79：改一笔已落库的回补成交（底仓做T 子单填错价/量/日期时用）。
+   * 只改这一条执行记录，不新增批次——虚拟批次 `lot:exec:<id>` 由派生层按新值重算。
+   * 先卖后买允许买入日期晚于卖出日期（V9.47.1），这里不校验日期先后；
+   * 但改了日期会影响回本链价位槽的归属（fail-closed，不猜先后），属于允许的后果。
+   */
+  const editRebuy = useCallback(
+    async (id: string, patch: { qty: number; priceCents: number; dateIso: string }) => {
+      const { qty: nextQty, priceCents: nextPrice, dateIso } = patch
+      if (!Number.isSafeInteger(nextQty) || nextQty <= 0) throw new Error('回补股数必须是正整数')
+      if (!Number.isSafeInteger(nextPrice) || nextPrice <= 0) throw new Error('回补价必须大于 0')
+      const execAt = new Date(`${dateIso}T12:00:00`).getTime()
+      if (!Number.isFinite(execAt)) throw new Error('回补日期不合法')
+      await db.transaction('rw', LEDGER_TX_TABLES(), async () => {
+        const exec = await db.rebuyExecutions.get(id)
+        if (!exec) throw new Error('这笔回补成交不存在，请刷新后重试')
+        const lotId = `lot:exec:${id}`
+        const records = await db.records.toArray()
+        if (records.some((r) => r.soldLotId === lotId)) throw new Error('这笔回补已有后续卖出或软删除历史引用，请先撤销后续卖出再改')
+        if ((await db.extraTargets.where('lotId').equals(lotId).toArray()).length > 0) throw new Error('这笔回补批次上还有手动拆档，请先删掉拆档再改价量')
+        const receipts = await db.bookingReceipts.toArray()
+        const receipt = receipts.find((r) => !r.voidedAt && r.executionIds.includes(id))
+        if (receipt && (receipt.executionIds.length > 1 || receipt.recordRows.length > 0)) {
+          throw new Error('这笔成交回执包含多个分配，请从管理 → 成交流水整笔核对后处理')
+        }
+        const { ledger: l } = await currentLedger()
+        const order = l.orders.find((o) => o.id === exec.orderId)
+        if (!order) throw new Error('来源待买单已变化，请刷新后重试')
+        const others = (await db.rebuyExecutions.toArray()).filter((e) => e.orderId === exec.orderId && e.id !== id)
+        const baseOthers = others.reduce((a, e) => a + e.qty - e.rewardQty, 0)
+        const rewardOthers = others.reduce((a, e) => a + e.rewardQty, 0)
+        if (nextQty - exec.rewardQty + baseOthers > order.baseQty) {
+          throw new Error(`基础回补股数超过这笔待买的 ${order.baseQty} 股额度`)
+        }
+        if (exec.rewardQty + rewardOthers > order.rewardQty) throw new Error('奖励股数超过这笔待买可用的奖励额度')
+        if (exec.rewardQty > 0) {
+          const key = stripAccountPrefix(exec.groupKeyAtExecution)
+          const group = l.groups.find((g) => g.groupKey === key)
+          const ownSpend = exec.rewardQty * exec.priceCents
+          const available = group ? group.grossProfitCents - (group.usedProfitCents - ownSpend) : 0
+          if (!Number.isSafeInteger(available) || exec.rewardQty * nextPrice > available) {
+            throw new Error('当前价位可用累计盈利不足以支付这笔奖励股，请调整成交价或奖励股数')
+          }
+        }
+        const next: RebuyExecution = { ...exec, qty: nextQty, priceCents: nextPrice, at: execAt }
+        await db.rebuyExecutions.put(next)
+        if (receipt) await db.bookingReceipts.put({ ...receipt, qty: nextQty, priceCents: nextPrice, date: dateIso, reviewedAt: undefined })
+        const problem = validateFinancialTotals(await db.records.toArray(), await db.rebuyExecutions.toArray())
+        if (problem) throw new Error(problem)
+        const oldText = `${exec.qty} 股 @ ${(exec.priceCents / 100).toFixed(2)} · ${new Date(exec.at).toLocaleDateString('sv-SE')}`
+        const newText = `${nextQty} 股 @ ${(nextPrice / 100).toFixed(2)} · ${dateIso}`
+        await db.auditLogs.add(audit(exec.orderId, '修改回补成交', oldText, newText, 'rebuy', 'order'))
+      })
+      await reloadRecords()
+    },
+    [reloadRecords, currentLedger],
   )
 
   const removeRebuy = useCallback(
@@ -1647,7 +1702,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     executions,
     ledger,
     recordNo,
-    baseline,
     deriveSellPrice,
     setDeriveSellPrice,
     preview,
@@ -1664,6 +1718,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     recordRebuy,
     recordLotSales,
     recordBuySuggestion,
+    editRebuy,
     removeRebuy,
     setPlan,
     clearPlan,

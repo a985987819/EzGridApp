@@ -36,17 +36,18 @@ import { ChainBinder } from '../components/ChainBinder'
 import { BookingCheck, useBookingCheck } from '../components/BookingCheck'
 import { TradeFilterTools } from '../components/TradeFilterTools'
 import { SplitExecModal } from '../components/SplitExecModal'
-import { BaseTChildModal, type BaseTChildSeed } from '../components/BaseTChildModal'
+import { BaseTChildModal, type BaseTChildEditing, type BaseTChildSeed } from '../components/BaseTChildModal'
 import { isSimpleT, simpleTProfitCents } from '../domain/simpleT'
 import { baseTRowSummary, type GridMode } from '../domain/gridStrategy'
 
 /** 状态筛选可多选（V9 可叠加）：命中的行要满足每一个勾选的状态 */
-const STATUS_KEYS = ['holding', 'soldout', 'pending', 'exposure', 'buyDateMissing', 'sellDateMissing', 'needsPrice'] as const
+const STATUS_KEYS = ['holding', 'soldout', 'sellFirst', 'pending', 'exposure', 'buyDateMissing', 'sellDateMissing', 'needsPrice'] as const
 type StatusKey = (typeof STATUS_KEYS)[number]
 
 const STATUS_LABEL: Record<StatusKey, string> = {
   holding: '有剩余',
   soldout: '已卖完',
+  sellFirst: '先卖后买',
   pending: '待回补',
   exposure: '空头敞口',
   buyDateMissing: '缺买入日期',
@@ -98,12 +99,16 @@ function cmpDate(a: string | null, b: string | null, dir: 1 | -1): number {
 }
 
 /** 单个状态的判定；多选时取交集 */
-function statusMatch(r: Row, key: StatusKey): boolean {
+function statusMatch(r: Row, key: StatusKey, sellFirstRows?: ReadonlySet<number>): boolean {
   switch (key) {
     case 'holding':
       return (r.lot?.remainingQty ?? 0) > 0
     case 'soldout':
       return isSoldOut(r)
+    case 'sellFirst':
+      // V9.79：先卖后买一栏把底仓做T 与回本链（锚点 / 归属 / 价位槽）一起收进来
+      return r.sell?.sellBeforeBuy === true || (r.sell?.ownLotCoverQty ?? 0) > 0
+        || sellFirstRows?.has(r.rec.sourceRow) === true
     case 'pending':
       return r.sell?.rebuyStatus === 'pending'
     // 空头敞口：待回补且无买入批次（与概览「卖满后 X 股敞口」同口径，ledger 的 order.exposure）
@@ -229,6 +234,8 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   const [execSplit, setExecSplit] = useState<BuySplit | null>(null)
   /** m00139：底仓做T点「拆分」直接生成子单（预填价量+仅选日期） */
   const [baseTChildSeed, setBaseTChildSeed] = useState<BaseTChildSeed | null>(null)
+  /** V9.79：改一笔已有子单（价/量/日期都能改，日期允许晚于卖出日） */
+  const [baseTChildEdit, setBaseTChildEdit] = useState<BaseTChildEditing | null>(null)
   /** V9.69：先卖后买模式切换在途（防止连点写两次标记档） */
   const [modeBusy, setModeBusy] = useState(false)
 
@@ -344,6 +351,12 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       for (const row of c.relatedSellRows) chainRows.add(row)
       for (const b of c.branches) for (const row of b.memberRows) chainRows.add(row)
     }
+    /**
+     * V9.79「先卖后买」筛选：底仓做T 的卖出行 + 回本链的全部行（锚点 / 关联裸卖 / 价位槽成员）。
+     * 这些行不一定带 `sellBeforeBuy`（链的归属批次是普通买入），所以按链成员再补一次。
+     */
+    const sellFirstRows = new Set<number>(chainRows)
+    for (const s of ledger.sells) if (s.strategyMode === 'baseT') sellFirstRows.add(s.sourceRow)
     const list = rows.filter((r) => {
       // nanoId 深链要能命中已软删的行，showDeleted 的门对目标行放行
       const rId = nano.rowToId.get(r.rec.sourceRow)
@@ -369,7 +382,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       if (idFilter !== null && !idMatch) return false
       /** 深链指到的那一行要一定看得见：软删（上面已放行）和「已完成」都不能把它藏掉 */
       // 状态多选取交集：勾了几个状态，行必须全都满足
-      if (statuses.length > 0 && !statuses.every((k) => statusMatch(r, k))) return false
+      if (statuses.length > 0 && !statuses.every((k) => statusMatch(r, k, sellFirstRows))) return false
       // V9.5：默认隐藏已完成；勾「已卖完」或深链带该状态时自动放开，避免空列表陷阱
       // V9.36：回本链锚点不算完成（还欠着一笔要补），继续显示
       // m00139：底仓做T全部回补的行带 ✅，即使默认隐藏已完成也要留着，否则用户看不到完成标记
@@ -389,7 +402,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       return true
     })
     return { filtered: list, noDateHidden: hidden }
-  }, [rows, stockFilter, priceFilter, priceLo, priceHi, statuses, showDeleted, enabledSet, fromDate, toDate, idFilter, selectedIdSet, nano, hideDone, ledger.repairChains])
+  }, [rows, stockFilter, priceFilter, priceLo, priceHi, statuses, showDeleted, enabledSet, fromDate, toDate, idFilter, selectedIdSet, nano, hideDone, ledger.repairChains, ledger.sells])
 
   /** 已生效的条件 chips：每颗都能单独点掉 */
   const activeChips = useMemo(() => {
@@ -579,7 +592,7 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   /** 点标签打开的「裸卖待挂钩」弹层（null = 关着） */
   const [hedgeRow, setHedgeRow] = useState<number | null>(null)
   // V9.55：抽屉 / 新增弹窗 / 挂钩弹层 / 底仓做T子单弹窗统一保滚动位置（嵌套要传合并布尔）
-  useScrollHold(drawerOpen || adding || hedgeRow !== null || baseTChildSeed !== null)
+  useScrollHold(drawerOpen || adding || hedgeRow !== null || baseTChildSeed !== null || baseTChildEdit !== null)
 
   /** V9.46 回本链：高位批次行号 → 那条链（用于行上标签 + 抽屉里的进度卡） */
   const repairByAnchor = useMemo(
@@ -1072,9 +1085,11 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
               edited={editedRows.has(r.rec.sourceRow)}
               baseTDone={baseTDoneOf(r)}
               levelProfit={levelProfitOf(r)}
+              // m00139：全部回补的底仓做T不提供左滑删除；V9.79 改成露出「编辑」——
+              // 子单填错（价/量/日期）时不必先点开详情再找按钮。
+              onSwipeEdit={baseTDoneOf(r) ? () => open(r) : undefined}
               onSwipeDelete={baseTDoneOf(r) ? undefined : () => {
                 // 行上左滑直接删/恢复：不必先打开详情抽屉。已删除行露出的是「恢复」。
-                // m00139：全部回补的底仓做T锁定，不提供左滑删除。
                 if (r.rec.deletedAt) void onRestore(r.rec.sourceRow)
                 else void onDelete(r.rec.sourceRow)
               }}
@@ -1109,8 +1124,11 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                   <Button onClick={() => setEditing(false)}>取消</Button>
                 </>
               ) : currentBaseTDone ? (
-                // m00139：全部回补的底仓做T锁定，不能编辑/补买入/删除
-                <span className="tiny muted" data-testid="base-t-locked">✅ 已全部回补，此记录已锁定不可再编辑</span>
+                // m00139 原本整行锁定；V9.79 用户要求「手误填错也得能改」——
+                // 卖出侧仍是既成事实（不开放明细编辑），但子单可以在列表里逐笔改。
+                <span className="tiny muted" data-testid="base-t-done-hint">
+                  ✅ 已全部回补 · 子单可在上方「做T回补子单」里点「修改」
+                </span>
               ) : (
                 <>
                   <Button type="primary" style={{ flex: 1 }} onClick={() => startEdit()}>编辑</Button>
@@ -1519,7 +1537,25 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                                   {date} · 已回补 · 做T价差 {money(profit * e.qty)}
                                 </div>
                               </div>
-                              <Tag size="small" variant="soft" color="app-teal">已完成</Tag>
+                              {/* V9.79：子单填错了要能改（尤其日期），不必撤销重记 */}
+                              <div className="acts">
+                                <Tag size="small" variant="soft" color="app-teal">已完成</Tag>
+                                <Button
+                                  size="small"
+                                  data-action="base-t-child-edit"
+                                  data-child-id={e.id}
+                                  onClick={() => setBaseTChildEdit({
+                                    id: e.id,
+                                    sourceRow: current.rec.sourceRow,
+                                    stockName: current.rec.stockName,
+                                    qty: e.qty,
+                                    priceCents: e.priceCents,
+                                    dateIso: date,
+                                  })}
+                                >
+                                  修改
+                                </Button>
+                              </div>
                             </div>
                           )
                         })
@@ -1863,6 +1899,14 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       {execSplit && <SplitExecModal split={execSplit} onClose={() => setExecSplit(null)} />}
       {/* m00139：底仓做T 点拆分直接生成回补子单（预填价量+仅选日期） */}
       {baseTChildSeed && <BaseTChildModal seed={baseTChildSeed} onClose={() => { setBaseTChildSeed(null); setBpPrice(''); setBpQty('') }} />}
+      {/* V9.79：改一笔已有子单（价/量/日期），父记录与卖出日不受影响 */}
+      {baseTChildEdit && (
+        <BaseTChildModal
+          seed={{ sourceRow: baseTChildEdit.sourceRow, stockName: baseTChildEdit.stockName, priceText: '', qtyText: '', pricePlaceholder: '', qtyPlaceholder: '' }}
+          editing={baseTChildEdit}
+          onClose={() => setBaseTChildEdit(null)}
+        />
+      )}
     </div>
   )
 }

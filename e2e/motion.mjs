@@ -122,8 +122,23 @@ try {
       await new Promise(r=>setTimeout(r,300));observer.disconnect();return{flips,y:scrollY,compact:header.dataset.compact}
     })()`)
     check(page + ' 快速往返不抖动、不改写用户滚动位置', jitter.flips <= 2 && Math.abs(jitter.y - 300) <= 1, jitter)
-    await click(`[data-testid="${page}-compact"]`)
-    await until(`scrollY===0 && document.querySelector('[data-sticky="${page}"]').dataset.compact==='false'`)
+    if (page === 'orders') {
+      // V9.78：挂单页收起后点摘要条不再回顶，而是直接展开换股下拉
+      await click(`[data-testid="${page}-compact"]`)
+      await until(`Boolean(document.querySelector('[data-scroll-summary] .app-select-panel'))`)
+      check(page + ' 收起后点摘要展开换股下拉', true)
+      // Esc 要打在 Select 包裹层上（onKeyDown 挂在那儿，document 上的 keydown 不会向下冒泡）
+      await run(`(() => {
+        const el = document.querySelector('[data-scroll-summary] .app-select')
+        el?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      })()`)
+      await until(`!document.querySelector('[data-scroll-summary] .app-select-panel')`)
+      await run(`window.scrollTo(0, 0)`)
+      await until(`scrollY===0 && document.querySelector('[data-sticky="${page}"]').dataset.compact==='false'`)
+    } else {
+      await click(`[data-testid="${page}-compact"]`)
+      await until(`scrollY===0 && document.querySelector('[data-sticky="${page}"]').dataset.compact==='false'`)
+    }
     check(page + ' 回顶恢复设置与焦点', await run(`!document.querySelector('[data-sticky="${page}"] [data-scroll-expanded]').inert`))
   }
 
@@ -173,9 +188,15 @@ try {
   await run('window.scrollTo(0,900)')
   await pause(100)
   check('减少动态效果下摘要过渡瞬切', await run(`getComputedStyle(document.querySelector('[data-scroll-summary]')).transitionDuration.split(',').every(v=>parseFloat(v)===0)`))
+  // V9.78：挂单页摘要条点击是展开换股下拉，不再回顶——减少动态效果下下拉也应当场出现
   await click('[data-testid="orders-compact"]')
   await pause(50)
-  check('减少动态效果下回顶无平滑滚动', await run('scrollY===0'))
+  check('减少动态效果下点摘要即展开换股下拉', await run(`Boolean(document.querySelector('[data-scroll-summary] .app-select-panel')) && scrollY===900`))
+  await run(`(() => {
+    const el = document.querySelector('[data-scroll-summary] .app-select')
+    el?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  })()`)
+  await until(`!document.querySelector('[data-scroll-summary] .app-select-panel')`)
   check('减少动态效果下无隐藏模块', await run(`[...document.querySelectorAll('[data-reveal="pending"]')].every(e=>getComputedStyle(e).opacity==='1')`))
   await shot('reduced-motion')
 

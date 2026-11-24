@@ -20,9 +20,10 @@ export function SplitExecModal({ split, onClose }: { split: BuySplit; onClose: (
   const { ledger, recordRebuy, recordNo } = useApp()
   const order = ledger.orders.find((o) => o.id === split.orderId)
   const sellNo = recordNo.of(split.sourceRow)
-  const [qText, setQText] = useState(String(split.qty))
-  const [pText, setPText] = useState(centsToYuan(split.priceCents))
-  const [rText, setRText] = useState('0')
+  // V9.79：价/量留空，直接点确认就取 placeholder（这一档的默认价量），只在手改时才用实际值。
+  const [qText, setQText] = useState('')
+  const [pText, setPText] = useState('')
+  const [rText, setRText] = useState('')
   const [saving, setSaving] = useState(false)
 
   const check = useBookingCheck('split-rebuy', {

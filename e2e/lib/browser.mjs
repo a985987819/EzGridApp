@@ -82,6 +82,8 @@ export async function openBrowser({ name = 'grid-browser', timeout = 20_000 } = 
     for (const request of pending.values()) { clearTimeout(request.timer); request.reject(error) }
     pending.clear()
   }
+  // 浏览器自己崩了时，只有 stderr 能说清原因；别让调用方只看到「连接不可用」。
+  const browserDied = message => new Error(`${message}（浏览器 code ${browser.exitCode ?? '仍在运行'}）\n${launched.stderr()}`)
   const close = async () => {
     if (closed) return
     closed = true
@@ -110,9 +112,10 @@ export async function openBrowser({ name = 'grid-browser', timeout = 20_000 } = 
       }
       if (message.method) for (const listener of listeners) listener(message)
     })
-    socket.addEventListener('close', () => rejectPending(new Error('CDP连接已断开')))
+    socket.addEventListener('close', () => rejectPending(browserDied('CDP连接已断开')))
+    browser.once('exit', () => rejectPending(browserDied('浏览器已退出')))
     const send = (method, params = {}) => new Promise((resolve, reject) => {
-      if (closed || socket.readyState !== WebSocket.OPEN) { reject(new Error('CDP连接不可用')); return }
+      if (closed || socket.readyState !== WebSocket.OPEN) { reject(browserDied('CDP连接不可用')); return }
       const id = ++sequence
       const timer = setTimeout(() => {
         pending.delete(id)

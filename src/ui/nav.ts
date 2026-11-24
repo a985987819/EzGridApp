@@ -42,7 +42,7 @@ export interface Route {
   manage?: ManageQuery
 }
 
-export type ManageSection = 'stocks' | 'import' | 'checks' | 'backup' | 'guide' | 'activity' | 'updates' | 'money'
+export type ManageSection = 'stocks' | 'import' | 'backup' | 'guide' | 'activity' | 'updates' | 'money'
 export type GuideMode = 'questions' | 'scenarios' | 'documents' | 'issues'
 export interface ManageQuery {
   section?: ManageSection
@@ -54,7 +54,7 @@ export interface ManageQuery {
   mode?: GuideMode
   category?: string
 }
-const MANAGE_SECTIONS: readonly string[] = ['stocks', 'import', 'checks', 'backup', 'guide', 'activity', 'updates', 'money']
+const MANAGE_SECTIONS: readonly string[] = ['stocks', 'import', 'backup', 'guide', 'activity', 'updates', 'money']
 const GUIDE_MODES: readonly string[] = ['questions', 'scenarios', 'documents', 'issues']
 
 export function parseManageQuery(search: string): ManageQuery {

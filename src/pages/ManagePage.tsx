@@ -3,7 +3,6 @@ import { Card } from 'animal-island-ui'
 import { ManageImport } from './manage/ManageImport'
 import { ManageStocks } from './manage/ManageStocks'
 import { ManageBackup } from './manage/ManageBackup'
-import { ManageChecks } from './manage/ManageChecks'
 import { ManageActivity } from './manage/ManageActivity'
 import { ManageUpdates } from './manage/ManageUpdates'
 import { ManageMoney } from './manage/ManageMoney'
@@ -17,7 +16,6 @@ const SECTIONS: { key: ManageSection; label: string; desc: string; Icon: typeof 
   { key: 'updates', label: '版本与更新', desc: '当前与线上版本 · 检查 · 强制更新', Icon: IconRefresh },
   { key: 'stocks', label: '股票设置', desc: '网格间隔 · 涨跌幅规则 · 启用开关', Icon: IconGrid },
   { key: 'import', label: '导入数据', desc: 'Excel / CSV 批量写入本地台账', Icon: IconUpload },
-  { key: 'checks', label: '校验', desc: '基准快照 · 数量守恒', Icon: IconChart },
   { key: 'backup', label: '备份', desc: '完整 Excel / JSON 备份与恢复', Icon: IconDownload },
 ]
 
@@ -31,7 +29,7 @@ export function ManagePage({ goTrades, query }: { goTrades: (q: TradesQuery) => 
       <div className="stack">
         <div className="page-title">
           <h2>管理</h2>
-          <p>指南 · 股票 · 导入 · 校验 · 备份</p>
+          <p>指南 · 股票 · 导入 · 备份</p>
         </div>
         <Card>
           <div className="manage-menu" data-testid="manage-menu">
@@ -86,8 +84,6 @@ export function ManagePage({ goTrades, query }: { goTrades: (q: TradesQuery) => 
         <ManageStocks />
       ) : current.key === 'import' ? (
         <ManageImport goTrades={goTrades} />
-      ) : current.key === 'checks' ? (
-        <ManageChecks />
       ) : (
         <ManageBackup />
       )}

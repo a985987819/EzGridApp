@@ -62,7 +62,7 @@ describe('统计日历的网格表现口径', () => {
       kind: 'rebuy', date: '2026-02-01', originalSoldAt: '2026-01-15', sourceRows: [3], qty: 500,
       sellPriceCents: 700, buyPriceCents: 530, sellAmountCents: 350000, buyAmountCents: 265000, profitCents: 85000,
     }])
-    expect(statistics.daily).toEqual([{ day: '2026-02-01', sellCount: 1, sellQty: 500, sellAmountCents: 350000, baseTSellCount: 0, baseTSellAmountCents: 0, baseTProfitCents: 0, profitCents: 85000, dateMissing: false }])
+    expect(statistics.daily).toEqual([{ day: '2026-02-01', sellCount: 1, sellQty: 500, sellAmountCents: 350000, baseTRebuyCount: 0, baseTProfitCents: 0, profitCents: 85000, dateMissing: false }])
     expect(statistics.monthly).toEqual([{ month: '2026-02', sellCount: 1, sellQty: 500, sellAmountCents: 350000, profitCents: 85000, dateMissing: false }])
     expect(statistics.pendingRebuyCount).toBe(0)
     expect(ledger.totals.profitCents).toBe(-150000)
@@ -123,7 +123,7 @@ describe('统计日历的网格表现口径', () => {
     const partial = project([high, root], { extraTargets: [marker], executions: [execution('e1', 3, 200, 500, '2026-02-01')] })
     expect(partial.statistics.events).toMatchObject([{ kind: 'baseT', date: '2026-01-15', qty: 200, sellPriceCents: 700, buyPriceCents: 500, profitCents: 40000 }])
     expect(partial.statistics.pendingRebuyCount).toBe(0)
-    expect(partial.statistics.daily).toEqual([{ day: '2026-01-15', sellCount: 1, sellQty: 200, sellAmountCents: 140000, baseTSellCount: 1, baseTSellAmountCents: 140000, baseTProfitCents: 40000, profitCents: 40000, dateMissing: false }])
+    expect(partial.statistics.daily).toEqual([{ day: '2026-01-15', sellCount: 1, sellQty: 200, sellAmountCents: 140000, baseTRebuyCount: 1, baseTProfitCents: 40000, profitCents: 40000, dateMissing: false }])
     expect(partial.ledger.sells.find(s => s.sourceRow === 3)).toMatchObject({ strategyMode: 'baseT' })
     const full = project([high, root], { extraTargets: [marker], executions: [
       execution('e1', 3, 200, 500, '2026-01-31'), execution('e2', 3, 300, 550, '2026-02-01'),
@@ -132,7 +132,7 @@ describe('统计日历的网格表现口径', () => {
       [200, 500, 40000], [300, 550, 45000],
     ])
     expect(full.statistics.events.every(e => e.date === '2026-01-15' && e.kind === 'baseT')).toBe(true)
-    expect(full.statistics.daily).toEqual([{ day: '2026-01-15', sellCount: 2, sellQty: 500, sellAmountCents: 350000, baseTSellCount: 2, baseTSellAmountCents: 350000, baseTProfitCents: 85000, profitCents: 85000, dateMissing: false }])
+    expect(full.statistics.daily).toEqual([{ day: '2026-01-15', sellCount: 2, sellQty: 500, sellAmountCents: 350000, baseTRebuyCount: 2, baseTProfitCents: 85000, profitCents: 85000, dateMissing: false }])
     expect(full.statistics.monthly).toEqual([{ month: '2026-01', sellCount: 2, sellQty: 500, sellAmountCents: 350000, profitCents: 85000, dateMissing: false }])
     const secondRoot = { ...root, sourceRow: 4 }
     const marker4 = { ...marker, id: 'grid-mode:4', lotId: 'lot:4',
@@ -159,7 +159,7 @@ describe('统计日历的网格表现口径', () => {
     ])
     expect(statistics.events.every(e => e.date === '2026-01-15')).toBe(true)
     expect(statistics.daily).toEqual([{ day: '2026-01-15', sellCount: 3, sellQty: 1000, sellAmountCents: 1000000,
-      baseTSellCount: 3, baseTSellAmountCents: 1000000, baseTProfitCents: 120000, profitCents: 120000, dateMissing: false }])
+      baseTRebuyCount: 3, baseTProfitCents: 120000, profitCents: 120000, dateMissing: false }])
   })
 
   it('正常盈利按卖出日，缺日期进入未填日期，正常亏损和零收益不显示', () => {

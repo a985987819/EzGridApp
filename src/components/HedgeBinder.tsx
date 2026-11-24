@@ -178,7 +178,7 @@ export function HedgeBinder({
 
   return (
     <div className="hedge-binder">
-      {/* V9.33 异常红条：失效 / 超挂 / 挂不满就地提示，不用跑去管理·校验找 */}
+      {/* V9.33 异常红条：失效 / 超挂 / 挂不满就地提示，不用去别处找 */}
       {issues.length > 0 && (
         <div className="hedge-issues" role="status">
           {issues.map((a, i) => (

@@ -343,13 +343,6 @@ function compactYuan(cents: number): string {
   return `${cents >= 0 ? '+' : '-'}${yuan}`
 }
 
-/** 日历格用的金额（不带正负号）：3500 / 1.2万 */
-function compactCny(cents: number): string {
-  const yuan = Math.round(Math.abs(cents) / 100)
-  const text = yuan >= 10000 ? `${(yuan / 10000).toFixed(1)}万` : String(yuan)
-  return `${cents < 0 ? '-' : ''}¥${text}`
-}
-
 function price2(cents: number | null): string {
   return cents === null ? '—' : (cents / 100).toFixed(2)
 }
@@ -389,19 +382,15 @@ function CalendarCard({ goTrades, statistics, rowToId }: { goTrades: (q: TradesQ
       title: (
         <span
           className="cal-day-stat"
-          data-base-t-count={b.baseTSellCount || undefined}
-          data-base-t-amount={b.baseTSellAmountCents || undefined}
-          title={`当日网格收益 ${signedMoney(b.profitCents)} · ${b.sellQty} 股${b.baseTSellCount > 0
-            ? `；底仓做T ${b.baseTSellCount} 笔 · 卖出金额 ${money(b.baseTSellAmountCents)} · 做T盈利 ${signedMoney(b.baseTProfitCents)}`
+          data-base-t-count={b.baseTRebuyCount || undefined}
+          title={`当日网格收益 ${signedMoney(b.profitCents)} · ${b.sellQty} 股${b.baseTRebuyCount > 0
+            ? `；其中底仓做T 回补 ${b.baseTRebuyCount} 次 · 做T盈利 ${signedMoney(b.baseTProfitCents)}`
             : ''}`}
         >
           <span className="amt">{compactYuan(b.profitCents)}</span>
           <span className="q">{b.sellCount}笔</span>
-          {b.baseTSellCount > 0 && (
-            <>
-              <span className="bt" data-testid="cal-base-t">做T{b.baseTSellCount}笔</span>
-              <span className="bt-amt">{compactCny(b.baseTSellAmountCents)}</span>
-            </>
+          {b.baseTRebuyCount > 0 && (
+            <span className="bt" data-testid="cal-base-t">回补{b.baseTRebuyCount}次</span>
           )}
         </span>
       ),
@@ -424,7 +413,7 @@ function CalendarCard({ goTrades, statistics, rowToId }: { goTrades: (q: TradesQ
         )}
       </div>
       <p className="tiny muted" data-testid="stats-basis" style={{ margin: '0 0 8px' }}>
-        先买后卖仅计盈利；底仓做T只要买回了就按卖出日计已买回份额的做T价差，日历同时展示做T笔数、卖出金额与做T盈利（部分回补先计已买回那部分，后续买回继续累加）；其余先卖后买全部回补后，在完成日计实际价差。此处网格收益不等于总账盈亏，高位亏损保留在总账和回本链。
+        先买后卖仅计盈利；底仓做T只要买回了就按卖出日计已买回份额的做T价差，并直接并入当日实现盈利，格内另标回补次数（部分回补先计已买回那部分，后续买回继续累加）；其余先卖后买全部回补后，在完成日计实际价差。此处网格收益不等于总账盈亏，高位亏损保留在总账和回本链。
         {statistics.pendingRebuyCount > 0 && <> 另有 {statistics.pendingRebuyCount} 笔尚未全部回补，暂不统计。</>}
         {statistics.unpricedCount > 0 && <> {statistics.unpricedCount} 笔待核对实际成交价，暂不统计。</>}
       </p>
@@ -478,7 +467,7 @@ function CalendarCard({ goTrades, statistics, rowToId }: { goTrades: (q: TradesQ
                   </div>
                   <div className="t2">{s.sourceRows.map(row => recordNoLabel(row, recordNo)).join('、')} · {s.kind === 'rebuy' ? '实际买回均价' : s.kind === 'baseT' ? '做T买回均价' : '买入成本'} {price2(s.buyPriceCents)}</div>
                   {s.kind === 'rebuy' && <div className="tiny muted">原卖出日 {s.originalSoldAt ?? '待补日期'} · 本日全部回补</div>}
-                  {s.kind === 'baseT' && <div className="tiny muted">按卖出日 {s.date ?? '待补日期'} 计入 · 已买回 {s.qty} 股 · 卖出金额 {money(s.sellAmountCents)}</div>}
+                  {s.kind === 'baseT' && <div className="tiny muted">按卖出日 {s.date ?? '待补日期'} 计入 · 本次回补 {s.qty} 股 · 做T盈利已并入当日</div>}
                 </div>
                 <div className="right num">
                   <div className={tone(s.profitCents)} style={{ fontWeight: 700 }}>{signedMoney(s.profitCents)}</div>

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 
 /**
  * 页内下拉选择器。
@@ -22,6 +22,12 @@ export interface SelectProps {
   /** 嵌在标题/图例条里的小尺寸 */
   mini?: boolean
   className?: string
+  /** 自定义触发框内容（挂单页收起摘要条整行就是触发器）；给了就不再画默认文案和箭头 */
+  triggerContent?: ReactNode
+  /** 触发框附加类名 */
+  triggerClassName?: string
+  /** 触发框上的 data-testid（挂单页收起摘要条要能被 e2e 点到） */
+  triggerTestId?: string
   'aria-label'?: string
 }
 
@@ -42,6 +48,9 @@ export function Select({
   disabled = false,
   mini = false,
   className,
+  triggerContent,
+  triggerClassName,
+  triggerTestId,
   'aria-label': ariaLabel,
 }: SelectProps) {
   const [open, setOpen] = useState(false)
@@ -156,22 +165,27 @@ export function Select({
       <button
         ref={triggerRef}
         type="button"
-        className="app-select-trigger"
+        className={['app-select-trigger', triggerClassName ?? ''].filter(Boolean).join(' ')}
         role="combobox"
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-label={ariaLabel}
+        data-testid={triggerTestId}
         disabled={disabled}
         onClick={() => !disabled && setOpen((v) => !v)}
       >
-        {selected ? (
-          <span className="app-select-val">{selected.label}</span>
-        ) : (
-          <span className="app-select-ph">{placeholder}</span>
+        {triggerContent ?? (
+          <>
+            {selected ? (
+              <span className="app-select-val">{selected.label}</span>
+            ) : (
+              <span className="app-select-ph">{placeholder}</span>
+            )}
+            <svg className="app-select-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+              <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </>
         )}
-        <svg className="app-select-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-          <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
       </button>
 
       {open && (

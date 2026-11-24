@@ -92,7 +92,7 @@ try {
   const output = await run(`(async()=>({copy:copiedOrders,csv:await csvBlobs.at(-1).text()}))()`)
   check('复制和CSV继续使用改单后的实际挂单价量，没有混入原推荐', output.copy.includes('4.80 × 200') && output.copy.includes('7.20 × 200') && output.csv.includes('4.80,200,960.00') && output.csv.includes('7.20,200,1440.00') && !output.csv.includes('原推荐'), output)
   await click('[data-testid=buy-suggestion][data-price="480"] [data-action=suggestion-buy]')
-  check('买入成交弹窗默认仍采用改单后4.80与200股', await run(`document.querySelector('[data-field=tradeQty]')?.value==='200'&&document.querySelector('[data-field=tradePrice]')?.value==='4.80'||document.querySelector('[data-field=execQty]')?.value==='200'&&document.querySelector('[data-field=execPrice]')?.value==='4.80'`))
+  check('买入成交弹窗默认仍采用改单后4.80与200股', await run(`document.querySelector('[data-field=tradeQty]')?.placeholder==='200'&&document.querySelector('[data-field=tradePrice]')?.placeholder==='4.80'||document.querySelector('[data-field=execQty]')?.placeholder==='200'&&document.querySelector('[data-field=execPrice]')?.placeholder==='4.80'`))
   await run(`(()=>{const modal=document.querySelector('[role=dialog]');[...modal.querySelectorAll('button')].find(button=>button.textContent.trim()==='取消').click()})()`);await pause(250)
   await act(`await testApp.recordLotSales([{lotId:'lot:'+sellLot,qty:100}],100,720,'2026-10-22')`)
   value = await run(`originalRead('#original-orders-test .pending-sell[data-row="'+sellLot+'"]')`)
