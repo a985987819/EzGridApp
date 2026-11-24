@@ -9,7 +9,7 @@
 改动要同时兼顾这三项，不为省事牺牲其中任何一项：
 
 - **可维护性**：业务口径单源，只写在 `domain/*`（纯函数、无 IO、无 React）并配单测；改口径先改 domain 与基准测试（`io/baseline.spec.ts` 是红线），决策与例外记录进本文对应小节，不散落成代码注释里的孤证。
-- **解耦性**：数据流单向——io 解析 → `store/useApp.tsx`（唯一写库层）→ 纯派生 Ledger → pages 只消费。pages 禁止绕过 store 写库、禁止手改派生对象；展示组件不直接碰 Dexie；`domain/*` 不依赖 React 与 IO。
+- **解耦性**：数据流单向——io 解析 → `store/useApp.tsx`（唯一写库层）→ 纯派生 Ledger → pages 只消费。pages 禁止绕过 store 写库、禁止手改派生对象；展示组件不直接碰 Dexie；`domain/*` 不依赖 React 与 IO。**分层已落成 ESLint 门禁**（`eslint.config.js` 的 `no-restricted-imports`）：domain 非 spec 文件禁 import react / store / ui / components / pages / io / xlsx / dexie，pages 与 components 禁直接 import `store/db` 或 `dexie`——违规在 `npm run lint` 与 CI 直接报错，不是口头约定。
 - **可复用性**：跨页面/跨弹层的能力先抽到 `ui/*`（`scrollHold`、`Select`、`DateField`、`transitions`、`bookingDraft` 等）再复用；同一口径（金额分、回补覆盖、挂单排序等）只实现一次、多入口共用同一函数，禁止复制粘贴改出两套口径。
 - 三者冲突时优先保「口径单源 + 解耦」；抽象只在出现第二个真实使用方时才抽，不为假想复用提前造轮子。
 
