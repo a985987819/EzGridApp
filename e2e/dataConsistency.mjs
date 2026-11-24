@@ -2,25 +2,13 @@
  * node e2e/dataConsistency.mjs http://127.0.0.1:5173
  */
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { basename, join, resolve, sep } from 'node:path'
+import { launchBrowser } from './lib/browser.mjs'
 
 const BASE = (process.argv[2] ?? 'http://127.0.0.1:5173').replace(/\/+$/, '')
 const SENTINEL = '股票,日期,买入价,买入份额,目标售价,实现份数,卖出日期,提前卖的买价\nT,2026-02-01,5,100,7,0,,'
-const PORT = 9593
-const executable = [process.env.CHROME_PATH, 'C:/Program Files/Google/Chrome/Application/chrome.exe',
-  'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', '/usr/bin/google-chrome', '/usr/bin/chromium']
-  .find(path => path && existsSync(path))
-assert(executable, '需要 Chrome/Edge，或设置 CHROME_PATH')
-let occupied = false
-try { occupied = (await fetch(`http://127.0.0.1:${PORT}/json/version`)).ok } catch { /* unused port */ }
-assert(!occupied, `调试端口 ${PORT} 已占用`)
-const profile = mkdtempSync(join(tmpdir(), 'grid-data-consistency-'))
-const browser = spawn(executable, ['--headless=new', `--remote-debugging-port=${PORT}`, `--user-data-dir=${profile}`,
-  '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-background-networking', 'about:blank'],
-{ stdio: 'ignore' })
+// 调试端口交给浏览器自选并等它真正监听：固定端口在 CI 上会因为启动慢/残留直接 ECONNREFUSED。
+const launched = await launchBrowser({ name: 'grid-data-consistency' })
+const PORT = launched.port
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms))
 const problems = [], sockets = []
 let passed = 0
@@ -92,10 +80,6 @@ async function connect() {
 }
 
 try {
-  for (let i = 0; i < 80; i++) {
-    try { if ((await fetch(`http://127.0.0.1:${PORT}/json/version`)).ok) break } catch { /* starting */ }
-    await pause(150)
-  }
   const a = await connect()
   await a.act(`await consistencyApp.resetAll();await consistencyApp.addStock({id:'stock:T',name:'T',intervalCents:200,priceLimitType:'main_10',enabled:true});const{parseCsvText}=await import(new URL('src/io/parseWorkbook.ts',location.href).href);await consistencyApp.commitImport(await parseCsvText(${JSON.stringify(SENTINEL)}),'consistency.csv')`)
   const b = await connect()
@@ -178,9 +162,5 @@ try {
   console.log(`DATA CONSISTENCY E2E PASS (${passed} checks)`)
 } finally {
   for (const socket of sockets) socket.close()
-  browser.kill()
-  await pause(400)
-  const resolvedProfile = resolve(profile)
-  assert(resolvedProfile.startsWith(resolve(tmpdir()) + sep) && basename(resolvedProfile).startsWith('grid-data-consistency-'), '拒绝清理临时浏览器目录之外的路径')
-  try { rmSync(resolvedProfile, { recursive: true, force: true }) } catch { /* Windows may retain a temporary browser file briefly */ }
+  await launched.close()
 }

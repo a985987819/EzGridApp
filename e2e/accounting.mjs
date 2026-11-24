@@ -4,47 +4,18 @@
  *
  *   node e2e/accounting.mjs http://127.0.0.1:5173
  */
-import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { launchBrowser } from './lib/browser.mjs'
 
-const PORT = 9445
 const BASE = (process.argv[2] ?? 'http://127.0.0.1:5173').replace(/\/+$/, '')
 const OUT = join(process.cwd(), 'e2e', 'out')
 mkdirSync(OUT, { recursive: true })
 
-const CANDIDATES = [
-  process.env.CHROME_PATH,
-  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-  'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-  'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-].filter(Boolean)
-const browserPath = CANDIDATES.find((p) => existsSync(p))
-if (!browserPath) {
-  console.error('找不到 Chrome/Edge，请设置 CHROME_PATH')
-  process.exit(2)
-}
-
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-const profile = mkdtempSync(join(tmpdir(), 'grid-e2e-'))
-const browser = spawn(
-  browserPath,
-  [
-    '--headless=new',
-    `--remote-debugging-port=${PORT}`,
-    `--user-data-dir=${profile}`,
-    '--no-first-run',
-    '--no-default-browser-check',
-    '--disable-gpu',
-    '--disable-extensions',
-    '--window-size=390,844',
-    'about:blank',
-  ],
-  { stdio: 'ignore' },
-)
+// 调试端口交给浏览器自选并等它真正监听：固定端口在 CI 上会因为启动慢/残留直接 ECONNREFUSED。
+const launched = await launchBrowser({ name: 'grid-e2e', args: ['--window-size=390,844'] })
+const PORT = launched.port
 
 const problems = []
 let ok = true
@@ -395,8 +366,8 @@ try {
   check('无浏览器运行时错误',problems.length===0,problems.join(' | '))
   socket.close()
 } finally {
-  browser.kill()
-  try {rmSync(profile,{recursive:true,force:true})}catch{}
+  // launched.close() 同时杀掉浏览器并清理临时 profile。
+  await launched.close()
 }
 console.log(ok?'\nACCOUNTING E2E PASS':'\nACCOUNTING E2E FAIL')
 process.exit(ok?0:1)

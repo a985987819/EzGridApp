@@ -2,24 +2,14 @@
  * node e2e/importValidation.mjs http://127.0.0.1:5173
  */
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { basename, join, resolve, sep } from 'node:path'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { launchBrowser } from './lib/browser.mjs'
 
 const BASE = (process.argv[2] ?? 'http://127.0.0.1:5173').replace(/\/+$/, '')
-const PORT = 9592
-const executable = [process.env.CHROME_PATH, 'C:/Program Files/Google/Chrome/Application/chrome.exe',
-  'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', '/usr/bin/google-chrome', '/usr/bin/chromium']
-  .find(path => path && existsSync(path))
-assert(executable, '需要 Chrome/Edge，或设置 CHROME_PATH')
-let occupied = false
-try { occupied = (await fetch(`http://127.0.0.1:${PORT}/json/version`)).ok } catch { /* unused port */ }
-assert(!occupied, `调试端口 ${PORT} 已占用`)
-const profile = mkdtempSync(join(tmpdir(), 'grid-import-validation-'))
-const browser = spawn(executable, ['--headless=new', `--remote-debugging-port=${PORT}`, `--user-data-dir=${profile}`,
-  '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-background-networking', 'about:blank'],
-{ stdio: 'ignore' })
+// 调试端口交给浏览器自选并等它真正监听：固定端口在 CI 上会因为启动慢/残留直接 ECONNREFUSED。
+const launched = await launchBrowser({ name: 'grid-import-validation' })
+const PORT = launched.port
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms))
 const problems = []
 let socket, passed = 0
@@ -36,10 +26,6 @@ const valid = csv(['T,2026-02-01,5,100,7,0,,', 'T,2026-02-02,6,0,8,,,',
   'T,,7,,9,,,', 'T,2026-02-03,8,301,10,101,2026-02-04,'])
 
 try {
-  for (let i = 0; i < 80; i++) {
-    try { if ((await fetch(`http://127.0.0.1:${PORT}/json/version`)).ok) break } catch { /* starting */ }
-    await pause(150)
-  }
   const target = await (await fetch(`http://127.0.0.1:${PORT}/json/new?about:blank`, { method: 'PUT' })).json()
   socket = new WebSocket(target.webSocketDebuggerUrl)
   await new Promise((resolve, reject) => { socket.addEventListener('open', resolve); socket.addEventListener('error', reject) })
@@ -188,9 +174,5 @@ try {
   console.log(`IMPORT VALIDATION E2E PASS (${passed} checks)`)
 } finally {
   socket?.close()
-  browser.kill()
-  await pause(400)
-  const resolvedProfile = resolve(profile)
-  assert(resolvedProfile.startsWith(resolve(tmpdir()) + sep) && basename(resolvedProfile).startsWith('grid-import-validation-'), '拒绝清理临时浏览器目录之外的路径')
-  try { rmSync(resolvedProfile, { recursive: true, force: true }) } catch { /* Windows may retain a temporary browser file briefly */ }
+  await launched.close()
 }
