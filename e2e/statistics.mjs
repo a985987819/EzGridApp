@@ -177,9 +177,9 @@ try {
   statistics = await run('statistics()')
   const partialEvent = statistics.events.find(event => event.kind === 'baseT')
   check('底仓做T部分回补即按卖出日统计已买回份额的做T价差', partialEvent?.date === '2026-10-20' && partialEvent?.qty === 400 && partialEvent?.profitCents === 200000 && statistics.pendingRebuyCount === 0, JSON.stringify(partialEvent))
-  // V9.77：底仓做T的做T盈利并入当日实现盈利，格子只额外标回补次数，不再显示卖出金额
+  // V9.80：格子第三行改为当日卖出已回补得到的做T盈利（金额格式与常规订单一致）
   await click('[data-testid=stats-calendar] [data-date="2026-10-20"]')
-  check('部分回补时日历格已展示合并盈利与回补次数', await run(`document.querySelector('[data-testid=stats-calendar] [data-testid="cal-base-t"]')?.textContent==='回补1次'&&document.querySelector('[data-testid=stats-calendar] .cal-day-stat .amt')?.textContent==='+2000'`))
+  check('部分回补时日历格展示合并盈利与做T已回补盈利', await run(`document.querySelector('[data-testid=stats-calendar] [data-testid="cal-base-t"]')?.textContent==='+2000'&&document.querySelector('[data-testid=stats-calendar] .cal-day-stat .amt')?.textContent==='+2000'`))
   check('部分回补时明细显示本次回补 400 股', await run(`document.querySelector('[data-stat-kind=baseT]')?.textContent.includes('本次回补 400 股')`))
   await act(`await testApp.recordRebuy(testApp.ledger.orders.find(o=>o.sourceRow===baseRoot),600,500,0)`)
   statistics = await run('statistics()')
@@ -191,7 +191,7 @@ try {
   await act('showStatistics()')
   await until(`!!document.querySelector('#statistics-root [data-testid=stats-calendar]')`)
   await click('[data-testid=stats-calendar] [data-date="2026-10-20"]')
-  check('全部回补后日历格按回补次数合并显示，盈利为两笔做T之和', await run(`document.querySelector('[data-testid=stats-calendar] [data-testid="cal-base-t"]')?.textContent==='回补2次'&&document.querySelector('[data-testid=stats-calendar] .cal-day-stat .amt')?.textContent==='+5000'&&!document.querySelector('[data-testid=stats-calendar] .bt-amt')`))
+  check('全部回补后日历格展示两笔做T盈利合计（V9.80）', await run(`document.querySelector('[data-testid=stats-calendar] [data-testid="cal-base-t"]')?.textContent==='+5000'&&document.querySelector('[data-testid=stats-calendar] .cal-day-stat .amt')?.textContent==='+5000'`))
   check('日历明细显示逐笔底仓做T记录与做T买回均价', await run(`document.querySelectorAll('[data-stat-kind=baseT]').length===2&&document.querySelector('[data-stat-kind=baseT]').textContent.includes('底仓做T')&&document.querySelector('[data-stat-kind=baseT]').textContent.includes('做T买回均价 5.00')&&!document.querySelector('[data-stat-kind=baseT]').textContent.includes('卖出金额')`))
   await click('[data-stat-kind=baseT]')
   await until(`!!document.querySelector('#statistics-root [data-row="'+baseRoot+'"]')`)

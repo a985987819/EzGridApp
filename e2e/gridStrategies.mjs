@@ -189,9 +189,18 @@ try {
   await act(`await testApp.recordLotSales([{lotId:repair.lotId,targetId:'target:'+repair.id,qty:250}],250,730,'2026-10-22')`)
   v=await state()
   check('低位回本与底仓做T同来源独立结算，仅低位回本建链',v.chains.length===1&&v.chains[0].loss===-67500)
-  await act(`window.ro=testApp.ledger.orders.find(o=>o.strategyMode==='repair');await testApp.recordRebuy(ro,250,530,0)`)
+  await act(`window.ro=testApp.ledger.orders.find(o=>o.strategyMode==='repair');await testApp.recordRebuy(ro,125,530,0)`)
   v=await state()
   check('回本回补恢复本档7.30低位目标，不提前盈利',v.chains[0].profit===0&&v.targets.some(t=>t.priceCents===730&&t.lotId.startsWith('lot:exec:')))
+  // V9.80：应该买入并列显示「回本链已完成买入」（右 2px #f4f5f6）与「先卖后买未回补」（右 2px #c45905）
+  const mustBorders=await evaluate(`(() => {
+    const done=[...document.querySelectorAll('[data-testid="must-buy-card"] [data-testid="chain-done-buy"]')]
+    const pending=[...document.querySelectorAll('[data-testid="must-buy-card"] [data-testid="buy-suggestion"][data-sell-first="1"]')]
+    const right=(el)=>getComputedStyle(el).borderRightWidth+' '+getComputedStyle(el).borderRightColor
+    return JSON.stringify({done:done.map((el)=>({text:el.innerText.replace(/\\s+/g,' ').trim(),right:right(el)})),pending:pending.map(right)})
+  })()`)
+  const mb=JSON.parse(mustBorders)
+  check('应该买入并列显示回本链已完成买入（右浅灰框）',mb.done.some(d=>d.text.includes('买 5.30 × 125')&&d.right==='2px rgb(244, 245, 246)'),mustBorders)
   check('全过程所有守恒检查通过',v.checks.length===0,JSON.stringify(v.checks))
   const restored=await act(`const {exportLedgerWorkbook,parseLedgerWorkbook}=await import('/src/io/ledgerWorkbook.ts');const {snapshotViews}=await import('/src/domain/ledgerSnapshot.ts');window.backup=JSON.parse(await testApp.exportBackup());const before=JSON.stringify(snapshotViews(backup));const parsed=await parseLedgerWorkbook(await exportLedgerWorkbook(backup));await testApp.resetAll();await testApp.restoreBackup(JSON.stringify(parsed.snapshot));return {differences:parsed.differences,same:JSON.stringify(snapshotViews(JSON.parse(await testApp.exportBackup())))===before,version:parsed.snapshot.schemaVersion}`)
   check('JSON与完整Excel保留模式/来源/再拆历史，重复恢复账务一致',restored.same&&restored.version===14&&restored.differences.length===0,JSON.stringify(restored))

@@ -216,7 +216,7 @@ try {
   check('日历翻到2026年10月', octOk)
   await click('[data-testid="stats-calendar"] [data-date="2026-10-20"]')
   const dayCell = await evaluate(`document.querySelector('[data-testid="stats-calendar"] [data-testid="cal-base-t"]')?.textContent ?? ''`)
-  check('日历卖出日显示回补1次（做T盈利并入当日）', dayCell.includes('回补1次'), dayCell)
+  check('日历卖出日显示当日做T已回补盈利（金额格式）', dayCell === '+400', dayCell)
 
   // 第二笔：400@9 + 第三笔：200@8 → 卖出日 3 笔；再全回补加 ✅
   await evaluate(`showTrades()`)
@@ -270,7 +270,7 @@ try {
   await goOct()
   await click('[data-testid="stats-calendar"] [data-date="2026-10-20"]')
   const dayText = await evaluate(`document.querySelector('[data-testid="stats-calendar"] [data-testid="cal-base-t"]')?.textContent ?? ''`)
-  check('日历卖出日显示回补3次', dayText.includes('回补3次'), dayText)
+  check('日历卖出日显示三笔做T已回补盈利合计', dayText === '+1200', dayText)
 
   check('无运行时错误', problems.length === 0, problems.join(' | '))
   socket.close()

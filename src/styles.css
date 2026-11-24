@@ -443,6 +443,10 @@ button { font-family: inherit; }
 .line.pending-buy { border-left: 3px solid var(--buy, #2f6fd6); }
 .line.pending-sell { border-left: 3px solid var(--up, #d0453f); }
 
+/* V9.80：应该买入右侧分类边框（2px、随行高撑满）——先卖后买未回补橙 / 回本链已完成浅灰 */
+.line.pending-buy.sell-first-open { border-right: 2px solid #c45905; }
+.line.chain-done-buy { border-right: 2px solid #f4f5f6; padding-right: 8px; }
+
 /* V9.75 底仓做T未完成买单：整圈加粗红框，和普通待买的左侧蓝条区分 */
 .line.base-t-buy {
   border: 2px solid var(--up, #d0453f);
@@ -1618,10 +1622,11 @@ button { font-family: inherit; }
   font-size: 0.92em;
   flex: 0 0 auto;
 }
-/* V9.77：底仓做T的做T盈利已并入当日实现盈利，格子只额外标回补次数（不再显示成交金额） */
+/* V9.80：底仓做T的第三行改为「当日做T已回补盈利」，金额格式与常规订单一致（跟随当日盈亏色，不再固定红色） */
 .cal-day-stat .bt {
-  color: var(--up, #d0453f);
+  color: inherit;
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
   font-size: 0.95em;
   line-height: 1.05;

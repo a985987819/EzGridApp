@@ -1277,6 +1277,13 @@ try {
   // V9.58：挂单页三组——应该买入（先卖后买/敞口）· 锦上添花（下一轮/P列再买）· 应该卖出（未卖份额）
   check('出现「应该买入 / 锦上添花 / 应该卖出」三组', text.includes('应该买入') && text.includes('锦上添花') && text.includes('应该卖出'))
   check('应该买入有档位（先卖后买的欠股）', await evaluate(`Boolean(document.querySelector('[data-testid="must-buy-card"] [data-testid="buy-suggestion"]'))`))
+  // V9.80：先卖后买未回补的待买行右侧 2px #c45905；回本链已完成买入右侧 2px #f4f5f6
+  check('先卖后买未回补行右侧橙框', await evaluate(`(() => {
+    const el = document.querySelector('[data-testid="must-buy-card"] [data-testid="buy-suggestion"][data-sell-first="1"]')
+    if (!el) return false
+    const s = getComputedStyle(el)
+    return s.borderRightWidth === '2px' && s.borderRightColor === 'rgb(196, 89, 5)'
+  })()`))
 
   // 三组卡片都在带边框的数据块里
   const blocks = await evaluate(`(() => {

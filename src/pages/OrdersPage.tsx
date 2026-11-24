@@ -48,6 +48,22 @@ function stopWith(fn: () => void) {
   }
 }
 
+/**
+ * V9.80（用户口径）：回本链「已完成的部分」——已经真实买回的批次（回补成交 / 归链买入），
+ * 在应该买入里与未回补的待买行并列展示，买入价与数量都照实显示。
+ */
+interface ChainDoneBuy {
+  key: string
+  stockName: string
+  priceCents: number
+  qty: number
+  /** 真实行号；回补成交用来源卖单行，回补批次没有行号 */
+  row: number | null
+  date: string | null
+  /** 这一笔的类型文案：回补成交 / 回补批次 / 归链买入 */
+  source: string
+}
+
 function SourceDetails({ link, goTrades }: { link: TradeSourceLink; goTrades: (q: TradesQuery) => void }) {
   return <Button
     type="text"
@@ -288,6 +304,66 @@ export function OrdersPage({
   const mustAmount = mustToday.reduce((a, r) => a + r.amountCents, 0)
   const bonusAmount = bonusToday.reduce((a, r) => a + r.amountCents, 0)
   /**
+   * V9.80（用户口径）：应该买入里同时「统计」回本链已完成部分的买入价与数量——
+   * ① 先卖后买待买单已经记过的回补成交；② 归进链里的真实买入 / 回补批次。
+   * 只算还开着、且仍欠股或还有计划买回的链（人工结束 / 已无后续计划的不再堆历史），
+   * 已包含在待买行里的剩余量不算「已完成」；回补批次与回补成交按 execution id 去重。
+   */
+  const chainDoneBuys = useMemo<ChainDoneBuy[]>(() => {
+    if (sandbox.active) return []
+    const openSellRows = new Set<number>()
+    for (const r of mustBuy) for (const s of r.sources) if (s.kind === 'order') openSellRows.add(s.row)
+    const chains = view.repairChains.filter((c) =>
+      c.stockName === effectiveStock && c.closedByUserAt === null &&
+      (c.plannedQty > 0 || c.relatedSellRows.some((row) => openSellRows.has(row))),
+    )
+    const seen = new Set<string>()
+    const out: ChainDoneBuy[] = []
+    const push = (d: ChainDoneBuy) => {
+      if (d.qty <= 0 || seen.has(d.key)) return
+      seen.add(d.key)
+      out.push(d)
+    }
+    for (const chain of chains) {
+      for (const b of chain.branches) {
+        if (b.kind === 'sell') continue
+        push({
+          key: b.key,
+          stockName: chain.stockName,
+          priceCents: b.buyPriceCents,
+          qty: b.qty,
+          row: b.row,
+          date: b.buyDate,
+          source: b.kind === 'rebuy' ? '回补批次' : '归链买入',
+        })
+      }
+    }
+    for (const e of executions) {
+      const order = orders.find((o) => o.id === e.orderId)
+      if (!order || order.stockName !== effectiveStock) continue
+      const owner = view.repairChains.find((c) => c.relatedSellRows.includes(order.sourceRow))
+      if (!owner || owner.closedByUserAt !== null) continue
+      push({
+        key: `exec:${e.id}`,
+        stockName: e.stockName,
+        priceCents: e.priceCents,
+        qty: e.qty,
+        row: order.sourceRow,
+        date: new Date(e.at).toLocaleDateString('sv-SE'),
+        source: '回补成交',
+      })
+    }
+    return out.sort((a, b) => b.priceCents - a.priceCents || a.key.localeCompare(b.key))
+  }, [sandbox.active, view.repairChains, mustBuy, executions, orders, effectiveStock])
+  /** 应该买入的实际渲染顺序：待买（右侧橙框）与已完成（右侧浅灰框）按价格降序并列 */
+  const mustRender = useMemo(() => {
+    const pending = mustToday.map((r) => ({ key: r.key, priceCents: r.priceCents, pending: r as BuySuggestion, done: null as ChainDoneBuy | null }))
+    const done = chainDoneBuys.map((d) => ({ key: `done:${d.key}`, priceCents: d.priceCents, pending: null as BuySuggestion | null, done: d }))
+    return [...pending, ...done].sort((a, b) =>
+      compareBuyPrice(a, b) || (a.pending && !b.pending ? -1 : !a.pending && b.pending ? 1 : a.key.localeCompare(b.key)),
+    )
+  }, [mustToday, chainDoneBuys])
+  /**
    * 沙盒预览不走 buildBuySuggestions（模拟行要保留自己的「记为成交/删除」按钮），按同一口径切两组：
    * 先卖后买单 → 应该买入；其余买单 + 下一轮档 → 锦上添花。
    */
@@ -353,7 +429,7 @@ export function OrdersPage({
     // V9.79：这笔买单在给一条还没回本的回本链补窟窿 → 橙色阴影提醒
     const chainOpen = r.sources.some((source) => openChainRows.rows.has(source.row))
     return (
-      <div key={r.key} className={`line wrap-row pending-buy${baseTBuy ? ' base-t-buy' : ''}${chainOpen ? ' chain-open' : ''}${link.query ? ' clickable' : ''}`} data-testid="buy-suggestion" data-base-t-buy={baseTBuy ? '1' : undefined} data-chain-open={chainOpen ? '1' : undefined} data-mixed-strategy={r.mixedStrategy ? '1' : undefined} data-row={r.sources[0]?.row} data-price={r.priceCents} data-reward-qty={r.rewardQty ?? 0} data-edited={r.edited ? '1' : undefined} data-sell-first={r.sellFirst ? '1' : undefined}
+      <div key={r.key} className={`line wrap-row pending-buy${r.sellFirst ? ' sell-first-open' : ''}${baseTBuy ? ' base-t-buy' : ''}${chainOpen ? ' chain-open' : ''}${link.query ? ' clickable' : ''}`} data-testid="buy-suggestion" data-base-t-buy={baseTBuy ? '1' : undefined} data-chain-open={chainOpen ? '1' : undefined} data-mixed-strategy={r.mixedStrategy ? '1' : undefined} data-row={r.sources[0]?.row} data-price={r.priceCents} data-reward-qty={r.rewardQty ?? 0} data-edited={r.edited ? '1' : undefined} data-sell-first={r.sellFirst ? '1' : undefined}
       // V9.58：锦上添花里全部来源都是「下一轮」的档保留深链身份（点行跳已完成那笔，不被 hideDone 挡）
       data-buy-level={r.sources.every((v) => v.kind === 'next') ? r.sources[0]?.row : undefined}
       onClick={(e) => {
@@ -423,6 +499,36 @@ export function OrdersPage({
       </div>
     </div>
   )}
+  /**
+   * V9.80：回本链已完成部分的买入行——只读（不提供改单/记成交），
+   * 右侧 2px #f4f5f6 边框与未回补待买行（右侧 #c45905）区分。
+   */
+  const chainDoneLine = (d: ChainDoneBuy) => {
+    const link = d.row !== null ? tradeSourceLink(d.stockName, [d.row], sourceIndex) : null
+    return (
+      <div
+        key={d.key}
+        className={`line wrap-row chain-done-buy${link?.query ? ' clickable' : ''}`}
+        data-testid="chain-done-buy"
+        data-price={d.priceCents}
+        data-row={d.row ?? undefined}
+        data-done-source={d.source}
+        onClick={link?.query ? () => openSources(link) : undefined}
+      >
+        <div className="left">
+          <div className="t1 num">买 {price(d.priceCents)} × {qty(d.qty)}</div>
+          <div className="t2">
+            {d.row !== null ? `${recordNoLabel(d.row, recordNo)} · ` : ''}{d.source}
+            {d.date ? ` · ${d.date}` : ''} · 回本链已完成
+          </div>
+          <div className="tag-row" style={{ marginTop: 4 }}>
+            <Tag size="small" variant="soft" color="app-teal">已买回</Tag>
+          </div>
+        </div>
+        <div className="right num" style={{ fontWeight: 600 }}>{money(d.priceCents * d.qty)}</div>
+      </div>
+    )
+  }
   /** 下一轮应买的一行：沙盒/区间外展开区里用；正常的锦上添花档走 buySuggestionLine（V9.58） */
   const levelLine = (r: NextRoundBuyRow, inToday: boolean) => {
     const z = zone(r.priceCents)
@@ -1358,6 +1464,7 @@ export function OrdersPage({
           <span className="sec-sub">
             {effectiveStock}
             {(sandbox.active ? sbMustAmount : mustAmount) > 0 && ` · ${money(sandbox.active ? sbMustAmount : mustAmount)}`}
+            {!sandbox.active && chainDoneBuys.length > 0 && ` · 回本链已完成 ${chainDoneBuys.length} 笔`}
           </span>
         </div>
         {sandbox.active ? (
@@ -1366,10 +1473,13 @@ export function OrdersPage({
           ) : (
             <div className="data-block">{sbMustIn.map(sbBuyLine)}</div>
           )
-        ) : mustToday.length === 0 ? (
+        ) : mustRender.length === 0 ? (
           <div className="empty-box">{range ? '没有符合当前买入范围的欠股档位' : '先确认昨收与涨跌幅，再筛选推荐买入'}</div>
         ) : (
-          <div className="data-block">{mustToday.map(buySuggestionLine)}</div>
+          /* V9.80：未回补待买行（右橙框）与回本链已完成买入（右浅灰框）按价格并列 */
+          <div className="data-block">
+            {mustRender.map((item) => (item.pending ? buySuggestionLine(item.pending) : chainDoneLine(item.done!)))}
+          </div>
         )}
         {sandbox.active && sbMustOut.length > 0 && (
           <details className="divider-top" data-testid="must-out">
