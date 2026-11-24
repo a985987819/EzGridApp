@@ -171,7 +171,7 @@ interface AppContextValue {
   setStockEnabled: (id: string, enabled: boolean) => Promise<void>
   recordLotSales: (sources: {lotId:string;targetId?:string;qty:number}[], qty:number, priceCents:number, date:string, options?: BookingOptions) => Promise<BookingReceipt>
   recordBuySuggestion: (sources: BuySource[], qty:number, priceCents:number, date:string, options?: BookingOptions) => Promise<BookingReceipt>
-  recordRebuy: (order: RebuyOrder, qty: number, priceCents: number, rewardQty: number, note?: string, splitKey?: string, options?: BookingOptions) => Promise<BookingReceipt>
+  recordRebuy: (order: RebuyOrder, qty: number, priceCents: number, rewardQty: number, note?: string, splitKey?: string, options?: BookingOptions, date?: string) => Promise<BookingReceipt>
   removeRebuy: (id: string) => Promise<void>
   setPlan: (kind: 'buy' | 'sell', refId: string, priceCents: number, qty: number) => Promise<void>
   clearPlan: (refId: string) => Promise<void>
@@ -937,8 +937,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }
 
   const recordRebuy = useCallback(
-    async (order: RebuyOrder, qty: number, priceCents: number, rewardQty: number, note?: string, splitKey?: string, options?: BookingOptions) => {
-      const date = new Date().toLocaleDateString('sv-SE')
+    async (order: RebuyOrder, qty: number, priceCents: number, rewardQty: number, note?: string, splitKey?: string, options?: BookingOptions, dateIso?: string) => {
+      // 底仓做T的子单由用户指定回补日；其余入口仍按今天成交。
+      const date = dateIso ?? new Date().toLocaleDateString('sv-SE')
       return saveBooking({ kind: 'buy', stockName: order.stockName, qty, priceCents, date }, { orderId: order.id, qty, priceCents, rewardQty, splitKey }, options, async()=>{
         const {ledger:l}=await currentLedger()
         const fresh=l.orders.find((o)=>o.id===order.id)
@@ -948,7 +949,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const split=splitKey?l.buySplits.find((b)=>b.orderId===fresh.id&&b.key===splitKey):undefined
         if(splitKey&&(!split||qty>split.qty||qty-rewardQty>split.baseRemainingQty||rewardQty>split.qty-split.baseRemainingQty))throw new Error('成交数量或奖励超过此档剩余额度，请核对后重试')
         if(qty-rewardQty>Math.max(0,fresh.baseQty-fresh.execQty+fresh.doneRewardQty))throw new Error('基础回补量不足，请核对奖励股数')
-        const exec:RebuyExecution={id:`exec:${fresh.id}:${crypto.randomUUID()}`,orderId:fresh.id,sellExecId:fresh.sellExecId,stockId:fresh.stockId,stockName:fresh.stockName,qty,priceCents,rewardQty,groupKeyAtExecution:fresh.groupKey,at:Date.now(),note,...(split?{buyTargetId:split.targetId??`default:${fresh.id}`}:{})}
+        // 指定回补日时（底仓做T子单）让 at 落在那天中午：虚拟批次的 buyDate 与统计来源都与所选日期一致。
+        const execAt = dateIso ? new Date(`${dateIso}T12:00:00`).getTime() : Date.now()
+        if (!Number.isFinite(execAt)) throw new Error('回补日期不合法')
+        const exec:RebuyExecution={id:`exec:${fresh.id}:${crypto.randomUUID()}`,orderId:fresh.id,sellExecId:fresh.sellExecId,stockId:fresh.stockId,stockName:fresh.stockName,qty,priceCents,rewardQty,groupKeyAtExecution:fresh.groupKey,at:execAt,note,...(split?{buyTargetId:split.targetId??`default:${fresh.id}`}:{})}
         await db.rebuyExecutions.add(exec)
         await db.auditLogs.add(audit(fresh.id,'记回补成交',`已回补 ${fresh.execQty}`,`已回补 ${fresh.execQty+qty}（${qty} 股 @ ${(priceCents/100).toFixed(2)}）`,'rebuy','order'))
       })

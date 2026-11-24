@@ -117,7 +117,7 @@ describe('统计日历的网格表现口径', () => {
     expect(ledger.lots.find(l => l.id === 'lot:exec:e1')).toMatchObject({ buyPriceCents: 500, targetPriceCents: 1200, remainingQty: 500 })
   })
 
-  it('显式底仓做T回补后即按卖出日统计做T价差，部分回补先计已买回份额', () => {
+  it('显式底仓做T按每笔回补成交结算价差并计入日历笔数，部分回补也有盈利', () => {
     const marker = { id: 'grid-mode:3', lotId: 'lot:3', qty: 0, priceCents: 700, at: 1,
       strategy: { mode: 'baseT' as const, sellRow: 3, rebuyPriceCents: 500, nextSellPriceCents: 700, groupId: 'grid-mode:3' } }
     const partial = project([high, root], { extraTargets: [marker], executions: [execution('e1', 3, 200, 500, '2026-02-01')] })
@@ -128,9 +128,12 @@ describe('统计日历的网格表现口径', () => {
     const full = project([high, root], { extraTargets: [marker], executions: [
       execution('e1', 3, 200, 500, '2026-01-31'), execution('e2', 3, 300, 550, '2026-02-01'),
     ] })
-    expect(full.statistics.events).toMatchObject([{ kind: 'baseT', date: '2026-01-15', qty: 500, buyPriceCents: 530, profitCents: 85000 }])
-    expect(full.statistics.daily).toEqual([{ day: '2026-01-15', sellCount: 1, sellQty: 500, sellAmountCents: 350000, baseTSellCount: 1, baseTSellAmountCents: 350000, baseTProfitCents: 85000, profitCents: 85000, dateMissing: false }])
-    expect(full.statistics.monthly).toEqual([{ month: '2026-01', sellCount: 1, sellQty: 500, sellAmountCents: 350000, profitCents: 85000, dateMissing: false }])
+    expect(full.statistics.events.map(e => [e.qty, e.buyPriceCents, e.profitCents])).toEqual([
+      [200, 500, 40000], [300, 550, 45000],
+    ])
+    expect(full.statistics.events.every(e => e.date === '2026-01-15' && e.kind === 'baseT')).toBe(true)
+    expect(full.statistics.daily).toEqual([{ day: '2026-01-15', sellCount: 2, sellQty: 500, sellAmountCents: 350000, baseTSellCount: 2, baseTSellAmountCents: 350000, baseTProfitCents: 85000, profitCents: 85000, dateMissing: false }])
+    expect(full.statistics.monthly).toEqual([{ month: '2026-01', sellCount: 2, sellQty: 500, sellAmountCents: 350000, profitCents: 85000, dateMissing: false }])
     const secondRoot = { ...root, sourceRow: 4 }
     const marker4 = { ...marker, id: 'grid-mode:4', lotId: 'lot:4',
       strategy: { ...marker.strategy, sellRow: 4, groupId: 'grid-mode:4' } }
@@ -140,6 +143,23 @@ describe('统计日历的网格表现口径', () => {
     expect(two.statistics.events.map(event => [event.kind, event.date, event.sourceRows[0]])).toEqual([
       ['baseT', '2026-01-15', 3], ['baseT', '2026-01-15', 4],
     ])
+  })
+
+  it('底仓做T多笔同价同量回补各算一笔，日历按回补笔数累加各自的价差', () => {
+    const sell = { ...root, targetPriceCents: 1000, soldQty: 1000 }
+    const marker = { id: 'grid-mode:3', lotId: 'lot:3', qty: 0, priceCents: 1000, at: 1,
+      strategy: { mode: 'baseT' as const, sellRow: 3, rebuyPriceCents: 900, nextSellPriceCents: 1100, groupId: 'grid-mode:3' } }
+    const { statistics } = project([high, sell], { extraTargets: [marker], executions: [
+      execution('a', 3, 400, 900, '2026-02-01'),
+      execution('b', 3, 400, 900, '2026-02-02'),
+      execution('c', 3, 200, 800, '2026-02-03'),
+    ] })
+    expect(statistics.events.map(e => [e.qty, e.buyPriceCents, e.profitCents])).toEqual([
+      [400, 900, 40000], [400, 900, 40000], [200, 800, 40000],
+    ])
+    expect(statistics.events.every(e => e.date === '2026-01-15')).toBe(true)
+    expect(statistics.daily).toEqual([{ day: '2026-01-15', sellCount: 3, sellQty: 1000, sellAmountCents: 1000000,
+      baseTSellCount: 3, baseTSellAmountCents: 1000000, baseTProfitCents: 120000, profitCents: 120000, dateMissing: false }])
   })
 
   it('正常盈利按卖出日，缺日期进入未填日期，正常亏损和零收益不显示', () => {

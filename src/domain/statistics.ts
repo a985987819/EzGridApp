@@ -1,5 +1,4 @@
 import type { BookingReceipt } from './booking'
-import { baseTRowSummary } from './gridStrategy'
 import { isSellFirst } from './sellFirst'
 import type { DayBucket, Ledger, MonthlyBucket, RawRecord } from './types'
 
@@ -59,21 +58,26 @@ export function buildTradingStatistics(
      */
     if (isSellFirst(record) && sell.strategyMode === 'baseT') {
       const fills = sell.actualRebuyFills ?? []
-      const summary = baseTRowSummary(sell)
       if (sell.qty <= 0) continue
-      if (summary.boughtQty <= 0) { pendingRebuyCount++; continue }
-      if (sell.priceCents === null || fills.some((fill) => fill.priceCents === null)) { unpricedCount++; continue }
-      const qty = summary.boughtQty
-      const buyAmountCents = fills.reduce((sum, fill) => sum + fill.qty * fill.priceCents!, 0)
-      const sellAmountCents = sell.priceCents * qty
-      if (![buyAmountCents, sellAmountCents].every(Number.isSafeInteger) || qty <= 0) { unpricedCount++; continue }
+      if (fills.length === 0) { pendingRebuyCount++; continue }
+      if (sell.priceCents === null) { unpricedCount++; continue }
       const date = sell.soldAt
-      const id = `${sell.id}:baseT:${date ?? 'missing'}`
-      grouped.set(id, {
-        id, kind: 'baseT', stockName: sell.stockName, sourceRows: [sell.sourceRow], date, originalSoldAt: sell.soldAt,
-        qty, sellPriceCents: sell.priceCents, buyPriceCents: Math.round(buyAmountCents / qty),
-        sellAmountCents, buyAmountCents, profitCents: sellAmountCents - buyAmountCents,
-      })
+      // 每笔回补成交各自算一笔做T：笔数=已回补子单数，盈利按各自的 (卖价−该笔买价)×该笔数量。
+      // 全部落在卖出日（用户口径），不按回补日分散。
+      let index = 0
+      for (const fill of fills) {
+        if (fill.priceCents === null || !Number.isSafeInteger(fill.qty) || fill.qty <= 0) { unpricedCount++; continue }
+        const qty = fill.qty
+        const buyAmountCents = qty * fill.priceCents
+        const sellAmountCents = sell.priceCents * qty
+        if (![buyAmountCents, sellAmountCents].every(Number.isSafeInteger)) { unpricedCount++; continue }
+        const id = `${sell.id}:baseT:${index++}:${date ?? 'missing'}`
+        grouped.set(id, {
+          id, kind: 'baseT', stockName: sell.stockName, sourceRows: [sell.sourceRow], date, originalSoldAt: sell.soldAt,
+          qty, sellPriceCents: sell.priceCents, buyPriceCents: fill.priceCents,
+          sellAmountCents, buyAmountCents, profitCents: sellAmountCents - buyAmountCents,
+        })
+      }
       continue
     }
     let date = sell.soldAt

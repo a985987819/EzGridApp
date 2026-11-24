@@ -36,6 +36,7 @@ import { ChainBinder } from '../components/ChainBinder'
 import { BookingCheck, useBookingCheck } from '../components/BookingCheck'
 import { TradeFilterTools } from '../components/TradeFilterTools'
 import { SplitExecModal } from '../components/SplitExecModal'
+import { BaseTChildModal, type BaseTChildSeed } from '../components/BaseTChildModal'
 import { isSimpleT, simpleTProfitCents } from '../domain/simpleT'
 import { baseTRowSummary, type GridMode } from '../domain/gridStrategy'
 
@@ -226,6 +227,8 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   const [bpQty, setBpQty] = useState('')
   /** 买入拆分档「记成交」：关掉只关成交弹窗，详情抽屉继续开着，方便逐档记完 */
   const [execSplit, setExecSplit] = useState<BuySplit | null>(null)
+  /** m00139：底仓做T点「拆分」直接生成子单（预填价量+仅选日期） */
+  const [baseTChildSeed, setBaseTChildSeed] = useState<BaseTChildSeed | null>(null)
   /** V9.69：先卖后买模式切换在途（防止连点写两次标记档） */
   const [modeBusy, setModeBusy] = useState(false)
 
@@ -369,7 +372,10 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
       if (statuses.length > 0 && !statuses.every((k) => statusMatch(r, k))) return false
       // V9.5：默认隐藏已完成；勾「已卖完」或深链带该状态时自动放开，避免空列表陷阱
       // V9.36：回本链锚点不算完成（还欠着一笔要补），继续显示
-      if (hideDone && !deepLink && !statuses.includes('soldout') && isDone(r) && !chainRows.has(r.rec.sourceRow)) return false
+      // m00139：底仓做T全部回补的行带 ✅，即使默认隐藏已完成也要留着，否则用户看不到完成标记
+      const baseTDone = r.sell?.strategyMode === 'baseT' && (r.sell.qty ?? 0) > 0
+        && (() => { const s = baseTRowSummary(r.sell!); return s.remainingQty === 0 && s.boughtQty === r.sell!.qty })()
+      if (hideDone && !deepLink && !statuses.includes('soldout') && isDone(r) && !chainRows.has(r.rec.sourceRow) && !baseTDone) return false
       // 日期区间：卖出日期优先，其次买入日期；没日期的行在有区间条件时直接排除
       if (fromDate || toDate) {
         const d = tradeDate(r)
@@ -483,6 +489,13 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
     current?.sell?.strategyMode === 'baseT' ? 'baseT' : 'repair'
   const currentBaseT = current !== null && current.sell !== null && currentSellMode === 'baseT'
   const currentBaseTSummary = current?.sell && currentBaseT ? baseTRowSummary(current.sell) : null
+  /** m00139：底仓做T全部回补（卖出行份额买回完毕）→ 显示 ✅ 且不可再编辑 */
+  const baseTDoneOf = (r: TradeRow): boolean => {
+    if (r.sell?.strategyMode !== 'baseT' || (r.sell.qty ?? 0) <= 0) return false
+    const s = baseTRowSummary(r.sell)
+    return s.remainingQty === 0 && s.boughtQty === r.sell.qty
+  }
+  const currentBaseTDone = current !== null && baseTDoneOf(current)
   /** 可切换模式：先卖后买、不是来源批次的子卖出、未删除、未自动判定为单纯做T（已完整买回） */
   const canSwitchMode = current !== null && !current.rec.deletedAt && !current.rec.soldLotId
     && current.sell?.sellBeforeBuy === true && !currentPureT
@@ -565,8 +578,8 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
   }, [ledger.orders, records, baseTRowSet])
   /** 点标签打开的「裸卖待挂钩」弹层（null = 关着） */
   const [hedgeRow, setHedgeRow] = useState<number | null>(null)
-  // V9.55：抽屉 / 新增弹窗 / 挂钩弹层统一保滚动位置（原来只护了抽屉）
-  useScrollHold(drawerOpen || adding || hedgeRow !== null)
+  // V9.55：抽屉 / 新增弹窗 / 挂钩弹层 / 底仓做T子单弹窗统一保滚动位置（嵌套要传合并布尔）
+  useScrollHold(drawerOpen || adding || hedgeRow !== null || baseTChildSeed !== null)
 
   /** V9.46 回本链：高位批次行号 → 那条链（用于行上标签 + 抽屉里的进度卡） */
   const repairByAnchor = useMemo(
@@ -1057,9 +1070,11 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
               chain={pureT || isBaseT ? undefined : anchorChain ? 'anchor' : memberChain ? (isBranch ? 'branch' : 'member') : undefined}
               profitCents={isBaseT ? baseTSummary?.profitCents ?? null : undefined}
               edited={editedRows.has(r.rec.sourceRow)}
+              baseTDone={baseTDoneOf(r)}
               levelProfit={levelProfitOf(r)}
-              onSwipeDelete={() => {
+              onSwipeDelete={baseTDoneOf(r) ? undefined : () => {
                 // 行上左滑直接删/恢复：不必先打开详情抽屉。已删除行露出的是「恢复」。
+                // m00139：全部回补的底仓做T锁定，不提供左滑删除。
                 if (r.rec.deletedAt) void onRestore(r.rec.sourceRow)
                 else void onDelete(r.rec.sourceRow)
               }}
@@ -1093,6 +1108,9 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                   <Button type="primary" data-emphasis="true" style={{ flex: 1 }} onClick={() => void save()}>保存</Button>
                   <Button onClick={() => setEditing(false)}>取消</Button>
                 </>
+              ) : currentBaseTDone ? (
+                // m00139：全部回补的底仓做T锁定，不能编辑/补买入/删除
+                <span className="tiny muted" data-testid="base-t-locked">✅ 已全部回补，此记录已锁定不可再编辑</span>
               ) : (
                 <>
                   <Button type="primary" style={{ flex: 1 }} onClick={() => startEdit()}>编辑</Button>
@@ -1374,8 +1392,9 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                   </div>
                 )}
 
-                {/* V9.50 卖单拆买：先卖后买拆成多笔买入，挂单页与概览只显示拆出来的档 */}
-                {isNakedSell(current.rec) && (current.sell?.qty ?? 0) > 0 && (
+                {/* V9.50 卖单拆买：先卖后买拆成多笔买入，挂单页与概览只显示拆出来的档
+                    m00139：底仓做T 走「点拆分→直接生成子单」单步流程，不挂待买档。 */}
+                {isNakedSell(current.rec) && (current.sell?.qty ?? 0) > 0 && !currentBaseT && (
                   <div className="divider-top" data-testid="buy-split-section">
                     <div className="sec-head sm">
                       <strong>买入拆分</strong>
@@ -1462,6 +1481,96 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
                     <p className="tiny muted" style={{ margin: '6px 0 0' }}>
                       留空采用框内默认值（股数默认「还能拆的量」）。合计不能超过还没回补的股数，超过会自动按剩余量拆分；拆分后挂单页和概览只显示拆出来的买单。
                     </p>
+                  </div>
+                )}
+
+                {/* m00139：底仓做T 买入拆分 → 点拆分直接生成子单弹窗（预填价量+仅选日期） */}
+                {currentBaseT && current.sell && (current.sell.qty ?? 0) > 0 && (
+                  <div className="divider-top" data-testid="base-t-children-section">
+                    <div className="sec-head sm">
+                      <strong>做T回补子单</strong>
+                      <div className="spacer" />
+                      <span className="sec-sub">
+                        已回补 {qty(currentBaseTSummary?.boughtQty ?? 0)} / {qty(current.sell.qty)} 股 · {currentBaseTSummary?.fillCount ?? 0} 笔
+                      </span>
+                    </div>
+                    {/* 子单列表：只挂在父记录详情里，不进明细列表，默认已完成 */}
+                    <div className="data-block">
+                      {(() => {
+                        const children = executions
+                          .filter((e) => e.sellExecId === `sell:${current.rec.sourceRow}`)
+                          .sort((a, b) => a.at - b.at)
+                        if (children.length === 0) {
+                          return <p className="tiny muted" style={{ margin: 0 }}>还没有回补子单。填入价量、选好日期点「拆分」即生成一笔。</p>
+                        }
+                        return children.map((e, i) => {
+                          const d = new Date(e.at)
+                          const date = Number.isFinite(e.at)
+                            ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+                            : '—'
+                          const profit = (current.sell!.priceCents ?? 0) - e.priceCents
+                          return (
+                            <div key={e.id} className="line" data-base-t-child={e.id}>
+                              <div className="left">
+                                <div className="t1 num">
+                                  第 {i + 1} 笔 · {price(e.priceCents)} × {qty(e.qty)}
+                                </div>
+                                <div className="t2">
+                                  {date} · 已回补 · 做T价差 {money(profit * e.qty)}
+                                </div>
+                              </div>
+                              <Tag size="small" variant="soft" color="app-teal">已完成</Tag>
+                            </div>
+                          )
+                        })
+                      })()}
+                    </div>
+                    {!currentBaseTDone && (
+                      <>
+                        <div className="row nowrap" style={{ gap: 6, marginTop: 6 }}>
+                          <Input
+                            className="grow"
+                            value={bpPrice}
+                            onChange={(e) => setBpPrice(e.target.value)}
+                            placeholder={bpFallback === null ? '回补价（元）' : centsToYuan(bpFallback)}
+                            aria-label="回补价"
+                            data-field="base-t-child-price-input"
+                          />
+                          <Input
+                            className="grow"
+                            value={bpQty}
+                            onChange={(e) => setBpQty(e.target.value)}
+                            placeholder={String(rebuyLeftOf(current.rec.sourceRow))}
+                            aria-label="回补股数"
+                            data-field="base-t-child-qty-input"
+                          />
+                          <Button
+                            size="small"
+                            data-action="base-t-split"
+                            onClick={() => {
+                              const left = rebuyLeftOf(current.rec.sourceRow)
+                              if (left <= 0) {
+                                notificationOpen({ message: '这笔已经全部回补了', type: 'warning' })
+                                return
+                              }
+                              setBaseTChildSeed({
+                                sourceRow: current.rec.sourceRow,
+                                stockName: current.rec.stockName,
+                                priceText: bpPrice.trim(),
+                                qtyText: bpQty.trim(),
+                                pricePlaceholder: bpFallback === null ? '' : centsToYuan(bpFallback),
+                                qtyPlaceholder: String(left),
+                              })
+                            }}
+                          >
+                            拆分
+                          </Button>
+                        </div>
+                        <p className="tiny muted" style={{ margin: '6px 0 0' }}>
+                          填了回补价和股数就自动带入弹窗；没填则弹窗留空由你填。只需再选日期，确认即生成子单，默认已完成，只在这条记录里看到。
+                        </p>
+                      </>
+                    )}
                   </div>
                 )}
 
@@ -1752,6 +1861,8 @@ export function TradesPage({ urlQuery }: { urlQuery: TradesQuery }) {
 
       {/* V9.68：买入拆分的「记成交」——档位身份交给 split.key，成功后只关本弹窗，方便逐档记完 */}
       {execSplit && <SplitExecModal split={execSplit} onClose={() => setExecSplit(null)} />}
+      {/* m00139：底仓做T 点拆分直接生成回补子单（预填价量+仅选日期） */}
+      {baseTChildSeed && <BaseTChildModal seed={baseTChildSeed} onClose={() => { setBaseTChildSeed(null); setBpPrice(''); setBpQty('') }} />}
     </div>
   )
 }

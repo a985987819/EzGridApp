@@ -14,19 +14,22 @@ export const GRID_MODE_LABEL = { repair: '低位回本', baseT: '底仓做T' } a
  * V9.76（用户口径，恢复 V9.72 展示）：**只要已经买回就计已买回那部分的做T价差**，
  * 部分回补也返回 `profitCents`；`remainingQty` 同时给出还没买回的量，界面并排展示。
  */
-export function baseTRowSummary(sell: SellExecution): { profitCents: number | null; boughtQty: number; remainingQty: number } {
+export function baseTRowSummary(sell: SellExecution): { profitCents: number | null; boughtQty: number; remainingQty: number; fillCount: number } {
   const fills = (sell.actualRebuyFills ?? []).filter(
     (f) => f.priceCents !== null && Number.isSafeInteger(f.qty) && f.qty > 0,
   )
   const boughtQty = (sell.actualRebuyFills ?? []).reduce((a, f) => a + (Number.isSafeInteger(f.qty) ? f.qty : 0), 0)
   const remainingQty = Math.max(0, sell.qty - boughtQty)
+  // 子单笔数 = 已确认的真实回补成交笔数（与统计日历每 fill 一个 event 同源）。
+  const fillCount = fills.length
   if (sell.priceCents === null || fills.length === 0) {
-    return { profitCents: null, boughtQty, remainingQty }
+    return { profitCents: null, boughtQty, remainingQty, fillCount }
   }
   return {
     profitCents: fills.reduce((a, f) => a + (sell.priceCents! - f.priceCents!) * f.qty, 0),
     boughtQty,
     remainingQty,
+    fillCount,
   }
 }
 

@@ -35,6 +35,7 @@ export function TradeItem({
   levelProfit,
   profitCents,
   edited,
+  baseTDone,
   onSwipeDelete,
 }: {
   row: TradeRow
@@ -58,6 +59,8 @@ export function TradeItem({
   profitCents?: number | null
   /** V9.71：是否真的和新建时不同（由 domain/edit 的 editedFromCreation 派生，不再只看 editedAt） */
   edited?: boolean
+  /** 底仓做T全部回补完成：右上角显示 ✅ 区分，且该行不可再编辑 */
+  baseTDone?: boolean
   /**
    * 左滑露出的删除动作（明细页传；价格树 hover 浮层不传，保持只读）。
    * 不需要先打开详情抽屉就能删；原生拖拽/触摸都支持，竖向滚动不受影响。
@@ -178,6 +181,7 @@ export function TradeItem({
         <Tag size="small" variant="soft">{no == null ? '记录' : `第 ${no} 笔`}</Tag>
         <span className="name">{rec.stockName}</span>
         <div className="spacer" />
+        {baseTDone && <span className="base-t-done" data-testid="base-t-done" title="已全部回补，不可再编辑">✅</span>}
         <span className={`profit ${tone(profitCents !== undefined ? profitCents : sell?.profitCents ?? null)}`}>
           {/* V9.33：被全额挂住的裸卖盈利暂缓——写「暂缓」比写「—」更像回事
               V9.70：底仓做T 用已实现价差覆盖（没有成交时显示 —） */}
